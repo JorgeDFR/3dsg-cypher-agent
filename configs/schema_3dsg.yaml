@@ -1,0 +1,94 @@
+name: heracles_3dsg
+description: Neo4j schema for Heracles-style 3D Scene Graph databases.
+interface_description: |
+  Labels in Database:
+    - Object: a node representing an object in the world.
+      - nodeSymbol: a unique string identifier
+      - class: a string identifying the object's semantic class or type
+      - center: the 3D position of the object, as a POINT type
+      - name: optional semantic node name
+      - bbox_center: optional 3D bounding box center, as a POINT type
+      - bbox_dim: optional 3D bounding box dimensions, as a POINT type
+    - MeshPlace: a node representing a 2D segment of space the robot might be able to move to.
+      - nodeSymbol: a unique string identifier
+      - class: a string identifying the place's semantic class or type
+      - center: the 3D position of the mesh place, as a POINT type
+    - Place: a node representing a 3D region of free space.
+      - nodeSymbol: a unique string identifier
+      - center: the 3D position of the place, as a POINT type
+    - Room: a node representing a room or higher-level region.
+      - nodeSymbol: a unique string identifier
+      - class: a string identifying the room's semantic class or type
+      - center: the 3D position of the room, as a POINT type
+    - Building: a node representing a building or highest-level region.
+      - nodeSymbol: a unique string identifier
+      - center: the 3D position of the building, as a POINT type
+
+  Object, MeshPlace, Place, Room, and Building are Cypher labels attached to nodes.
+
+  Places and Mesh Places represent a higher level of the hierarchy compared to objects,
+  but lower level than rooms.
+
+  Hierarchical edges use (a)-[:CONTAINS]->(b), meaning b is contained within a.
+  Use (a)-[:CONTAINS*]->(b) for transitive hierarchy queries.
+
+  Connectivity edges within a layer are:
+    - [:OBJECT_CONNECTED]
+    - [:PLACE_CONNECTED]
+    - [:MESH_PLACE_CONNECTED]
+    - [:ROOM_CONNECTED]
+    - [:BUILDING_CONNECTED]
+
+  Use point.distance for distance queries. Do not use deprecated distance().
+  Do not use APOC procedures or functions.
+
+labels:
+  Object:
+    properties: [nodeSymbol, class, center, name, bbox_center, bbox_dim]
+  MeshPlace:
+    properties: [nodeSymbol, class, center]
+  Place:
+    properties: [nodeSymbol, center]
+  Room:
+    properties: [nodeSymbol, class, center]
+  Building:
+    properties: [nodeSymbol, center]
+
+relationships:
+  CONTAINS:
+    patterns:
+      - "(Building)-[:CONTAINS]->(Room)"
+      - "(Room)-[:CONTAINS]->(Place)"
+      - "(Room)-[:CONTAINS]->(MeshPlace)"
+      - "(Place)-[:CONTAINS]->(Object)"
+      - "(MeshPlace)-[:CONTAINS]->(Object)"
+  OBJECT_CONNECTED:
+    patterns:
+      - "(Object)-[:OBJECT_CONNECTED]-(Object)"
+  PLACE_CONNECTED:
+    patterns:
+      - "(Place)-[:PLACE_CONNECTED]-(Place)"
+  MESH_PLACE_CONNECTED:
+    patterns:
+      - "(MeshPlace)-[:MESH_PLACE_CONNECTED]-(MeshPlace)"
+  ROOM_CONNECTED:
+    patterns:
+      - "(Room)-[:ROOM_CONNECTED]-(Room)"
+  BUILDING_CONNECTED:
+    patterns:
+      - "(Building)-[:BUILDING_CONNECTED]-(Building)"
+
+safety:
+  default_read_only: true
+  forbidden_functions:
+    - apoc
+    - distance
+  forbidden_write_keywords:
+    - CREATE
+    - MERGE
+    - DELETE
+    - DETACH
+    - SET
+    - REMOVE
+    - DROP
+  require_bounded_variable_length_paths: true

@@ -1,0 +1,13 @@
+schema_path: configs/schema_3dsg.yaml
+raw_questions_path: data/raw/questions.yaml
+additional_raw_questions_paths: []
+template_questions_path: data/raw/generated_questions.yaml
+prepared_jsonl_path: data/processed/text2cypher.jsonl
+train_jsonl_path: data/splits/train.jsonl
+eval_jsonl_path: data/splits/eval.jsonl
+test_jsonl_path: data/splits/test.jsonl
+split:
+  test_size: 0.15
+  eval_size: 0.15
+  seed: 42
+  stratify_by: task_type

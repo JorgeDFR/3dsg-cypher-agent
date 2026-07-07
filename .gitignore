@@ -1,0 +1,14 @@
+.cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.env.*
+!.env.example
+
+data/processed/
+data/splits/
+outputs/
+wandb/
+
