@@ -6,9 +6,9 @@ import random
 from collections.abc import Iterable
 from pathlib import Path
 
-from sg_text2cypher.config import ensure_parent, load_yaml
-from sg_text2cypher.prompts import DEFAULT_SYSTEM_PROMPT, build_messages
-from sg_text2cypher.records import PreparedRecord, Text2CypherRecord
+from text2cypher_3dsg.config import ensure_parent, load_yaml
+from text2cypher_3dsg.prompts import DEFAULT_SYSTEM_PROMPT, build_messages
+from text2cypher_3dsg.records import PreparedRecord, Text2CypherRecord
 
 
 def load_raw_records(path: str | Path) -> list[Text2CypherRecord]:
@@ -46,21 +46,16 @@ def prepare_records(
                 uid=record.uid,
                 question=record.question,
                 cypher=record.cypher.strip(),
-                task_type=record.task_type,
-                query_type=record.query_type or record.task_type,
-                database=record.database,
+                query_type=record.query_type,
                 read_only=record.read_only,
                 expected_result_hash=record.expected_result_hash,
+                solution=record.solution,
                 tags=record.tags,
                 scene_id=record.scene_id,
                 schema_name=schema_name,
                 schema=schema_text.strip(),
                 messages=build_messages(schema_text, record.question, record.cypher, system_prompt),
-                metadata={
-                    "name": record.name,
-                    "solution": record.solution,
-                    **record.metadata,
-                },
+                metadata=record.metadata,
             )
         )
     return prepared

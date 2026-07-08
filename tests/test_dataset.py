@@ -1,5 +1,5 @@
-from sg_text2cypher.dataset import prepare_records, split_records
-from sg_text2cypher.records import Text2CypherRecord
+from text2cypher_3dsg.dataset import prepare_records, split_records
+from text2cypher_3dsg.records import Text2CypherRecord
 
 
 def test_prepare_records_builds_chat_messages():
@@ -8,7 +8,7 @@ def test_prepare_records_builds_chat_messages():
             uid="0A",
             question="What objects exist?",
             gold_cypher="MATCH (o:Object) RETURN DISTINCT o.class AS class",
-            task_type="class_listing",
+            query_type="class_listing",
         )
     ]
     prepared = prepare_records(records, "test_schema", "Labels in Database: Object")
@@ -18,13 +18,12 @@ def test_prepare_records_builds_chat_messages():
 
 
 def test_split_records_keeps_all_records():
-    records = [{"uid": str(i), "task_type": "x"} for i in range(10)]
+    records = [{"uid": str(i), "query_type": "x"} for i in range(10)]
     train, eval_records, test = split_records(
         records,
         test_size=0.2,
         eval_size=0.2,
         seed=42,
-        stratify_by="task_type",
+        stratify_by="query_type",
     )
     assert len(train) + len(eval_records) + len(test) == 10
-

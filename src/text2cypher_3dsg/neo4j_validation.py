@@ -11,8 +11,8 @@ from typing import Any
 from neo4j import GraphDatabase, Query
 from neo4j.exceptions import Neo4jError
 
-from sg_text2cypher.config import ensure_parent, load_yaml
-from sg_text2cypher.dataset import read_jsonl
+from text2cypher_3dsg.config import ensure_parent, load_yaml
+from text2cypher_3dsg.dataset import read_jsonl
 
 FORBIDDEN_SUBSTRINGS = ("apoc.", " distance(")
 WRITE_KEYWORDS = ("CREATE ", "MERGE ", "DELETE ", "DETACH ", "SET ", "REMOVE ", "DROP ")
@@ -43,6 +43,10 @@ def schema_policy(schema_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def is_safe_refusal(cypher: str) -> bool:
+    return cypher.strip() in SAFE_REFUSALS
+
+
 def result_hash(rows: list[dict[str, Any]]) -> str:
     normalized = json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -53,7 +57,7 @@ def static_checks(
     allow_writes: bool,
     policy: dict[str, Any] | None = None,
 ) -> list[str]:
-    if cypher.strip() in SAFE_REFUSALS:
+    if is_safe_refusal(cypher):
         return []
 
     policy = policy or {}
@@ -167,8 +171,9 @@ def validate_records(
             "cypher": cypher,
             "static_issues": issues,
             "static_valid": not issues,
+            "refusal": is_safe_refusal(cypher),
         }
-        if validator is not None and not issues:
+        if validator is not None and not issues and not is_safe_refusal(cypher):
             result.update(validator.validate(cypher, execute=execute))
         validated.append({**record, "validation": result})
     return validated

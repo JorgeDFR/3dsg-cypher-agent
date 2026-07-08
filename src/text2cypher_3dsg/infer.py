@@ -7,8 +7,8 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from sg_text2cypher.config import ensure_parent, load_yaml
-from sg_text2cypher.dataset import read_jsonl
+from text2cypher_3dsg.config import ensure_parent, load_yaml
+from text2cypher_3dsg.dataset import read_jsonl
 
 
 def load_model_and_tokenizer(config: dict[str, Any]):

@@ -1,4 +1,4 @@
-from sg_text2cypher.neo4j_validation import schema_policy, static_checks
+from text2cypher_3dsg.neo4j_validation import schema_policy, static_checks
 
 SCHEMA = {
     "labels": {

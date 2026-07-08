@@ -1,6 +1,6 @@
 import _bootstrap  # noqa: F401
 
-from sg_text2cypher.dataset import main
+from text2cypher_3dsg.dataset import main
 
 if __name__ == "__main__":
     main()

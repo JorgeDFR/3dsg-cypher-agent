@@ -1,6 +1,6 @@
 import _bootstrap  # noqa: F401
 
-from sg_text2cypher.templates import main
+from text2cypher_3dsg.templates import main
 
 if __name__ == "__main__":
     main()

@@ -12,8 +12,8 @@ from transformers import (
     TrainingArguments,
 )
 
-from sg_text2cypher.config import load_yaml
-from sg_text2cypher.dataset import read_jsonl
+from text2cypher_3dsg.config import load_yaml
+from text2cypher_3dsg.dataset import read_jsonl
 
 DEFAULT_LORA_TARGETS = [
     "q_proj",

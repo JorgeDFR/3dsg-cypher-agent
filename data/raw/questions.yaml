@@ -1,34 +1,30 @@
 questions:
   - uid: 0A
-    name: Distinct objects
-    question: What kind of objects are in the scene graph?
+    query_type: class_listing
+    question: What kind of objects are in the 3d scene graph?
     gold_cypher: |
       MATCH (o:Object)
       RETURN DISTINCT o.class AS class
       ORDER BY class
     solution: <seating, storage, sign, decor, trash, box, appliance, light, food, bicycle, bed, bag>
-    database: heracles_scene_graph
-    query_type: class_listing
-    task_type: class_listing
+    scene_id: example_3dsg
     read_only: true
     tags: []
 
   - uid: 12A
-    name: Signs in Lounge
+    query_type: hierarchy
     question: Which signs are in the lounge?
     gold_cypher: |
       MATCH (r:Room {class: "lounge"})-[:CONTAINS*]->(o:Object {class: "sign"})
       RETURN o.nodeSymbol AS nodeSymbol
       ORDER BY nodeSymbol
     solution: <O283, O255, O3, O264>
-    database: heracles_scene_graph
-    query_type: hierarchy
-    task_type: hierarchy
+    scene_id: example_3dsg
     read_only: true
     tags: [hierarchy]
 
   - uid: 17B
-    name: Region fewest objects
+    query_type: aggregation
     question: Tell me the two rooms with the smallest number of objects.
     gold_cypher: |
       MATCH (r:Room)
@@ -37,14 +33,12 @@ questions:
       ORDER BY object_count ASC, room ASC
       LIMIT 2
     solution: <R3, R4>
-    database: heracles_scene_graph
-    query_type: aggregation
-    task_type: aggregation
+    scene_id: example_3dsg
     read_only: true
     tags: []
 
   - uid: 27B
-    name: Room with least neighbors
+    query_type: graph_connectivity
     question: Tell me the room with fewest adjacent rooms.
     gold_cypher: |
       MATCH (r:Room)
@@ -53,37 +47,31 @@ questions:
       ORDER BY neighbor_count ASC, room ASC
       LIMIT 1
     solution: R1
-    database: heracles_scene_graph
-    query_type: graph_connectivity
-    task_type: graph_connectivity
+    scene_id: example_3dsg
     read_only: true
     tags: []
 
   - uid: 48B
-    name: Objects near bag
+    query_type: spatial_hops
     question: Tell me the number of objects in mesh places that are within 6 hops of the bag's mesh place, other than the bag itself.
     gold_cypher: |
       MATCH (bag:Object {class: "bag"})<-[:CONTAINS]-(start:MeshPlace)
       MATCH (start)-[:MESH_PLACE_CONNECTED*1..6]-(mp:MeshPlace)-[:CONTAINS]->(o:Object)
       WHERE o <> bag
       RETURN count(DISTINCT o) AS count
-    solution: "28"
-    database: heracles_scene_graph
-    query_type: spatial_hops
-    task_type: spatial_hops
+    solution: 28
+    scene_id: example_3dsg
     read_only: true
     tags: [spatial]
 
   - uid: 14A
-    name: Where is trash?
+    query_type: positions
     question: Where are all the trash can positions?
     gold_cypher: |
       MATCH (o:Object {class: "trash"})
       RETURN o.center AS center
       ORDER BY o.nodeSymbol
     solution: <POINT(-18.70 -4.21 0.12), POINT(-19.22 -4.42 0.03), POINT(-20.96 -20.89 -0.02), POINT(-25.17 -22.58 -0.21)>
-    database: heracles_scene_graph
-    query_type: positions
-    task_type: positions
+    scene_id: example_3dsg
     read_only: true
     tags: [positions]

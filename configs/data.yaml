@@ -1,5 +1,5 @@
 schema_path: configs/schema_3dsg.yaml
-raw_questions_path: data/raw/questions.yaml
+raw_questions_path: data/raw/uhumans2_generated_questions.yaml
 additional_raw_questions_paths: []
 template_questions_path: data/raw/generated_questions.yaml
 prepared_jsonl_path: data/processed/text2cypher.jsonl
@@ -10,4 +10,4 @@ split:
   test_size: 0.15
   eval_size: 0.15
   seed: 42
-  stratify_by: task_type
+  stratify_by: query_type

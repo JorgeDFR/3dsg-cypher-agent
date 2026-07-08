@@ -1,0 +1,3 @@
+[submodule "external/heracles"]
+	path = external/heracles
+	url = https://github.com/GoldenZephyr/heracles.git
