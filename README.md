@@ -12,7 +12,7 @@ and keep the dataset format unchanged.
 This repo focuses only on:
 
 1. Natural language question -> Cypher query.
-2. Validation of generated Cypher against 3DSG-specific rules and optionally Neo4j.
+2. Validation of generated Cypher through the Heracles Docker Neo4j workflow.
 3. LoRA/QLoRA fine-tuning of open models.
 
 It intentionally does not train the downstream answer/PDDL generation component.
@@ -73,7 +73,7 @@ submodule under `external/heracles`; the Heracles loader scripts add the submodu
 ## Dataset Format
 
 Each question must include `gold_cypher`. The final `solution` is kept as metadata for
-your paper/evaluation, but the fine-tuning target is only Cypher.
+evaluation, but the fine-tuning target is only Cypher.
 
 ```yaml
 questions:
@@ -236,9 +236,17 @@ Each JSONL row contains:
 - `messages`, ready for chat fine-tuning
 - `query_type`, `scene_id`, `solution`, and tags for error analysis
 
-## Validate Gold Cypher
+## Validate and Evaluate Cypher
 
-Static validation checks for common constraints:
+Use the Heracles Docker validation path for both gold-query validation and model
+evaluation. This is the supported validation workflow in this repository.
+
+The wrapper starts Heracles' Docker Compose Neo4j service, waits for it to become
+available, loads the 3DSG scene through Heracles, runs static checks, executes each
+query, compares the returned result with the record's `solution` field, writes a JSON
+report, and prints a summary table.
+
+Static checks include:
 
 - no APOC
 - no deprecated `distance(...)`
@@ -248,64 +256,57 @@ Static validation checks for common constraints:
 - properties must be in the configured 3DSG schema
 - variable-length paths must have an upper bound, for example `*1..5`
 
+Validate the generated gold Cypher used to build the dataset:
+
 ```bash
-python scripts/validate_cypher.py \
+python scripts/validate_with_heracles_docker.py \
+  --scene data/scenes/3dsg_uhumans2.json \
   --input data/processed/text2cypher.jsonl \
-  --output data/processed/text2cypher.validated.jsonl \
-  --static-only
+  --output data/processed/text2cypher.heracles.report.json \
+  --cypher-field cypher
 ```
 
-To validate against Neo4j with `EXPLAIN`, configure `.env` or pass credentials:
+Evaluate model predictions on the test split:
 
 ```bash
-export NEO4J_URI=neo4j://127.0.0.1:7687
-export NEO4J_USERNAME=neo4j
-export NEO4J_PASSWORD=neo4j_pw
-export NEO4J_DATABASE=neo4j
-
-python scripts/validate_cypher.py \
-  --input data/processed/text2cypher.jsonl \
-  --output data/processed/text2cypher.neo4j.jsonl
+python scripts/validate_with_heracles_docker.py \
+  --scene data/scenes/3dsg_uhumans2.json \
+  --input data/processed/test_predictions.jsonl \
+  --output data/processed/test_predictions.heracles.report.json \
+  --cypher-field predicted_cypher
 ```
 
-To execute read queries and capture returned rows:
+The prediction file produced by `generate_predictions.py` keeps the original test
+record fields, including `solution`, so the same report code can compare the predicted
+Cypher result against the expected answer.
+
+The Heracles Docker Neo4j defaults are:
+
+```text
+URI=neo4j://127.0.0.1:7683
+username=neo4j
+password=neo4j_pw
+database=neo4j
+```
+
+If the Docker service is already running and the scene is already loaded, reuse it:
 
 ```bash
-python scripts/validate_cypher.py \
-  --input data/processed/text2cypher.jsonl \
-  --output data/processed/text2cypher.executed.jsonl \
-  --execute
+python scripts/validate_with_heracles_docker.py \
+  --skip-docker \
+  --skip-load \
+  --input data/processed/test_predictions.jsonl \
+  --output data/processed/test_predictions.heracles.report.json \
+  --cypher-field predicted_cypher
 ```
 
-When `--execute` is used, validation output includes `rows` and `result_hash`. The hash
-is intended for later result-equivalence evaluation between gold and predicted Cypher.
-
-Summarize validation:
+Summarize an existing report:
 
 ```bash
-python scripts/summarize_validation.py --input data/processed/text2cypher.neo4j.jsonl
+python scripts/summarize_validation.py --input data/processed/test_predictions.heracles.report.json
 ```
 
-## Load uHumans2 Into Neo4j
-
-Preferred path, using Heracles directly from the git submodule:
-
-```bash
-git submodule update --init --recursive
-
-export NEO4J_URI=neo4j://127.0.0.1:7687
-export NEO4J_USERNAME=neo4j
-export NEO4J_PASSWORD=neo4j_pw
-
-python scripts/load_scene_heracles.py --scene data/scenes/3dsg_uhumans2.json
-```
-
-The Heracles wrapper uses labelspaces embedded in the Spark-DSG file when available.
-This avoids mismatches with Heracles' bundled labelspace resources, which may not contain
-all semantic labels used by a given 3DSG. `--object-labelspace` and `--room-labelspace`
-remain available as fallbacks for 3DSGs without embedded labelspace metadata.
-
-Heracles also ships a Docker Compose Neo4j service. This repo includes a small wrapper:
+For manual Docker service control:
 
 ```bash
 scripts/heracles_neo4j.sh up
@@ -313,78 +314,10 @@ scripts/heracles_neo4j.sh ps
 scripts/heracles_neo4j.sh down
 ```
 
-The Heracles Compose defaults are:
-
-```text
-NEO4J_URI=neo4j://127.0.0.1:7683
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=neo4j_pw
-HTTP=http://127.0.0.1:7469
-```
-
-End-to-end validation with Docker, Heracles loading, and Cypher execution:
-
-```bash
-python scripts/validate_with_heracles_docker.py \
-  --scene data/scenes/3dsg_uhumans2.json \
-  --input data/processed/text2cypher.jsonl \
-  --output data/processed/text2cypher.heracles.report.json
-```
-
-This command writes a JSON report with per-query execution status, expected solution,
-actual solution, and solution-match status. It also prints a Rich summary table at the
-end. Reproduce the same summary later with:
-
-```bash
-python scripts/summarize_validation.py --input data/processed/text2cypher.heracles.report.json
-```
-
-If Neo4j is already running, skip Docker startup:
-
-```bash
-python scripts/validate_with_heracles_docker.py \
-  --skip-docker \
-  --uri neo4j://127.0.0.1:7683 \
-  --username neo4j \
-  --password neo4j_pw
-```
-
-Fallback path, using this repo's Heracles-compatible loader:
-
-```bash
-export NEO4J_URI=neo4j://127.0.0.1:7687
-export NEO4J_USERNAME=neo4j
-export NEO4J_PASSWORD=neo4j_pw
-export NEO4J_DATABASE=neo4j
-
-python scripts/load_scene_neo4j.py --scene data/scenes/3dsg_uhumans2.json
-```
-
-The fallback loader clears the target database by default, creates indexes, inserts:
-
-- `Object(nodeSymbol, class, name, center, bbox_center, bbox_dim)`
-- `Place(nodeSymbol, center)`
-- `MeshPlace(nodeSymbol, class, center)`
-
-and creates:
-
-- `(Place)-[:CONTAINS]->(Object)`
-- `(Place)-[:PLACE_CONNECTED]->(Place)`
-- `(MeshPlace)-[:MESH_PLACE_CONNECTED]->(MeshPlace)`
-
-After loading, run live validation:
-
-```bash
-python scripts/validate_cypher.py \
-  --input data/processed/text2cypher.jsonl \
-  --output data/processed/text2cypher.executed.jsonl \
-  --execute
-```
-
 ## Fine-Tune
 
-Edit `configs/model_gemma4.yaml` and set `model.base_model` to the exact Gemma 4
-checkpoint or local path you are using.
+Edit `configs/model_gemma4.yaml` and set `model.base_model` to the exact model
+checkpoint or local path you want to fine-tune.
 
 ```bash
 python scripts/train_lora.py \
@@ -417,10 +350,9 @@ lora:
   target_modules: [q_proj, k_proj, v_proj, o_proj]
 ```
 
-## Generate and Validate Predictions
+## Generate Predictions
 
-After training, point `model.base_model` at the adapter/output directory or a merged model,
-then run:
+Use the configured base model:
 
 ```bash
 python scripts/generate_predictions.py \
@@ -429,29 +361,25 @@ python scripts/generate_predictions.py \
   --output data/processed/test_predictions.jsonl
 ```
 
-Validate predicted Cypher:
+Or use the LoRA adapter saved by training in `training.output_dir`:
 
 ```bash
-python scripts/validate_cypher.py \
-  --input data/processed/test_predictions.jsonl \
-  --output data/processed/test_predictions.validated.jsonl \
-  --cypher-field predicted_cypher
+python scripts/generate_predictions.py \
+  --model-config configs/model_gemma4.yaml \
+  --model-source finetuned \
+  --input data/splits/test.jsonl \
+  --output data/processed/test_predictions.jsonl
 ```
 
-## Article-Oriented Metrics
+Evaluate predicted Cypher with Heracles Docker:
 
-For the text-to-Cypher component, report at least:
-
-- syntax-valid rate
-- schema-valid/executable rate
-- timeout rate
-- forbidden-function rate
-- result-returning rate
-- exact/result-hash match, once expected tool results are available
-- breakdown by `query_type` and `tags`
-
-This lets you compare prompt-only Gemma 4 against fine-tuned Gemma 4, and later compare
-other open models with minimal repository changes.
+```bash
+python scripts/validate_with_heracles_docker.py \
+  --scene data/scenes/3dsg_uhumans2.json \
+  --input data/processed/test_predictions.jsonl \
+  --output data/processed/test_predictions.heracles.report.json \
+  --cypher-field predicted_cypher
+```
 
 ## Near-Term TODOs
 

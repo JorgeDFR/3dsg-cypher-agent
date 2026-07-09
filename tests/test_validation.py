@@ -1,4 +1,17 @@
-from text2cypher_3dsg.neo4j_validation import schema_policy, static_checks
+import argparse
+import logging
+
+from text2cypher_3dsg.neo4j_validation import (
+    DEFAULT_HERACLES_NEO4J_DATABASE,
+    DEFAULT_HERACLES_NEO4J_PASSWORD,
+    DEFAULT_HERACLES_NEO4J_URI,
+    DEFAULT_HERACLES_NEO4J_USERNAME,
+    NEO4J_NOTIFICATION_LOGGER,
+    neo4j_connection_settings,
+    schema_policy,
+    static_checks,
+    suppress_neo4j_notification_logs,
+)
 
 SCHEMA = {
     "labels": {
@@ -37,3 +50,29 @@ def test_static_checks_reject_unknown_schema_and_unbounded_paths():
     assert "unknown property: name" in issues
     assert "unbounded variable-length path: [:KNOWS*]" in issues
     assert "write keyword not allowed: DELETE" in issues
+
+
+def test_neo4j_connection_settings_default_to_heracles_docker():
+    settings = neo4j_connection_settings(
+        argparse.Namespace(uri=None, username=None, password=None, database=None)
+    )
+
+    assert settings == {
+        "uri": DEFAULT_HERACLES_NEO4J_URI,
+        "username": DEFAULT_HERACLES_NEO4J_USERNAME,
+        "password": DEFAULT_HERACLES_NEO4J_PASSWORD,
+        "database": DEFAULT_HERACLES_NEO4J_DATABASE,
+    }
+
+
+def test_suppress_neo4j_notification_logs_sets_logger_to_error():
+    logger = logging.getLogger(NEO4J_NOTIFICATION_LOGGER)
+    previous_level = logger.level
+    try:
+        logger.setLevel(logging.WARNING)
+
+        suppress_neo4j_notification_logs()
+
+        assert logger.level == logging.ERROR
+    finally:
+        logger.setLevel(previous_level)

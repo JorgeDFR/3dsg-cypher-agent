@@ -5,7 +5,6 @@ text-to-Cypher fine-tuning experiment for Heracles/Hydra 3D scene graphs.
 
 ## Done
 
-- [x] Move 3DSG files into `data/scenes/`.
 - [x] Add Heracles as `external/heracles` git submodule.
 - [x] Use `spark_dsg` for 3DSG extraction instead of raw JSON parsing.
 - [x] Generate the first uHumans2 dataset from `data/scenes/3dsg_uhumans2.json`.
@@ -23,6 +22,8 @@ text-to-Cypher fine-tuning experiment for Heracles/Hydra 3D scene graphs.
 - [x] Add Docker/Heracles validation script.
 - [x] Add JSON validation reports with expected/actual solution comparison and Rich summaries.
 - [x] Support reproducing report summaries with `scripts/summarize_validation.py`.
+- [x] Update training and inference code for current Transformers/TRL APIs.
+- [x] Add focused unit coverage for training config, Gemma 4 handling, evaluation, and validation defaults.
 
 ## Dataset
 
@@ -40,6 +41,8 @@ text-to-Cypher fine-tuning experiment for Heracles/Hydra 3D scene graphs.
 - [x] Compare executed query results against expected `solution`.
 - [x] Report metrics by `query_type`.
 - [x] Normalize result rows into the same solution notation used by the dataset.
+- [x] Accept common unaliased Neo4j return-column shapes, such as `count(o)` and `o.center`.
+- [x] Mark unexpected executable result shapes as solution mismatches with `result_shape_error`.
 - [ ] Add tag-level metrics to the JSON report summary.
 - [ ] Add numeric tolerance for point coordinates and distance outputs where informative solutions include distances.
 - [ ] Add an option to save a compact failures-only report.
@@ -48,17 +51,15 @@ text-to-Cypher fine-tuning experiment for Heracles/Hydra 3D scene graphs.
 
 ## Fine-Tuning
 
-- [ ] Confirm the exact Gemma checkpoint name/path and update `configs/model_gemma4.yaml`.
-- [ ] Run a tiny overfit test on 20-50 examples to verify the training loop.
-- [ ] Train the first LoRA adapter on the current validated dataset.
-- [ ] Evaluate prompt-only Gemma vs fine-tuned Gemma on the same held-out set.
-- [ ] Add at least one alternative model config, such as Qwen Coder or Llama, without changing dataset code.
+- [x] Set the default Gemma config to `google/gemma-4-E2B-it`.
+- [x] Update `configs/model_gemma4.yaml` to use `dtype`, `max_length`, and `warmup_steps` names expected by the current stack.
+- [x] Add Gemma 4 E2B/E4B QLoRA preparation that avoids fp32 upcast of the huge frozen PLE embeddings.
+- [x] Resolve Gemma 4 E2B/E4B LoRA auto-targets to supported inner text `linear` modules instead of unsupported `Gemma4ClippableLinear` wrappers.
+- [x] Add `--model-source base|finetuned` to prediction generation.
+- [x] Load fine-tuned predictions by attaching the PEFT adapter from `training.output_dir` to `model.base_model`.
+- [x] Respect `model.load_in_4bit` during prediction generation.
+- [x] Train the first LoRA adapter on the current validated dataset.
+- [x] Evaluate prompt-only Gemma vs fine-tuned Gemma on the same held-out set.
+- [ ] Verify the Gemma 4 E2B/E4B QLoRA path end-to-end on the target 16 GB GPU and record peak VRAM.
+- [ ] Test at least one alternative model config.
 - [ ] Record training settings, GPU type, runtime, seed, dataset hash, and adapter output path.
-
-## Paper Artifacts
-
-- [ ] Create tables for static-valid, executable, solution-match, timeout, and safety-pass rates.
-- [ ] Create per-query-family plots from validation reports.
-- [ ] Save representative failure cases for error analysis.
-- [ ] Document examples where fine-tuning helps and where prompt-only performance is already sufficient.
-- [ ] Preserve the exact raw dataset, split files, config files, and validation reports used for each reported experiment.

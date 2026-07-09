@@ -1,10 +1,8 @@
 model:
-  # Replace with the exact Gemma 4 checkpoint you have access to.
-  # Examples may include Google/Hugging Face checkpoint ids or a local path.
-  base_model: google/gemma-4-12b-it
+  base_model: google/gemma-4-E2B-it
   tokenizer: null
   trust_remote_code: true
-  torch_dtype: bfloat16
+  dtype: bfloat16
   load_in_4bit: true
 
 lora:
@@ -14,14 +12,14 @@ lora:
   target_modules: auto
 
 training:
-  output_dir: outputs/gemma4-3dsg-text2cypher-lora
-  max_seq_length: 4096
+  output_dir: outputs/gemma-4-E2B-it-3dsg-text2cypher-lora
+  max_length: 1024 #4096
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
   gradient_accumulation_steps: 8
   learning_rate: 0.0002
   num_train_epochs: 3
-  warmup_ratio: 0.03
+  warmup_steps: 0.03
   logging_steps: 10
   eval_steps: 100
   save_steps: 100
@@ -35,4 +33,3 @@ prompt:
     You are an expert at translating natural language questions into Cypher for a Neo4j
     3D Scene Graph database. Return only the Cypher query. Do not include explanations.
     Do not use APOC. Use point.distance for point distances.
-

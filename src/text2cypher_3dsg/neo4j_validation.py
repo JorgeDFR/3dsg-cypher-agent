@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import logging
 import re
 import time
 from typing import Any
@@ -17,6 +17,11 @@ from text2cypher_3dsg.dataset import read_jsonl
 FORBIDDEN_SUBSTRINGS = ("apoc.", " distance(")
 WRITE_KEYWORDS = ("CREATE ", "MERGE ", "DELETE ", "DETACH ", "SET ", "REMOVE ", "DROP ")
 SAFE_REFUSALS = {"// WRITE_QUERY_NOT_ALLOWED", "WRITE_QUERY_NOT_ALLOWED"}
+DEFAULT_HERACLES_NEO4J_URI = "neo4j://127.0.0.1:7683"
+DEFAULT_HERACLES_NEO4J_USERNAME = "neo4j"
+DEFAULT_HERACLES_NEO4J_PASSWORD = "neo4j_pw"
+DEFAULT_HERACLES_NEO4J_DATABASE = "neo4j"
+NEO4J_NOTIFICATION_LOGGER = "neo4j.notifications"
 
 
 def schema_policy(schema_config: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +55,10 @@ def is_safe_refusal(cypher: str) -> bool:
 def result_hash(rows: list[dict[str, Any]]) -> str:
     normalized = json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def suppress_neo4j_notification_logs() -> None:
+    logging.getLogger(NEO4J_NOTIFICATION_LOGGER).setLevel(logging.ERROR)
 
 
 def static_checks(
@@ -152,6 +161,15 @@ class Neo4jValidator:
             }
 
 
+def neo4j_connection_settings(args: argparse.Namespace) -> dict[str, str]:
+    return {
+        "uri": args.uri or DEFAULT_HERACLES_NEO4J_URI,
+        "username": args.username or DEFAULT_HERACLES_NEO4J_USERNAME,
+        "password": args.password or DEFAULT_HERACLES_NEO4J_PASSWORD,
+        "database": args.database or DEFAULT_HERACLES_NEO4J_DATABASE,
+    }
+
+
 def validate_records(
     records: list[dict[str, Any]],
     cypher_field: str,
@@ -184,11 +202,12 @@ def command(args: argparse.Namespace) -> None:
     policy = schema_policy(load_yaml(args.schema_config)) if args.schema_config else None
     validator = None
     if not args.static_only:
+        connection = neo4j_connection_settings(args)
         validator = Neo4jValidator(
-            uri=args.uri or os.environ["NEO4J_URI"],
-            username=args.username or os.environ["NEO4J_USERNAME"],
-            password=args.password or os.environ["NEO4J_PASSWORD"],
-            database=args.database or os.environ.get("NEO4J_DATABASE", "neo4j"),
+            uri=connection["uri"],
+            username=connection["username"],
+            password=connection["password"],
+            database=connection["database"],
             timeout=args.timeout,
         )
     try:
@@ -226,10 +245,22 @@ def main() -> None:
     parser.add_argument("--allow-writes", action="store_true")
     parser.add_argument("--static-only", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
-    parser.add_argument("--uri", default=None)
-    parser.add_argument("--username", default=None)
-    parser.add_argument("--password", default=None)
-    parser.add_argument("--database", default=None)
+    parser.add_argument("--uri", default=None, help=f"Default: {DEFAULT_HERACLES_NEO4J_URI}")
+    parser.add_argument(
+        "--username",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_USERNAME}",
+    )
+    parser.add_argument(
+        "--password",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_PASSWORD}",
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_DATABASE}",
+    )
     args = parser.parse_args()
     command(args)
 

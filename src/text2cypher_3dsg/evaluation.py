@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,10 @@ from text2cypher_3dsg.neo4j_validation import (
     static_checks,
 )
 from text2cypher_3dsg.templates import format_solution_field
+
+
+class ResultShapeError(ValueError):
+    pass
 
 
 def point_to_solution(value: Any) -> str:
@@ -61,6 +66,90 @@ def expected_uses_informative_solution(expected_solution: Any) -> bool:
     return "{" in str(expected_solution or "")
 
 
+def node_property(value: Any, property_name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(property_name)
+    if hasattr(value, "get"):
+        try:
+            return value.get(property_name)
+        except TypeError:
+            pass
+    try:
+        return value[property_name]
+    except (KeyError, TypeError):
+        return None
+
+
+def row_property(
+    row: dict[str, Any],
+    property_name: str,
+    preferred_keys: list[str] | None = None,
+    node_keys: list[str] | None = None,
+) -> Any:
+    for key in preferred_keys or []:
+        value = row.get(key)
+        if value is not None:
+            return value
+
+    value = row.get(property_name)
+    if value is not None:
+        return value
+
+    suffix = f".{property_name}"
+    for key, value in row.items():
+        if key.endswith(suffix) and value is not None:
+            return value
+
+    for key in node_keys or []:
+        if key in row:
+            value = node_property(row[key], property_name)
+            if value is not None:
+                return value
+
+    if len(row) == 1:
+        value = next(iter(row.values()))
+        node_value = node_property(value, property_name)
+        if node_value is not None:
+            return node_value
+    return None
+
+
+def row_values(
+    rows: list[dict[str, Any]],
+    property_name: str,
+    preferred_keys: list[str] | None = None,
+    node_keys: list[str] | None = None,
+) -> list[Any]:
+    values = []
+    for row in rows:
+        value = row_property(row, property_name, preferred_keys, node_keys)
+        if value is None:
+            columns = ", ".join(row) or "<none>"
+            raise ResultShapeError(
+                f"missing `{property_name}` in returned columns: {columns}"
+            )
+        values.append(value)
+    return values
+
+
+def row_count_value(rows: list[dict[str, Any]]) -> int | float:
+    if not rows:
+        return 0
+    row = rows[0]
+    value = row.get("count")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return value
+    for key, value in row.items():
+        if key.lower().startswith("count(") and isinstance(value, int | float):
+            return value
+    if len(row) == 1:
+        value = next(iter(row.values()))
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return value
+    columns = ", ".join(row) or "<none>"
+    raise ResultShapeError(f"missing numeric `count` in returned columns: {columns}")
+
+
 def row_dict(row: dict[str, Any], keys: list[str]) -> dict[str, Any]:
     output = {}
     for key in keys:
@@ -82,16 +171,37 @@ def rows_to_solution_value(
     informative: bool,
 ) -> Any:
     if query_type == "object_class_inventory":
-        return scalar_or_set(sorted({row["class"] for row in rows if row.get("class") is not None}))
+        return scalar_or_set(
+            sorted(
+                set(
+                    row_values(
+                        rows,
+                        "class",
+                        preferred_keys=["class"],
+                        node_keys=["o", "object"],
+                    )
+                )
+            )
+        )
     if query_type == "object_class_centers":
         if informative:
             return [
                 row_dict(row, ["nodeSymbol", "center", "class"])
                 for row in rows
             ]
-        return scalar_or_set([point_to_solution(row["center"]) for row in rows])
+        return scalar_or_set(
+            [
+                point_to_solution(center)
+                for center in row_values(
+                    rows,
+                    "center",
+                    preferred_keys=["center"],
+                    node_keys=["o", "object"],
+                )
+            ]
+        )
     if query_type == "object_class_count":
-        return rows[0].get("count", 0) if rows else 0
+        return row_count_value(rows)
     if query_type == "top_object_classes_by_count":
         if informative:
             return [
@@ -107,11 +217,25 @@ def rows_to_solution_value(
     }:
         if informative:
             return [row_dict(row, ["object", "center", "class"]) for row in rows]
-        return scalar_or_set([row["object"] for row in rows])
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["object", "nodeSymbol"],
+                node_keys=["o", "object"],
+            )
+        )
     if query_type == "object_place_lookup":
         if informative:
             return [row_dict(row, ["place", "center"]) for row in rows]
-        return scalar_or_set([row["place"] for row in rows])
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["place", "nodeSymbol"],
+                node_keys=["p", "place"],
+            )
+        )
     if query_type in {"nearest_object_to_mesh_place", "nearest_object_to_object"}:
         if not rows:
             return set()
@@ -120,16 +244,35 @@ def rows_to_solution_value(
             if "distance" in row and isinstance(row["distance"], int | float):
                 row["distance"] = round(float(row["distance"]), 6)
             return row
-        return rows[0].get("object")
+        return row_property(
+            rows[0],
+            "nodeSymbol",
+            preferred_keys=["object", "nodeSymbol"],
+            node_keys=["o", "object"],
+        )
     if query_type == "object_radius_from_point":
         if informative:
             return [
                 row_dict(row, ["object", "class", "center", "distance"])
                 for row in rows
             ]
-        return scalar_or_set([row["object"] for row in rows])
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["object", "nodeSymbol"],
+                node_keys=["o", "object"],
+            )
+        )
     if query_type == "mesh_place_hops":
-        return scalar_or_set([row["meshPlace"] for row in rows])
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["meshPlace", "nodeSymbol"],
+                node_keys=["m", "meshPlace"],
+            )
+        )
     if query_type == "room_adjacency_count":
         if not rows:
             return 0
@@ -140,7 +283,14 @@ def rows_to_solution_value(
             }
         return rows[0].get("adjacent_rooms", 0)
     if query_type == "place_hops":
-        return scalar_or_set([row["place"] for row in rows])
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["place", "nodeSymbol"],
+                node_keys=["p", "place"],
+            )
+        )
     return rows
 
 
@@ -174,6 +324,7 @@ def evaluate_records(
             "elapsed_ms": None,
             "row_count": 0,
             "result_hash": None,
+            "result_shape_error": None,
             "error": None,
         }
         actual_solution = None
@@ -184,9 +335,6 @@ def evaluate_records(
         elif not static_issues:
             validation = validator.validate(cypher, execute=True)
             rows = validation.get("rows", [])
-            actual_solution = (
-                rows_to_solution_text(record, rows) if validation["executable"] else None
-            )
             execution = {
                 "executed": True,
                 "executable": bool(validation["executable"]),
@@ -195,8 +343,14 @@ def evaluate_records(
                 "elapsed_ms": validation["elapsed_ms"],
                 "row_count": len(rows),
                 "result_hash": result_hash(rows) if validation["executable"] else None,
+                "result_shape_error": None,
                 "error": validation["error"],
             }
+            if validation["executable"]:
+                try:
+                    actual_solution = rows_to_solution_text(record, rows)
+                except ResultShapeError as exc:
+                    execution["result_shape_error"] = str(exc)
 
         solution_match = (
             normalize_answer(actual_solution) == normalize_answer(expected_solution)

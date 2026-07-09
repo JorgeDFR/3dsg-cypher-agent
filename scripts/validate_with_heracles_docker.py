@@ -1,5 +1,4 @@
 import argparse
-import os
 import shutil
 import subprocess
 import time
@@ -16,7 +15,15 @@ from text2cypher_3dsg.evaluation import (
     write_report,
 )
 from text2cypher_3dsg.heracles_loader import load_scene_with_heracles
-from text2cypher_3dsg.neo4j_validation import Neo4jValidator, schema_policy
+from text2cypher_3dsg.neo4j_validation import (
+    DEFAULT_HERACLES_NEO4J_DATABASE,
+    DEFAULT_HERACLES_NEO4J_PASSWORD,
+    DEFAULT_HERACLES_NEO4J_URI,
+    DEFAULT_HERACLES_NEO4J_USERNAME,
+    Neo4jValidator,
+    schema_policy,
+    suppress_neo4j_notification_logs,
+)
 
 DEFAULT_COMPOSE_FILE = "external/heracles/docker/docker-compose.yaml"
 
@@ -48,10 +55,13 @@ def wait_for_neo4j(uri: str, username: str, password: str, timeout_s: float) -> 
 
 
 def command(args: argparse.Namespace) -> None:
-    uri = args.uri or os.getenv("NEO4J_URI") or "neo4j://127.0.0.1:7683"
-    username = args.username or os.getenv("NEO4J_USERNAME") or "neo4j"
-    password = args.password or os.getenv("NEO4J_PASSWORD") or "neo4j_pw"
-    database = args.database or os.getenv("NEO4J_DATABASE") or "neo4j"
+    if not args.show_db_notifications:
+        suppress_neo4j_notification_logs()
+
+    uri = args.uri or DEFAULT_HERACLES_NEO4J_URI
+    username = args.username or DEFAULT_HERACLES_NEO4J_USERNAME
+    password = args.password or DEFAULT_HERACLES_NEO4J_PASSWORD
+    database = args.database or DEFAULT_HERACLES_NEO4J_DATABASE
 
     if not args.skip_docker:
         start_neo4j(args.compose_file)
@@ -109,10 +119,22 @@ def main() -> None:
     parser.add_argument("--output", default="data/processed/text2cypher.heracles.report.json")
     parser.add_argument("--schema-config", default="configs/schema_3dsg.yaml")
     parser.add_argument("--cypher-field", default="cypher")
-    parser.add_argument("--uri", default=None)
-    parser.add_argument("--username", default=None)
-    parser.add_argument("--password", default=None)
-    parser.add_argument("--database", default=None)
+    parser.add_argument("--uri", default=None, help=f"Default: {DEFAULT_HERACLES_NEO4J_URI}")
+    parser.add_argument(
+        "--username",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_USERNAME}",
+    )
+    parser.add_argument(
+        "--password",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_PASSWORD}",
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_DATABASE}",
+    )
     parser.add_argument("--object-labelspace", default="ade20k_mit_label_space.yaml")
     parser.add_argument("--room-labelspace", default="b45_label_space.yaml")
     parser.add_argument("--wait-timeout", type=float, default=60.0)
@@ -120,6 +142,11 @@ def main() -> None:
     parser.add_argument("--skip-docker", action="store_true")
     parser.add_argument("--skip-load", action="store_true")
     parser.add_argument("--allow-writes", action="store_true")
+    parser.add_argument(
+        "--show-db-notifications",
+        action="store_true",
+        help="Show Neo4j driver notification logs for query warnings.",
+    )
     args = parser.parse_args()
     command(args)
 
