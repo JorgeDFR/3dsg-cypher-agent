@@ -1,0 +1,12 @@
+models:
+  - alias: qwen3-4b-distilled
+    model: 3dsg-cypher-agent-qwen3-4b-distilled
+    enabled: true
+
+  - alias: granite-3b-distilled
+    model: 3dsg-cypher-agent-granite-3b-distilled
+    enabled: false
+
+  - alias: qwen3-1.7b-distilled
+    model: 3dsg-cypher-agent-qwen3-1.7b-distilled
+    enabled: false

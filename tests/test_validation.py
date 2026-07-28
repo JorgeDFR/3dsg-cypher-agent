@@ -1,7 +1,7 @@
 import argparse
 import logging
 
-from text2cypher_3dsg.neo4j_validation import (
+from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
     DEFAULT_HERACLES_NEO4J_URI,

@@ -1,4 +1,4 @@
-from text2cypher_3dsg.evaluation import (
+from cypher_3dsg_agent_distillation.evaluation import (
     build_summary,
     evaluate_records,
     normalize_answer,

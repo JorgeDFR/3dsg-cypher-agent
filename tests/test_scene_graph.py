@@ -2,12 +2,12 @@ from pathlib import Path
 
 import spark_dsg
 
-from text2cypher_3dsg.heracles_loader import (
+from cypher_3dsg_agent_distillation.heracles_loader import (
     labelspace_from_metadata,
     write_heracles_labelspace,
 )
-from text2cypher_3dsg.load_neo4j import extract_graph_records
-from text2cypher_3dsg.scene_graph import SceneIndex, node_symbol, scene_values
+from cypher_3dsg_agent_distillation.load_neo4j import extract_graph_records
+from cypher_3dsg_agent_distillation.scene_graph import SceneIndex, node_symbol, scene_values
 
 SCENE_PATH = Path("data/scenes/3dsg_uhumans2.json")
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from text2cypher_3dsg.dataset import write_jsonl
-from text2cypher_3dsg.train import (
+from cypher_3dsg_agent_distillation.io import write_jsonl
+from cypher_3dsg_agent_distillation.train import (
     align_model_token_ids,
     build_dataset,
     gemma4_effective_target_modules,

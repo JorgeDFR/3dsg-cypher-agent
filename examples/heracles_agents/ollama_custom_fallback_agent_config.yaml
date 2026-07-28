@@ -1,0 +1,24 @@
+---
+client:
+  client_type: ollama
+model_info:
+  model: 3dsg-cypher-agent-qwen3-4b-distilled
+  temperature: 0.2
+  seed: 123
+agent_info:
+  prompt_settings:
+    base_prompt:
+      system: |
+        You are a 3D scene graph agent. Use run_cypher_query for read-only Cypher queries.
+        Return compact final answers wrapped in <answer>...</answer>.
+      novel_instruction_template: "{question}"
+    output_type: SLDP
+    answer_type_hint: true
+  tools:
+    - name: run_cypher_query
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: $HERACLES_NEO4J_URI
+  tool_interface: custom
+  max_iterations: 5

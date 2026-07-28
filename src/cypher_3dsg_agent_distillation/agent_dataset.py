@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import argparse
+import random
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+from cypher_3dsg_agent_distillation.agent_prompts import build_trace_messages
+from cypher_3dsg_agent_distillation.agent_records import (
+    DEFAULT_TEACHER_MODEL,
+    WRITE_REFUSAL_ANSWER,
+    AgentTraceRecord,
+    split_group_for_record,
+)
+from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
+from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.cypher_seed_records import (
+    load_raw_seed_records_from_config,
+    prepare_seed_records,
+)
+from cypher_3dsg_agent_distillation.io import read_jsonl, write_jsonl
+from cypher_3dsg_agent_distillation.neo4j_validation import is_safe_refusal
+
+
+def read_agent_jsonl(path: str | Path) -> list[AgentTraceRecord]:
+    return [AgentTraceRecord.model_validate(record) for record in read_jsonl(path)]
+
+
+def write_agent_jsonl(records: list[AgentTraceRecord], path: str | Path) -> None:
+    write_jsonl([record.model_dump(by_alias=True, exclude_none=True) for record in records], path)
+
+
+def trace_from_prepared_record(
+    record: dict[str, Any],
+    *,
+    teacher_model: str = DEFAULT_TEACHER_MODEL,
+) -> AgentTraceRecord:
+    cypher = str(record.get("cypher") or record.get("gold_cypher") or "").strip()
+    solution = record.get("solution")
+    refusal = is_safe_refusal(cypher)
+    final_answer = WRITE_REFUSAL_ANSWER if refusal else solution
+    messages = build_trace_messages(
+        schema=record.get("schema", ""),
+        question=record["question"],
+        cypher=cypher,
+        tool_result=str(solution),
+        final_answer=final_answer,
+        refusal=refusal,
+    )
+    return AgentTraceRecord(
+        uid=record["uid"],
+        scene_id=record.get("scene_id"),
+        question=record["question"],
+        query_type=record.get("query_type", "unknown"),
+        messages=messages,
+        gold_cypher=cypher,
+        expected_solution=final_answer,
+        split_group=record.get("split_group")
+        or split_group_for_record(
+            record.get("scene_id"),
+            record.get("query_type", "unknown"),
+            cypher,
+        ),
+        teacher_model=teacher_model,
+        validation={
+            "static_valid": True,
+            "executable": True,
+            "solution_match": True,
+        },
+        read_only=bool(record.get("read_only", True)),
+        tags=record.get("tags", []),
+        metadata=record.get("metadata", {}),
+    )
+
+
+def bootstrap_traces_from_prepared(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    teacher_model: str = DEFAULT_TEACHER_MODEL,
+) -> list[AgentTraceRecord]:
+    traces = [
+        trace_from_prepared_record(record, teacher_model=teacher_model)
+        for record in read_jsonl(input_path)
+    ]
+    write_agent_jsonl(traces, output_path)
+    return traces
+
+
+def cap_by_task_type(
+    records: list[AgentTraceRecord],
+    max_per_task_type: int | None,
+) -> list[AgentTraceRecord]:
+    if max_per_task_type is None:
+        return records
+    counts: Counter[str] = Counter()
+    capped = []
+    for record in records:
+        if counts[record.task_type] >= max_per_task_type:
+            continue
+        capped.append(record)
+        counts[record.task_type] += 1
+    return capped
+
+
+SplitResult = tuple[
+    list[AgentTraceRecord],
+    list[AgentTraceRecord],
+    list[AgentTraceRecord],
+    list[AgentTraceRecord],
+]
+
+
+def grouped_split_records(
+    records: list[AgentTraceRecord],
+    *,
+    train_size: float,
+    eval_size: float,
+    test_size: float,
+    seed: int,
+    challenge_task_types: set[str] | None = None,
+) -> SplitResult:
+    challenge_task_types = challenge_task_types or set()
+    challenge = [record for record in records if record.task_type in challenge_task_types]
+    main_records = [record for record in records if record.task_type not in challenge_task_types]
+
+    groups: dict[str, list[AgentTraceRecord]] = defaultdict(list)
+    for record in main_records:
+        groups[record.split_group or "unknown"].append(record)
+
+    group_items = list(groups.items())
+    rng = random.Random(seed)
+    rng.shuffle(group_items)
+
+    total = len(main_records)
+    target_train = round(total * train_size)
+    target_eval = round(total * eval_size)
+
+    train: list[AgentTraceRecord] = []
+    eval_records: list[AgentTraceRecord] = []
+    test: list[AgentTraceRecord] = []
+
+    for _, group_records in group_items:
+        if len(train) + len(group_records) <= target_train or not train:
+            train.extend(group_records)
+        elif len(eval_records) + len(group_records) <= target_eval or not eval_records:
+            eval_records.extend(group_records)
+        else:
+            test.extend(group_records)
+
+    if test_size > 0 and not test and eval_records:
+        test.append(eval_records.pop())
+
+    assert_no_split_leakage({"train": train, "eval": eval_records, "test": test})
+    return train, eval_records, test, challenge
+
+
+def values_by(records: list[AgentTraceRecord], field: str) -> set[str]:
+    values = set()
+    for record in records:
+        if field == "uid":
+            values.add(record.uid)
+        elif field == "split_group":
+            values.add(record.split_group or "")
+        elif field == "gold_cypher":
+            values.add(record.gold_cypher.strip())
+        else:
+            raise ValueError(f"Unsupported leakage field: {field}")
+    return values
+
+
+def assert_no_split_leakage(splits: dict[str, list[AgentTraceRecord]]) -> None:
+    for field in ("uid", "split_group", "gold_cypher"):
+        names = list(splits)
+        for index, left_name in enumerate(names):
+            left = values_by(splits[left_name], field)
+            for right_name in names[index + 1 :]:
+                overlap = left & values_by(splits[right_name], field)
+                if overlap:
+                    sample = sorted(overlap)[:3]
+                    raise ValueError(
+                        f"Split leakage by {field} between {left_name} and {right_name}: {sample}"
+                    )
+
+
+def write_rendered_split(
+    records: list[AgentTraceRecord],
+    path: str | Path,
+    view: str | RenderView,
+) -> None:
+    write_jsonl([render_trace(record, view) for record in records], path)
+
+
+def split_command(args: argparse.Namespace) -> None:
+    config = load_yaml(args.config)
+    records = read_agent_jsonl(config["traces_jsonl_path"])
+    records = cap_by_task_type(records, config.get("max_per_task_type"))
+    split_config = config.get("split", {})
+    train, eval_records, test, challenge = grouped_split_records(
+        records,
+        train_size=float(split_config.get("train_size", 0.7)),
+        eval_size=float(split_config.get("eval_size", 0.15)),
+        test_size=float(split_config.get("test_size", 0.15)),
+        seed=int(split_config.get("seed", 42)),
+        challenge_task_types=set(split_config.get("challenge_task_types", [])),
+    )
+    paths = config["splits"]
+    write_rendered_split(train, paths["train"], args.render_view)
+    write_rendered_split(eval_records, paths["eval"], args.render_view)
+    write_rendered_split(test, paths["test"], args.render_view)
+    write_rendered_split(challenge, paths["challenge"], args.render_view)
+
+
+def bootstrap_command(args: argparse.Namespace) -> None:
+    bootstrap_traces_from_prepared(
+        input_path=args.input,
+        output_path=args.output,
+        teacher_model=args.teacher_model,
+    )
+
+
+def prepare_seeds_command(args: argparse.Namespace) -> None:
+    data_config = load_yaml(args.config)
+    schema_config = load_yaml(data_config["schema_path"])
+    raw_records = load_raw_seed_records_from_config(data_config)
+    prepared = prepare_seed_records(
+        raw_records=raw_records,
+        schema_name=schema_config.get("name", "3dsg"),
+        schema_text=schema_config["interface_description"],
+    )
+    write_jsonl(prepared, data_config["seed_records_jsonl_path"])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Prepare agent trace datasets.")
+    subparsers = parser.add_subparsers(required=True)
+
+    seeds_parser = subparsers.add_parser("prepare-seeds")
+    seeds_parser.add_argument("--config", default="configs/data.yaml")
+    seeds_parser.set_defaults(func=prepare_seeds_command)
+
+    bootstrap_parser = subparsers.add_parser("bootstrap")
+    bootstrap_parser.add_argument(
+        "--input",
+        default="data/3dsg/seeds/cypher_seed_records.jsonl",
+    )
+    bootstrap_parser.add_argument("--output", default="data/3dsg/agent/traces_bootstrap.jsonl")
+    bootstrap_parser.add_argument("--teacher-model", default=DEFAULT_TEACHER_MODEL)
+    bootstrap_parser.set_defaults(func=bootstrap_command)
+
+    split_parser = subparsers.add_parser("split")
+    split_parser.add_argument("--config", default="configs/data.yaml")
+    split_parser.add_argument(
+        "--render-view",
+        choices=[view.value for view in RenderView],
+        default=RenderView.OLLAMA_NATIVE.value,
+    )
+    split_parser.set_defaults(func=split_command)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

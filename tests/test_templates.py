@@ -1,4 +1,8 @@
-from text2cypher_3dsg.templates import SolutionBlock, format_solution_field, generate_records
+from cypher_3dsg_agent_distillation.templates import (
+    SolutionBlock,
+    format_solution_field,
+    generate_records,
+)
 
 
 def test_generate_records_expands_nested_values():

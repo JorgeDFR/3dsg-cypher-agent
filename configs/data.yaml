@@ -1,13 +1,28 @@
 schema_path: configs/schema_3dsg.yaml
 raw_questions_path: data/raw/uhumans2_generated_questions.yaml
 additional_raw_questions_paths: []
-template_questions_path: data/raw/generated_questions.yaml
-prepared_jsonl_path: data/processed/text2cypher.jsonl
-train_jsonl_path: data/splits/train.jsonl
-eval_jsonl_path: data/splits/eval.jsonl
-test_jsonl_path: data/splits/test.jsonl
+seed_records_jsonl_path: data/3dsg/seeds/cypher_seed_records.jsonl
+traces_jsonl_path: data/3dsg/agent/traces_openrouter.accepted.jsonl
+rejected_traces_path: data/3dsg/agent/traces_openrouter.rejected.json
+max_per_task_type: null
 split:
-  test_size: 0.15
+  train_size: 0.7
   eval_size: 0.15
+  test_size: 0.15
   seed: 42
-  stratify_by: query_type
+  challenge_task_types:
+    - nearest_object_to_object
+    - place_hops
+    - objects_in_place_symbol
+splits:
+  train: data/3dsg/agent/splits/train.ollama_native.jsonl
+  eval: data/3dsg/agent/splits/eval.ollama_native.jsonl
+  test: data/3dsg/agent/splits/test.ollama_native.jsonl
+  challenge: data/3dsg/agent/splits/challenge.ollama_native.jsonl
+ollama_export:
+  model_name: 3dsg-cypher-agent-qwen3-4b-distilled
+  gguf_path: outputs/ollama/3dsg-cypher-agent-qwen3-4b-distilled.Q4_K_M.gguf
+  modelfile_path: outputs/ollama/Modelfile
+  system_prompt: |
+    You are a 3D scene graph agent. Use run_cypher_query for read-only Cypher queries.
+    Return compact final answers wrapped in <answer>...</answer>.
