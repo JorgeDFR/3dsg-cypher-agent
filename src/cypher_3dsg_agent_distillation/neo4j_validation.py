@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from neo4j import GraphDatabase, Query
@@ -17,11 +18,17 @@ from cypher_3dsg_agent_distillation.io import read_jsonl
 FORBIDDEN_SUBSTRINGS = ("apoc.", " distance(")
 WRITE_KEYWORDS = ("CREATE ", "MERGE ", "DELETE ", "DETACH ", "SET ", "REMOVE ", "DROP ")
 SAFE_REFUSALS = {"// WRITE_QUERY_NOT_ALLOWED", "WRITE_QUERY_NOT_ALLOWED"}
-DEFAULT_HERACLES_NEO4J_URI = "neo4j://127.0.0.1:7683"
+DEFAULT_HERACLES_NEO4J_URI = "neo4j://neo4j:7683"
+FALLBACK_HERACLES_NEO4J_URI = "neo4j://127.0.0.1:7683"
+DEFAULT_HERACLES_NEO4J_URIS = (
+    DEFAULT_HERACLES_NEO4J_URI,
+    FALLBACK_HERACLES_NEO4J_URI,
+)
 DEFAULT_HERACLES_NEO4J_USERNAME = "neo4j"
 DEFAULT_HERACLES_NEO4J_PASSWORD = "neo4j_pw"
 DEFAULT_HERACLES_NEO4J_DATABASE = "neo4j"
 NEO4J_NOTIFICATION_LOGGER = "neo4j.notifications"
+DEFAULT_NEO4J_CONNECTION_TIMEOUT = 3.0
 
 
 def schema_policy(schema_config: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +66,16 @@ def result_hash(rows: list[dict[str, Any]]) -> str:
 
 def suppress_neo4j_notification_logs() -> None:
     logging.getLogger(NEO4J_NOTIFICATION_LOGGER).setLevel(logging.ERROR)
+
+
+def neo4j_uri_candidates(uri: str | None) -> tuple[str, ...]:
+    if uri is None:
+        return DEFAULT_HERACLES_NEO4J_URIS
+
+    candidates = tuple(candidate.strip() for candidate in uri.split(",") if candidate.strip())
+    if not candidates:
+        raise ValueError("Neo4j URI must not be empty.")
+    return candidates
 
 
 def static_checks(
@@ -115,16 +132,90 @@ def static_checks(
     return issues
 
 
+def _uri_candidates_from_value(uri: str | Sequence[str]) -> tuple[str, ...]:
+    if isinstance(uri, str):
+        return neo4j_uri_candidates(uri)
+    candidates = tuple(candidate for candidate in uri if candidate)
+    if not candidates:
+        raise ValueError("At least one Neo4j URI candidate is required.")
+    return candidates
+
+
+def connect_neo4j_driver(
+    uri: str | Sequence[str],
+    *,
+    username: str,
+    password: str,
+    database: str,
+    connection_timeout: float = DEFAULT_NEO4J_CONNECTION_TIMEOUT,
+):
+    errors = []
+    for candidate in _uri_candidates_from_value(uri):
+        driver = GraphDatabase.driver(
+            candidate,
+            auth=(username, password),
+            connection_timeout=connection_timeout,
+        )
+        try:
+            with driver.session(database=database) as session:
+                session.run("RETURN 1 AS ok").consume()
+        except Exception as exc:
+            errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+            driver.close()
+            continue
+
+        return candidate, driver
+
+    detail = "; ".join(errors) if errors else "no URI candidates were provided"
+    raise RuntimeError(f"Neo4j is not reachable at any configured URI: {detail}")
+
+
 class Neo4jValidator:
-    def __init__(self, uri: str, username: str, password: str, database: str, timeout: float):
-        self.driver = GraphDatabase.driver(uri, auth=(username, password))
+    def __init__(
+        self,
+        uri: str | Sequence[str],
+        username: str,
+        password: str,
+        database: str,
+        timeout: float,
+        connection_timeout: float = DEFAULT_NEO4J_CONNECTION_TIMEOUT,
+    ):
+        self.driver = None
+        self.uri = self._connect(
+            uri,
+            username=username,
+            password=password,
+            database=database,
+            connection_timeout=connection_timeout,
+        )
         self.database = database
         self.timeout = timeout
 
+    def _connect(
+        self,
+        uri: str | Sequence[str],
+        *,
+        username: str,
+        password: str,
+        database: str,
+        connection_timeout: float,
+    ) -> str:
+        uri, self.driver = connect_neo4j_driver(
+            uri,
+            username=username,
+            password=password,
+            database=database,
+            connection_timeout=connection_timeout,
+        )
+        return uri
+
     def close(self) -> None:
-        self.driver.close()
+        if self.driver is not None:
+            self.driver.close()
 
     def validate(self, cypher: str, execute: bool) -> dict[str, Any]:
+        if self.driver is None:
+            raise RuntimeError("Neo4j validator is not connected.")
         started = time.perf_counter()
         query_text = cypher if execute else f"EXPLAIN\n{cypher}"
         try:
@@ -161,9 +252,11 @@ class Neo4jValidator:
             }
 
 
-def neo4j_connection_settings(args: argparse.Namespace) -> dict[str, str]:
+def neo4j_connection_settings(args: argparse.Namespace) -> dict[str, Any]:
+    uri_candidates = neo4j_uri_candidates(args.uri)
     return {
-        "uri": args.uri or DEFAULT_HERACLES_NEO4J_URI,
+        "uri": uri_candidates[0],
+        "uri_candidates": uri_candidates,
         "username": args.username or DEFAULT_HERACLES_NEO4J_USERNAME,
         "password": args.password or DEFAULT_HERACLES_NEO4J_PASSWORD,
         "database": args.database or DEFAULT_HERACLES_NEO4J_DATABASE,
@@ -204,7 +297,7 @@ def command(args: argparse.Namespace) -> None:
     if not args.static_only:
         connection = neo4j_connection_settings(args)
         validator = Neo4jValidator(
-            uri=connection["uri"],
+            uri=connection["uri_candidates"],
             username=connection["username"],
             password=connection["password"],
             database=connection["database"],
@@ -245,7 +338,14 @@ def main() -> None:
     parser.add_argument("--allow-writes", action="store_true")
     parser.add_argument("--static-only", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
-    parser.add_argument("--uri", default=None, help=f"Default: {DEFAULT_HERACLES_NEO4J_URI}")
+    parser.add_argument(
+        "--uri",
+        default=None,
+        help=(
+            f"Neo4j URI or comma-separated URI fallback list. "
+            f"Default: {DEFAULT_HERACLES_NEO4J_URI}, then localhost fallback."
+        ),
+    )
     parser.add_argument(
         "--username",
         default=None,

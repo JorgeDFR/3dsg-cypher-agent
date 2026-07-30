@@ -9,10 +9,12 @@
 - [x] Add canonical agent trace records.
 - [x] Add Ollama-native and custom XML render views.
 - [x] Add OpenRouter teacher client with `openai/gpt-oss-120b` default.
+- [x] Migrate OpenRouter teacher transport to the official Python SDK.
+- [x] Replace synthetic teacher trace prompts with real tool-using conversations.
+- [x] Add bounded teacher repair attempts with `max_tool_calls`.
+- [x] Add optional student-trace pruning for failed repair turns.
 - [x] Add grouped split leakage checks.
 - [x] Add project-local Heracles Agents example configs.
-- [x] Rename the import package to `cypher_3dsg_agent_distillation`.
-- [x] Rename the distribution to `cypher-3dsg-agent-distillation`.
 
 ## Agent Data
 
@@ -21,7 +23,7 @@
 - [ ] Save rejected teacher traces with stable reason codes.
 - [ ] Cap examples per task family after distillation.
 - [ ] Keep refusal/write-safety examples at 5-10% of training data.
-- [ ] Add repair traces only when the final answer succeeds within two tool calls.
+- [ ] Tune `max_tool_calls` after reviewing rejected repair attempts.
 - [ ] Add a held-out challenge split for selected task families.
 - [ ] Add more scenes once available, then add scene-held-out evaluation.
 

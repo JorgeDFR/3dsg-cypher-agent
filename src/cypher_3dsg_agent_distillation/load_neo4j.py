@@ -3,12 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from neo4j import GraphDatabase
 from neo4j.exceptions import DatabaseError
 
+from cypher_3dsg_agent_distillation.neo4j_validation import (
+    DEFAULT_HERACLES_NEO4J_DATABASE,
+    DEFAULT_HERACLES_NEO4J_PASSWORD,
+    DEFAULT_HERACLES_NEO4J_URI,
+    DEFAULT_HERACLES_NEO4J_USERNAME,
+    connect_neo4j_driver,
+    neo4j_uri_candidates,
+)
 from cypher_3dsg_agent_distillation.scene_graph import (
     load_graph,
     node_id_value,
@@ -183,16 +191,20 @@ def insert_relationships(driver, database: str, relationships: list[dict[str, An
 
 def load_scene(
     scene_path: str | Path,
-    uri: str,
+    uri: str | Sequence[str],
     username: str,
     password: str,
     database: str,
     clear: bool,
 ) -> dict[str, Any]:
     nodes_by_label, relationships = extract_graph_records(scene_path)
-    driver = GraphDatabase.driver(uri, auth=(username, password))
+    _resolved_uri, driver = connect_neo4j_driver(
+        uri,
+        username=username,
+        password=password,
+        database=database,
+    )
     try:
-        driver.verify_connectivity()
         initialize_database(driver, database, clear=clear)
         for label, nodes in nodes_by_label.items():
             insert_nodes(driver, database, label, nodes)
@@ -207,12 +219,13 @@ def load_scene(
 
 
 def command(args: argparse.Namespace) -> None:
+    uri = args.uri or os.environ.get("NEO4J_URI")
     summary = load_scene(
         scene_path=args.scene,
-        uri=args.uri or os.environ["NEO4J_URI"],
-        username=args.username or os.environ["NEO4J_USERNAME"],
-        password=args.password or os.environ["NEO4J_PASSWORD"],
-        database=args.database or os.environ.get("NEO4J_DATABASE", "neo4j"),
+        uri=neo4j_uri_candidates(uri),
+        username=args.username or os.environ.get("NEO4J_USERNAME", DEFAULT_HERACLES_NEO4J_USERNAME),
+        password=args.password or os.environ.get("NEO4J_PASSWORD", DEFAULT_HERACLES_NEO4J_PASSWORD),
+        database=args.database or os.environ.get("NEO4J_DATABASE", DEFAULT_HERACLES_NEO4J_DATABASE),
         clear=not args.no_clear,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -221,10 +234,29 @@ def command(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load a Spark DSG JSON into Neo4j.")
     parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
-    parser.add_argument("--uri", default=None)
-    parser.add_argument("--username", default=None)
-    parser.add_argument("--password", default=None)
-    parser.add_argument("--database", default=None)
+    parser.add_argument(
+        "--uri",
+        default=None,
+        help=(
+            f"Neo4j URI or comma-separated URI fallback list. "
+            f"Default: {DEFAULT_HERACLES_NEO4J_URI}, then localhost fallback."
+        ),
+    )
+    parser.add_argument(
+        "--username",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_USERNAME}",
+    )
+    parser.add_argument(
+        "--password",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_PASSWORD}",
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help=f"Default: {DEFAULT_HERACLES_NEO4J_DATABASE}",
+    )
     parser.add_argument("--no-clear", action="store_true")
     args = parser.parse_args()
     command(args)

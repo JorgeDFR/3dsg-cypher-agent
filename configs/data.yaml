@@ -5,6 +5,7 @@ seed_records_jsonl_path: data/3dsg/seeds/cypher_seed_records.jsonl
 traces_jsonl_path: data/3dsg/agent/traces_openrouter.accepted.jsonl
 rejected_traces_path: data/3dsg/agent/traces_openrouter.rejected.json
 max_per_task_type: null
+optimize_student_traces: false
 split:
   train_size: 0.7
   eval_size: 0.15

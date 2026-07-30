@@ -3,14 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
-from urllib import error, request
 
-from cypher_3dsg_agent_distillation.agent_prompts import build_teacher_prompt
+from openrouter import OpenRouter
+from openrouter import errors as openrouter_errors
+
+from cypher_3dsg_agent_distillation.agent_prompts import (
+    build_teacher_interaction_messages,
+    run_cypher_tool_schema,
+)
 from cypher_3dsg_agent_distillation.agent_records import (
     DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
+    WRITE_REFUSAL_ANSWER,
     AgentTraceRecord,
     split_group_for_record,
 )
@@ -24,12 +31,13 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_USERNAME,
     Neo4jValidator,
     is_safe_refusal,
+    neo4j_uri_candidates,
     schema_policy,
     static_checks,
 )
 
-OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+DEFAULT_MAX_TOOL_CALLS = 3
+TOOL_REPAIR_MESSAGE = "The query could not be executed safely. Revise the Cypher query."
 
 
 @dataclass
@@ -49,63 +57,202 @@ class OpenRouterTeacherClient:
         timeout: int = 120,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        sdk_client: Any | None = None,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         self.model = model
         self.timeout = timeout
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self._sdk_client = sdk_client
+        self._owns_sdk_client = sdk_client is None
+
+    @property
+    def timeout_ms(self) -> int:
+        return int(self.timeout * 1000)
 
     def require_api_key(self) -> str:
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required for teacher generation.")
         return self.api_key
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.require_api_key()}",
-            "Content-Type": "application/json",
-        }
+    def _sdk(self) -> Any:
+        if self._sdk_client is None:
+            self._sdk_client = OpenRouter(
+                api_key=self.require_api_key(),
+                timeout_ms=self.timeout_ms,
+            )
+        return self._sdk_client
 
-    def post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        body = json.dumps(payload).encode("utf-8")
-        req = request.Request(url, data=body, headers=self._headers(), method="POST")
-        try:
-            with request.urlopen(req, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenRouter HTTP {exc.code}: {detail}") from exc
-        except TimeoutError as exc:
-            raise RuntimeError(f"OpenRouter request timed out: {exc}") from exc
+    def close(self) -> None:
+        if self._sdk_client is not None and self._owns_sdk_client:
+            self._sdk_client.__exit__(None, None, None)
+        self._sdk_client = None
 
-    def get_json(self, url: str) -> dict[str, Any]:
-        req = request.Request(url, headers=self._headers(), method="GET")
-        with request.urlopen(req, timeout=self.timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+    def __enter__(self) -> OpenRouterTeacherClient:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
 
     def preflight(self) -> None:
-        data = self.get_json(OPENROUTER_MODELS_URL)
-        models = {item.get("id") for item in data.get("data", []) if isinstance(item, dict)}
+        try:
+            response = self._sdk().models.list(
+                q=self.model,
+                limit=1000,
+                timeout_ms=self.timeout_ms,
+            )
+        except openrouter_errors.OpenRouterError as exc:
+            raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+
+        models = {model.id for model in response.result.data}
         if self.model not in models:
             raise RuntimeError(
                 f"OpenRouter model `{self.model}` is unavailable. "
                 f"Check https://openrouter.ai/models or choose a fallback."
             )
 
-    def generate(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        data = self.post_json(
-            OPENROUTER_CHAT_COMPLETIONS_URL,
-            {
-                "model": self.model,
-                "messages": messages,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-                "response_format": {"type": "json_object"},
-            },
-        )
-        content = data["choices"][0]["message"].get("content") or "{}"
-        return json.loads(content)
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            response = self._sdk().chat.send(
+                model=self.model,
+                messages=sdk_outbound_messages(messages),
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=False,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=False,
+                timeout_ms=self.timeout_ms,
+            )
+        except openrouter_errors.OpenRouterError as exc:
+            raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+
+        return normalize_assistant_message(sdk_message_to_dict(response.choices[0].message))
+
+
+def object_to_plain_dict(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: object_to_plain_dict(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [object_to_plain_dict(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return object_to_plain_dict(value.model_dump(exclude_none=True, by_alias=True))
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        return object_to_plain_dict(vars(value))
+    return value
+
+
+def sdk_message_to_dict(message: Any) -> dict[str, Any]:
+    payload = object_to_plain_dict(message)
+    if not isinstance(payload, dict):
+        raise RuntimeError("OpenRouter response message was not an object.")
+    payload.setdefault("role", "assistant")
+    return payload
+
+
+def normalize_tool_call_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(tool_call)
+    function = dict(normalized.get("function") or {})
+    arguments = function.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid tool arguments JSON: {exc}") from exc
+    if not isinstance(arguments, dict):
+        raise ValueError("tool arguments must be a JSON object")
+    function["arguments"] = arguments
+    normalized["function"] = function
+    normalized.setdefault("type", "function")
+    return normalized
+
+
+def normalize_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    normalized = {key: value for key, value in message.items() if value is not None}
+    normalized["role"] = "assistant"
+    if normalized.get("tool_calls"):
+        normalized["tool_calls"] = [
+            normalize_tool_call_arguments(tool_call)
+            for tool_call in normalized.get("tool_calls", [])
+        ]
+    return normalized
+
+
+def sdk_outbound_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    outbound = []
+    for message in messages:
+        payload = {key: value for key, value in message.items() if value is not None}
+        if payload.get("role") == "assistant" and payload.get("tool_calls"):
+            tool_calls = []
+            for tool_call in payload["tool_calls"]:
+                outbound_call = dict(tool_call)
+                function = dict(outbound_call.get("function") or {})
+                arguments = function.get("arguments", {})
+                if isinstance(arguments, dict):
+                    function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+                outbound_call["function"] = function
+                tool_calls.append(outbound_call)
+            payload["tool_calls"] = tool_calls
+        if payload.get("role") == "tool":
+            payload.pop("tool_name", None)
+            if not payload.get("tool_call_id"):
+                payload.pop("tool_call_id", None)
+        outbound.append(payload)
+    return outbound
+
+
+def extract_single_cypher_tool_call(
+    message: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any]]:
+    tool_call = message["tool_calls"][0]
+    normalized = normalize_tool_call_arguments(tool_call)
+    function = normalized["function"]
+    tool_call_id = normalized.get("id") or normalized.get("tool_call_id")
+    cypher = str(function.get("arguments", {}).get("cypher_string") or "").strip()
+    return cypher, tool_call_id, normalized
+
+
+def build_tool_result_message(tool_call_id: str | None, content: str) -> dict[str, Any]:
+    message = {
+        "role": "tool",
+        "tool_name": DEFAULT_AGENT_TOOL,
+        "content": content,
+    }
+    if tool_call_id:
+        message["tool_call_id"] = tool_call_id
+    return message
+
+
+def answer_inner_text(content: str | None) -> str | None:
+    if not content:
+        return None
+    match = re.search(r"<answer>(.*?)</answer>", content, flags=re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def tool_error_content(error_type: str, issues: list[str]) -> str:
+    return json.dumps(
+        {
+            "ok": False,
+            "error_type": error_type,
+            "issues": issues,
+            "message": TOOL_REPAIR_MESSAGE,
+        },
+        ensure_ascii=False,
+    )
+
+
+def tool_success_content(rows: list[dict[str, Any]]) -> str:
+    return json.dumps({"ok": True, "rows": rows}, ensure_ascii=False, default=str)
 
 
 def build_candidate_trace(
@@ -134,6 +281,76 @@ def build_candidate_trace(
     )
 
 
+def build_interaction_trace(
+    seed: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    teacher_model: str,
+    cypher: str,
+    validation: dict[str, Any],
+    max_tool_calls: int,
+    tool_call_count: int,
+    successful_tool_call_index: int | None,
+    actual_solution: str | None,
+    static_only: bool = False,
+) -> AgentTraceRecord:
+    seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
+    metadata = {
+        "seed_uid": seed.get("uid"),
+        "seed_gold_cypher": seed_cypher,
+        "generation_mode": "tool_conversation",
+        "max_tool_calls": max_tool_calls,
+        "tool_call_count": tool_call_count,
+        "successful_tool_call_index": successful_tool_call_index,
+        "actual_solution": actual_solution,
+        "repair_attempted": tool_call_count > 1,
+    }
+    if static_only:
+        metadata["static_only"] = True
+        metadata["incomplete_conversation"] = True
+    return AgentTraceRecord(
+        uid=f"{seed['uid']}_teacher",
+        scene_id=seed.get("scene_id"),
+        question=str(seed["question"]),
+        query_type=seed.get("query_type", "unknown"),
+        messages=messages,
+        gold_cypher=cypher,
+        expected_solution=seed.get("solution") or seed.get("expected_solution"),
+        split_group=split_group_for_record(
+            seed.get("scene_id"),
+            seed.get("query_type", "unknown"),
+            seed_cypher,
+        ),
+        teacher_model=teacher_model,
+        validation=validation,
+        read_only=bool(seed.get("read_only", True)),
+        tags=seed.get("tags", []),
+        metadata=metadata,
+    )
+
+
+def rejected(
+    reason: str,
+    *,
+    messages: list[dict[str, Any]],
+    cypher: str | None = None,
+    validation: dict[str, Any] | None = None,
+    actual_solution: str | None = None,
+    final_answer: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> TraceDecision:
+    payload = {
+        "messages": messages,
+        "cypher": cypher,
+        "validation": validation,
+        "actual_solution": actual_solution,
+        "final_answer": final_answer,
+    }
+    if extra:
+        payload.update(extra)
+    return TraceDecision(False, None, reason, payload)
+
+
 def evaluate_candidate_trace(
     seed: dict[str, Any],
     candidate: dict[str, Any],
@@ -155,7 +372,7 @@ def evaluate_candidate_trace(
         record.validation.solution_match = normalize_answer(record.expected_solution) in {
             "",
             normalize_answer(record.final_answer_text),
-        } or "WRITE_QUERY_NOT_ALLOWED" in normalize_answer(record.final_answer_text)
+        } or WRITE_REFUSAL_ANSWER in normalize_answer(record.final_answer_text)
         return TraceDecision(
             record.validation.solution_match,
             record,
@@ -205,85 +422,303 @@ def evaluate_candidate_trace(
     return TraceDecision(True, record, "accepted", candidate)
 
 
+def run_teacher_interaction(
+    seed: dict[str, Any],
+    *,
+    schema: str,
+    client: OpenRouterTeacherClient,
+    teacher_model: str,
+    validator: Neo4jValidator | None,
+    policy: dict[str, Any] | None,
+    max_tool_calls: int,
+    static_only: bool,
+) -> TraceDecision:
+    if max_tool_calls < 1:
+        raise ValueError("max_tool_calls must be >= 1.")
+
+    messages: list[dict[str, Any]] = build_teacher_interaction_messages(
+        schema,
+        seed["question"],
+    )
+    seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
+    expected_solution = seed.get("solution") or seed.get("expected_solution")
+    expected_refusal = is_safe_refusal(seed_cypher)
+    tool_call_count = 0
+    successful_tool_call_index: int | None = None
+    final_successful_cypher: str | None = None
+    final_validation: dict[str, Any] | None = None
+    actual_solution: str | None = None
+    last_failure_reason: str | None = None
+
+    while True:
+        assistant = client.chat(
+            messages,
+            tools=[run_cypher_tool_schema()],
+            tool_choice="auto",
+        )
+        messages.append(assistant)
+        tool_calls = assistant.get("tool_calls") or []
+        final_answer = assistant.get("content")
+
+        if expected_refusal:
+            if tool_calls:
+                return rejected(
+                    "unexpected_tool_call_for_refusal",
+                    messages=messages,
+                    final_answer=final_answer,
+                )
+            if WRITE_REFUSAL_ANSWER not in str(final_answer or ""):
+                return rejected("missing_refusal", messages=messages, final_answer=final_answer)
+            record = build_interaction_trace(
+                seed,
+                messages=messages,
+                teacher_model=teacher_model,
+                cypher=WRITE_REFUSAL_ANSWER,
+                validation={
+                    "static_valid": True,
+                    "executable": True,
+                    "solution_match": True,
+                },
+                max_tool_calls=max_tool_calls,
+                tool_call_count=0,
+                successful_tool_call_index=None,
+                actual_solution=WRITE_REFUSAL_ANSWER,
+            )
+            return TraceDecision(True, record, "accepted_refusal", {"messages": messages})
+
+        if tool_calls:
+            if len(tool_calls) > 1:
+                return rejected("multiple_tool_calls", messages=messages)
+            tool_call_count += 1
+            try:
+                cypher, tool_call_id, tool_call = extract_single_cypher_tool_call(assistant)
+            except ValueError as exc:
+                return rejected(
+                    "invalid_tool_arguments",
+                    messages=messages,
+                    extra={"error": str(exc)},
+                )
+            tool_name = tool_call.get("function", {}).get("name")
+            if tool_name != DEFAULT_AGENT_TOOL:
+                return rejected("wrong_tool_name", messages=messages, cypher=cypher)
+            if not cypher:
+                return rejected("missing_cypher_argument", messages=messages)
+
+            static_issues = static_checks(
+                cypher,
+                allow_writes=not bool(seed.get("read_only", True)),
+                policy=policy,
+            )
+            if static_issues:
+                last_failure_reason = "static_issues"
+                if tool_call_count >= max_tool_calls:
+                    return rejected(
+                        "max_tool_calls_exceeded",
+                        messages=messages,
+                        cypher=cypher,
+                        validation={"static_issues": static_issues},
+                        extra={"last_failure_reason": last_failure_reason},
+                    )
+                messages.append(
+                    build_tool_result_message(
+                        tool_call_id,
+                        tool_error_content("static_issues", static_issues),
+                    )
+                )
+                continue
+
+            if static_only:
+                record = build_interaction_trace(
+                    seed,
+                    messages=messages,
+                    teacher_model=teacher_model,
+                    cypher=cypher,
+                    validation={
+                        "static_valid": True,
+                        "executable": True,
+                        "solution_match": True,
+                    },
+                    max_tool_calls=max_tool_calls,
+                    tool_call_count=tool_call_count,
+                    successful_tool_call_index=tool_call_count,
+                    actual_solution=None,
+                    static_only=True,
+                )
+                return TraceDecision(True, record, "accepted_static_only", {"messages": messages})
+
+            if validator is None:
+                return rejected("execution_failed", messages=messages, cypher=cypher)
+
+            validation = validator.validate(cypher, execute=True)
+            if not validation.get("executable"):
+                last_failure_reason = "execution_failed"
+                if tool_call_count >= max_tool_calls:
+                    return rejected(
+                        "max_tool_calls_exceeded",
+                        messages=messages,
+                        cypher=cypher,
+                        validation=validation,
+                        extra={"last_failure_reason": last_failure_reason},
+                    )
+                messages.append(
+                    build_tool_result_message(
+                        tool_call_id,
+                        tool_error_content(
+                            "execution_failed",
+                            [str(validation.get("error") or "execution failed")],
+                        ),
+                    )
+                )
+                continue
+
+            final_successful_cypher = cypher
+            final_validation = validation
+            successful_tool_call_index = tool_call_count
+            actual_solution = rows_to_solution_text(seed, validation.get("rows", []))
+            messages.append(
+                build_tool_result_message(
+                    tool_call_id,
+                    tool_success_content(validation.get("rows", [])),
+                )
+            )
+            continue
+
+        if final_successful_cypher is None:
+            if last_failure_reason:
+                return rejected(last_failure_reason, messages=messages, final_answer=final_answer)
+            return rejected("missing_required_tool", messages=messages, final_answer=final_answer)
+        if not final_answer:
+            return rejected("missing_final_answer", messages=messages)
+
+        inner_answer = answer_inner_text(final_answer)
+        if inner_answer is None:
+            return rejected("missing_answer_tags", messages=messages, final_answer=final_answer)
+        if normalize_answer(actual_solution) != normalize_answer(expected_solution):
+            return rejected(
+                "solution_mismatch",
+                messages=messages,
+                cypher=final_successful_cypher,
+                validation=final_validation,
+                actual_solution=actual_solution,
+                final_answer=final_answer,
+            )
+        if normalize_answer(inner_answer) != normalize_answer(expected_solution):
+            return rejected(
+                "final_answer_mismatch",
+                messages=messages,
+                cypher=final_successful_cypher,
+                validation=final_validation,
+                actual_solution=actual_solution,
+                final_answer=final_answer,
+            )
+
+        record = build_interaction_trace(
+            seed,
+            messages=messages,
+            teacher_model=teacher_model,
+            cypher=final_successful_cypher,
+            validation={
+                "static_valid": True,
+                "executable": True,
+                "solution_match": True,
+                "error": None,
+            },
+            max_tool_calls=max_tool_calls,
+            tool_call_count=tool_call_count,
+            successful_tool_call_index=successful_tool_call_index,
+            actual_solution=actual_solution,
+        )
+        return TraceDecision(True, record, "accepted", {"messages": messages})
+
+
+def configured_max_tool_calls(args: argparse.Namespace, teacher_config: dict[str, Any]) -> int:
+    value = (
+        args.max_tool_calls
+        if args.max_tool_calls is not None
+        else teacher_config.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    )
+    max_tool_calls = int(value)
+    if max_tool_calls < 1:
+        raise ValueError("max_tool_calls must be >= 1.")
+    return max_tool_calls
+
+
 def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
     data_config = load_yaml(args.data_config)
     model = args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
-    client = OpenRouterTeacherClient(
+    max_tool_calls = configured_max_tool_calls(args, teacher_config)
+    with OpenRouterTeacherClient(
         model=model,
         timeout=int(teacher_config.get("timeout", 120)),
         temperature=float(teacher_config.get("temperature", 0.2)),
         max_tokens=int(teacher_config.get("max_tokens", 2048)),
-    )
-    if args.preflight:
-        client.preflight()
+    ) as client:
+        if args.preflight:
+            client.preflight()
 
-    schema_config = load_yaml(data_config["schema_path"])
-    schema = schema_config["interface_description"]
-    policy = schema_policy(schema_config)
-    validator = None
-    if not args.static_only:
-        validator = Neo4jValidator(
-            uri=args.uri,
-            username=args.username,
-            password=args.password,
-            database=args.database,
-            timeout=args.neo4j_timeout,
-        )
-
-    try:
-        seeds = read_jsonl(args.input)
-        accepted: list[dict[str, Any]] = []
-        rejected: list[dict[str, Any]] = []
-        for seed in seeds:
-            prompt = build_teacher_prompt(
-                schema,
-                seed["question"],
-                seed.get("solution"),
-                seed.get("read_only", True),
+        schema_config = load_yaml(data_config["schema_path"])
+        schema = schema_config["interface_description"]
+        policy = schema_policy(schema_config)
+        validator = None
+        if not args.static_only:
+            validator = Neo4jValidator(
+                uri=neo4j_uri_candidates(args.uri),
+                username=args.username,
+                password=args.password,
+                database=args.database,
+                timeout=args.neo4j_timeout,
             )
-            for _ in range(args.traces_per_seed):
-                candidate = client.generate(prompt)
-                decision = evaluate_candidate_trace(
-                    seed,
-                    candidate,
-                    teacher_model=model,
-                    validator=validator,
-                    policy=policy,
-                )
-                if decision.accepted and decision.record is not None:
-                    accepted.append(
-                        decision.record.model_dump(by_alias=True, exclude_none=True)
+
+        try:
+            seeds = read_jsonl(args.input)
+            accepted: list[dict[str, Any]] = []
+            rejected_records: list[dict[str, Any]] = []
+            for seed in seeds:
+                for _ in range(args.traces_per_seed):
+                    decision = run_teacher_interaction(
+                        seed,
+                        schema=schema,
+                        client=client,
+                        teacher_model=model,
+                        validator=validator,
+                        policy=policy,
+                        max_tool_calls=max_tool_calls,
+                        static_only=args.static_only,
                     )
-                else:
-                    rejected.append(
-                        {
-                            "seed_uid": seed.get("uid"),
-                            "reason": decision.reason,
-                            "payload": decision.payload,
-                        }
-                    )
-    finally:
-        if validator is not None:
-            validator.close()
+                    if decision.accepted and decision.record is not None:
+                        accepted.append(
+                            decision.record.model_dump(by_alias=True, exclude_none=True)
+                        )
+                    else:
+                        rejected_records.append(
+                            {
+                                "seed_uid": seed.get("uid"),
+                                "reason": decision.reason,
+                                "payload": decision.payload,
+                            }
+                        )
+        finally:
+            if validator is not None:
+                validator.close()
 
     ensure_parent(args.output).write_text(
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in accepted),
         encoding="utf-8",
     )
     ensure_parent(args.rejected_output).write_text(
-        json.dumps(rejected, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(rejected_records, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
 
 def preflight_command(args: argparse.Namespace) -> None:
     config = load_yaml(args.teacher_config)
-    client = OpenRouterTeacherClient(
+    with OpenRouterTeacherClient(
         model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL)
-    )
-    client.preflight()
-    print(f"OpenRouter model `{client.model}` is available.")
+    ) as client:
+        client.preflight()
+        print(f"OpenRouter model `{client.model}` is available.")
 
 
 def main() -> None:
@@ -316,13 +751,21 @@ def main() -> None:
     )
     generate_parser.add_argument("--traces-per-seed", type=int, default=3)
     generate_parser.add_argument("--preflight", action="store_true")
+    generate_parser.add_argument("--max-tool-calls", type=int, default=None)
     generate_parser.add_argument(
         "--static-only",
         action="store_true",
         help="Skip Neo4j execution; intended only for dry runs.",
     )
     generate_parser.add_argument("--neo4j-timeout", type=float, default=10.0)
-    generate_parser.add_argument("--uri", default=DEFAULT_HERACLES_NEO4J_URI)
+    generate_parser.add_argument(
+        "--uri",
+        default=None,
+        help=(
+            f"Neo4j URI or comma-separated URI fallback list. "
+            f"Default: {DEFAULT_HERACLES_NEO4J_URI}, then localhost fallback."
+        ),
+    )
     generate_parser.add_argument("--username", default=DEFAULT_HERACLES_NEO4J_USERNAME)
     generate_parser.add_argument("--password", default=DEFAULT_HERACLES_NEO4J_PASSWORD)
     generate_parser.add_argument("--database", default=DEFAULT_HERACLES_NEO4J_DATABASE)

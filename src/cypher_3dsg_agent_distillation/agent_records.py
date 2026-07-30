@@ -29,7 +29,7 @@ class ToolFunction(BaseModel):
 
 
 class ToolCall(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     type: Literal["function"] = "function"
     function: ToolFunction

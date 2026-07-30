@@ -8,6 +8,7 @@ from typing import Any
 
 from cypher_3dsg_agent_distillation.agent_prompts import build_trace_messages
 from cypher_3dsg_agent_distillation.agent_records import (
+    DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
     WRITE_REFUSAL_ANSWER,
     AgentTraceRecord,
@@ -104,6 +105,68 @@ def cap_by_task_type(
     return capped
 
 
+def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
+    raw_tool_call_count = int(record.metadata.get("tool_call_count") or len(record.tool_calls))
+    if raw_tool_call_count <= 1 or record.metadata.get("incomplete_conversation"):
+        return record
+
+    successful_index = record.metadata.get("successful_tool_call_index")
+    if not isinstance(successful_index, int) or successful_index < 1:
+        return record
+
+    messages = [message.model_dump(by_alias=True, exclude_none=True) for message in record.messages]
+    prefix = [message for message in messages if message.get("role") in {"system", "user"}]
+    assistant_index = None
+    call_count = 0
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            call_count += 1
+            if call_count == successful_index:
+                assistant_index = index
+                break
+    if assistant_index is None:
+        return record
+
+    assistant_message = messages[assistant_index]
+    tool_call = assistant_message["tool_calls"][0]
+    tool_call_id = tool_call.get("id") or tool_call.get("tool_call_id")
+    tool_result = None
+    for message in messages[assistant_index + 1 :]:
+        if message.get("role") != "tool":
+            continue
+        if tool_call_id and message.get("tool_call_id") != tool_call_id:
+            continue
+        tool_result = message
+        break
+    if tool_result is None:
+        return record
+
+    final_answer = None
+    for message in reversed(messages):
+        if message.get("role") == "assistant" and message.get("content") and not message.get(
+            "tool_calls"
+        ):
+            final_answer = message
+            break
+    if final_answer is None:
+        return record
+
+    payload = record.model_dump(by_alias=True, exclude_none=True)
+    payload["messages"] = prefix + [assistant_message, tool_result, final_answer]
+    payload["metadata"] = {
+        **record.metadata,
+        "student_optimized": True,
+        "raw_tool_call_count": raw_tool_call_count,
+        "dropped_tool_call_count": raw_tool_call_count - 1,
+    }
+    payload["tools"] = [DEFAULT_AGENT_TOOL]
+    return AgentTraceRecord.model_validate(payload)
+
+
+def optimize_student_traces(records: list[AgentTraceRecord]) -> list[AgentTraceRecord]:
+    return [optimize_student_trace(record) for record in records]
+
+
 SplitResult = tuple[
     list[AgentTraceRecord],
     list[AgentTraceRecord],
@@ -195,6 +258,8 @@ def write_rendered_split(
 def split_command(args: argparse.Namespace) -> None:
     config = load_yaml(args.config)
     records = read_agent_jsonl(config["traces_jsonl_path"])
+    if args.optimize_student_traces or bool(config.get("optimize_student_traces", False)):
+        records = optimize_student_traces(records)
     records = cap_by_task_type(records, config.get("max_per_task_type"))
     split_config = config.get("split", {})
     train, eval_records, test, challenge = grouped_split_records(
@@ -256,6 +321,7 @@ def main() -> None:
         choices=[view.value for view in RenderView],
         default=RenderView.OLLAMA_NATIVE.value,
     )
+    split_parser.add_argument("--optimize-student-traces", action="store_true")
     split_parser.set_defaults(func=split_command)
 
     args = parser.parse_args()

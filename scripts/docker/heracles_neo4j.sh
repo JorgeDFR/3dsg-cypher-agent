@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="${HERACLES_COMPOSE_FILE:-external/heracles/docker/docker-compose.yaml}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${HERACLES_COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yml}"
 SERVICE="${HERACLES_NEO4J_SERVICE:-neo4j}"
 
 usage() {
@@ -9,7 +10,7 @@ usage() {
   echo
   echo "Uses Docker Compose file: ${COMPOSE_FILE}"
   echo "Neo4j defaults from Heracles compose:"
-  echo "  URI:      neo4j://127.0.0.1:7683"
+  echo "  URI:      neo4j://neo4j:7683 (preferred), neo4j://127.0.0.1:7683 (host fallback)"
   echo "  HTTP:     http://127.0.0.1:7469"
   echo "  Username: neo4j"
   echo "  Password: neo4j_pw"

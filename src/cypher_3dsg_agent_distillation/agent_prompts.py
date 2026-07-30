@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from cypher_3dsg_agent_distillation.agent_records import DEFAULT_AGENT_TOOL
@@ -43,28 +42,10 @@ def build_agent_user_prompt(schema: str, question: str) -> str:
     )
 
 
-def build_teacher_prompt(
-    schema: str,
-    question: str,
-    expected_solution: Any,
-    read_only: bool,
-) -> list[dict[str, str]]:
+def build_teacher_interaction_messages(schema: str, question: str) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "Generate one complete agent trace as JSON only. The JSON must contain "
-                "a `messages` array. If the request is answerable and read-only, the "
-                "assistant must call run_cypher_query with a cypher_string argument, "
-                "then include a tool result placeholder, then a final assistant answer. "
-                "For write requests, do not call tools and answer WRITE_QUERY_NOT_ALLOWED.\n\n"
-                f"Tool schema:\n{json.dumps(run_cypher_tool_schema(), indent=2)}\n\n"
-                f"Read only: {read_only}\n"
-                f"Expected answer notation: {expected_solution}\n\n"
-                f"{build_agent_user_prompt(schema, question)}"
-            ),
-        },
+        {"role": "user", "content": build_agent_user_prompt(schema, question)},
     ]
 
 

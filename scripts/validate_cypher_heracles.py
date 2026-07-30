@@ -21,6 +21,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_URI,
     DEFAULT_HERACLES_NEO4J_USERNAME,
     Neo4jValidator,
+    neo4j_uri_candidates,
     schema_policy,
     suppress_neo4j_notification_logs,
 )
@@ -38,34 +39,40 @@ def start_neo4j(compose_file: str) -> None:
     run(["docker", "compose", "-f", compose_file, "up", "-d", "neo4j"])
 
 
-def wait_for_neo4j(uri: str, username: str, password: str, timeout_s: float) -> None:
+def wait_for_neo4j(
+    uris: tuple[str, ...],
+    username: str,
+    password: str,
+    timeout_s: float,
+) -> str:
     deadline = time.time() + timeout_s
     last_error = None
     while time.time() < deadline:
-        driver = GraphDatabase.driver(uri, auth=(username, password))
-        try:
-            driver.verify_connectivity()
-            return
-        except Exception as exc:
-            last_error = exc
-            time.sleep(1)
-        finally:
-            driver.close()
-    raise TimeoutError(f"Neo4j did not become reachable at {uri}: {last_error}")
+        for uri in uris:
+            driver = GraphDatabase.driver(uri, auth=(username, password), connection_timeout=3.0)
+            try:
+                driver.verify_connectivity()
+                return uri
+            except Exception as exc:
+                last_error = f"{uri}: {type(exc).__name__}: {exc}"
+            finally:
+                driver.close()
+        time.sleep(1)
+    raise TimeoutError(f"Neo4j did not become reachable at {uris}: {last_error}")
 
 
 def command(args: argparse.Namespace) -> None:
     if not args.show_db_notifications:
         suppress_neo4j_notification_logs()
 
-    uri = args.uri or DEFAULT_HERACLES_NEO4J_URI
+    uri_candidates = neo4j_uri_candidates(args.uri)
     username = args.username or DEFAULT_HERACLES_NEO4J_USERNAME
     password = args.password or DEFAULT_HERACLES_NEO4J_PASSWORD
     database = args.database or DEFAULT_HERACLES_NEO4J_DATABASE
 
     if not args.skip_docker:
         start_neo4j(args.compose_file)
-    wait_for_neo4j(uri, username, password, args.wait_timeout)
+    uri = wait_for_neo4j(uri_candidates, username, password, args.wait_timeout)
 
     if not args.skip_load:
         load_scene_with_heracles(
@@ -122,7 +129,14 @@ def main() -> None:
     )
     parser.add_argument("--schema-config", default="configs/schema_3dsg.yaml")
     parser.add_argument("--cypher-field", default="cypher")
-    parser.add_argument("--uri", default=None, help=f"Default: {DEFAULT_HERACLES_NEO4J_URI}")
+    parser.add_argument(
+        "--uri",
+        default=None,
+        help=(
+            f"Neo4j URI or comma-separated URI fallback list. "
+            f"Default: {DEFAULT_HERACLES_NEO4J_URI}, then localhost fallback."
+        ),
+    )
     parser.add_argument(
         "--username",
         default=None,

@@ -5,8 +5,6 @@ Neo4j-backed 3D Scene Graphs. The active target is an agent that answers by
 calling `run_cypher_query(cypher_string: str)` through either Ollama-native tool
 calls or a custom XML fallback interface.
 
-- Distribution: `cypher-3dsg-agent-distillation`
-- Python import package: `cypher_3dsg_agent_distillation`
 - Default teacher: `openai/gpt-oss-120b` through OpenRouter
 - Primary student: Qwen3 4B instruct, exported to Ollama for Jetson Orin NX 16GB
 
@@ -15,10 +13,12 @@ calls or a custom XML fallback interface.
 The active workflow is:
 
 1. Generate or load validated 3DSG Cypher seed records.
-2. Ask an OpenRouter teacher for complete agent traces, not direct query text.
-3. Execute candidate Cypher locally through Neo4j validation.
-4. Keep only traces that pass static safety, execution, and expected-answer checks.
-5. Render accepted traces as `ollama_native` or `custom_xml`.
+2. Run an OpenRouter teacher as a normal tool-using agent conversation.
+3. Execute teacher Cypher tool calls locally through Neo4j validation.
+4. Allow bounded repair attempts, then keep only interactions that pass static
+   safety, execution, and expected-answer checks.
+5. Render accepted traces as `ollama_native` or `custom_xml`, optionally pruning
+   unnecessary failed repair turns for student training.
 6. Train QLoRA student agents on grouped, leakage-checked splits.
 7. Export project-local Ollama metadata and Heracles Agents example configs.
 
@@ -48,6 +48,11 @@ separately.
 Canonical training data is validated by `AgentTraceRecord`. Answerable examples
 call `run_cypher_query`; refusal examples call no tool and answer
 `<answer>WRITE_QUERY_NOT_ALLOWED</answer>`.
+
+Teacher-generated traces are captured from real interactions. The raw accepted
+trace preserves the full teacher conversation, including failed bounded repair
+attempts. Student split rendering can optionally use a pruned view that keeps the
+successful tool call and final answer while leaving raw traces unchanged.
 
 Supported render views:
 
@@ -81,12 +86,27 @@ Generate and validate teacher traces:
   --rejected-output data/3dsg/agent/traces_openrouter.rejected.json
 ```
 
+The teacher receives the normal agent prompt, the schema context, and the
+`run_cypher_query` tool schema. It does not receive seed gold Cypher or expected
+answers. `max_tool_calls` defaults to `3` in the teacher config and can be
+overridden with `--max-tool-calls`.
+
 Create grouped splits:
 
 ```bash
 .venv/bin/python scripts/prepare_dataset.py split \
   --config configs/data.yaml \
   --render-view ollama_native
+```
+
+To optimize the student dataset by pruning failed repair attempts during
+split/render output:
+
+```bash
+.venv/bin/python scripts/prepare_dataset.py split \
+  --config configs/data.yaml \
+  --render-view ollama_native \
+  --optimize-student-traces
 ```
 
 Train the primary student:
