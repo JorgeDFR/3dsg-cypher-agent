@@ -1,4 +1,5 @@
 schema_path: configs/schema_3dsg.yaml
+experiment_profile_path: configs/experiment_profiles/cypher_qa_uhumans2.yaml
 raw_questions_path: data/raw/uhumans2_generated_questions.yaml
 additional_raw_questions_paths: []
 seed_records_jsonl_path: data/3dsg/seeds/cypher_seed_records.jsonl

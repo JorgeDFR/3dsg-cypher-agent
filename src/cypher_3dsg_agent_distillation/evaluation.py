@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cypher_3dsg_agent_distillation.config import ensure_parent
+from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.neo4j_validation import (
     Neo4jValidator,
     is_safe_refusal,
@@ -48,6 +49,68 @@ def normalize_answer(value: Any) -> str:
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\s*([<>\[\]{},:])\s*", r"\1", text)
     return text
+
+
+def _strip_outer_collection(text: str, opener: str, closer: str) -> str | None:
+    if text.startswith(opener) and text.endswith(closer):
+        return text[1:-1]
+    return None
+
+
+def _split_top_level_items(text: str) -> list[str] | None:
+    items = []
+    start = 0
+    stack: list[str] = []
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    closers = set(pairs.values())
+    for index, character in enumerate(text):
+        if character in pairs:
+            stack.append(pairs[character])
+        elif character in closers:
+            if not stack or stack[-1] != character:
+                return None
+            stack.pop()
+        elif character == "," and not stack:
+            item = text[start:index].strip()
+            if item:
+                items.append(item)
+            start = index + 1
+    if stack:
+        return None
+    item = text[start:].strip()
+    if item:
+        items.append(item)
+    return items
+
+
+def _flat_set_items(value: Any, *, expected_set: bool = False) -> set[str] | None:
+    normalized = normalize_answer(value)
+    if not normalized:
+        return set()
+
+    body = _strip_outer_collection(normalized, "<", ">")
+    if body is None:
+        if expected_set:
+            return None
+        body = _strip_outer_collection(normalized, "[", "]")
+    if body is None:
+        if "," not in normalized:
+            return None
+        body = normalized
+
+    items = _split_top_level_items(body)
+    if items is None:
+        return None
+    return {normalize_answer(item) for item in items}
+
+
+def answer_matches(actual: Any, expected: Any, output_type: str = "SLDP") -> bool:
+    valid_format, correct = answer_matches_with_heracles(
+        str(actual),
+        str(expected),
+        output_type,
+    )
+    return valid_format and correct
 
 
 def rendered_solution(value: Any, list_style: str = "list") -> str:
@@ -353,7 +416,11 @@ def evaluate_records(
                     execution["result_shape_error"] = str(exc)
 
         solution_match = (
-            normalize_answer(actual_solution) == normalize_answer(expected_solution)
+            answer_matches(
+                actual_solution,
+                expected_solution,
+                str(record.get("output_type") or "SLDP"),
+            )
             if actual_solution is not None and expected_solution is not None
             else False
         )

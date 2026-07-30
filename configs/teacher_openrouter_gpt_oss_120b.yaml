@@ -6,4 +6,4 @@ temperature: 0.2
 max_tokens: 2048
 timeout: 120
 traces_per_seed: 3
-max_tool_calls: 3
+max_tool_calls: 5

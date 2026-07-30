@@ -1,0 +1,16 @@
+scene_graph_description: |
+  <Scene Graph Description>
+    A 3D scene graph is a hierarchical graph consisting of layers that each contain nodes.
+
+    Object nodes represent objects in the world. Object node symbols use the form O<id>.
+
+    Place nodes represent 3D regions of free space. Place node symbols use the form p<id>.
+
+    MeshPlace nodes represent 2D traversable space segments and may have semantic classes. MeshPlace node symbols use the form P<id>.
+
+    Room nodes represent rooms or higher-level regions. Room node symbols use the form R<id>.
+
+    Building nodes represent the highest-level region. Building node symbols use the form B<id>.
+
+    The hierarchy is strict: objects are contained by places or mesh places; places and mesh places are contained by rooms when room nodes are available; rooms are contained by buildings when building nodes are available. Use transitive CONTAINS traversal for hierarchy queries.
+  </Scene Graph Description>

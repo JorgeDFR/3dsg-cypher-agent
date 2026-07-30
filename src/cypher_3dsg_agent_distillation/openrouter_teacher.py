@@ -22,7 +22,18 @@ from cypher_3dsg_agent_distillation.agent_records import (
     split_group_for_record,
 )
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_yaml
-from cypher_3dsg_agent_distillation.evaluation import normalize_answer, rows_to_solution_text
+from cypher_3dsg_agent_distillation.evaluation import (
+    ResultShapeError,
+    normalize_answer,
+    rows_to_solution_text,
+)
+from cypher_3dsg_agent_distillation.experiment_profiles import (
+    ExperimentProfile,
+    ToolInterface,
+    load_experiment_profile_from_config,
+    render_profile_messages,
+)
+from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.io import read_jsonl
 from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
@@ -36,7 +47,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     static_checks,
 )
 
-DEFAULT_MAX_TOOL_CALLS = 3
+DEFAULT_MAX_TOOL_CALLS = 5
 TOOL_REPAIR_MESSAGE = "The query could not be executed safely. Revise the Cypher query."
 
 
@@ -277,7 +288,12 @@ def build_candidate_trace(
         teacher_model=teacher_model,
         read_only=bool(seed.get("read_only", True)),
         tags=seed.get("tags", []),
-        metadata={"seed_uid": seed.get("uid")},
+        metadata={
+            **dict(seed.get("metadata") or {}),
+            "seed_uid": seed.get("uid"),
+            "task_family": seed.get("task_family", "cypher_qa"),
+            "output_type": seed.get("output_type", "SLDP"),
+        },
     )
 
 
@@ -296,9 +312,12 @@ def build_interaction_trace(
 ) -> AgentTraceRecord:
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     metadata = {
+        **dict(seed.get("metadata") or {}),
         "seed_uid": seed.get("uid"),
         "seed_gold_cypher": seed_cypher,
         "generation_mode": "tool_conversation",
+        "task_family": seed.get("task_family", "cypher_qa"),
+        "output_type": seed.get("output_type", "SLDP"),
         "max_tool_calls": max_tool_calls,
         "tool_call_count": tool_call_count,
         "successful_tool_call_index": successful_tool_call_index,
@@ -408,10 +427,29 @@ def evaluate_candidate_trace(
             {**candidate, "validation": validation},
         )
 
-    actual = rows_to_solution_text(seed, validation.get("rows", []))
-    record.validation.solution_match = normalize_answer(actual) == normalize_answer(
-        record.expected_solution
+    try:
+        actual = rows_to_solution_text(seed, validation.get("rows", []))
+    except ResultShapeError as exc:
+        record.validation.error = str(exc)
+        return TraceDecision(
+            False,
+            record,
+            "result_shape_error",
+            {**candidate, "actual_solution": None, "validation": validation},
+        )
+    valid_format, correct = answer_matches_with_heracles(
+        actual,
+        str(record.expected_solution),
+        seed.get("output_type", "SLDP"),
     )
+    record.validation.solution_match = correct
+    if not valid_format:
+        return TraceDecision(
+            False,
+            record,
+            "invalid_answer_format",
+            {**candidate, "actual_solution": actual, "validation": validation},
+        )
     if not record.validation.solution_match:
         return TraceDecision(
             False,
@@ -425,7 +463,9 @@ def evaluate_candidate_trace(
 def run_teacher_interaction(
     seed: dict[str, Any],
     *,
-    schema: str,
+    schema: str | None = None,
+    profile: ExperimentProfile | None = None,
+    tool_interface: ToolInterface = "openrouter",
     client: OpenRouterTeacherClient,
     teacher_model: str,
     validator: Neo4jValidator | None,
@@ -436,10 +476,15 @@ def run_teacher_interaction(
     if max_tool_calls < 1:
         raise ValueError("max_tool_calls must be >= 1.")
 
-    messages: list[dict[str, Any]] = build_teacher_interaction_messages(
-        schema,
-        seed["question"],
-    )
+    if profile is not None:
+        messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
+    elif schema is not None:
+        messages = build_teacher_interaction_messages(schema, seed["question"])
+    else:
+        raise ValueError("Either schema or profile must be provided.")
+
+    task_family = str(seed.get("task_family") or (profile.task_family if profile else "cypher_qa"))
+    output_type = str(seed.get("output_type") or (profile.output_type if profile else "SLDP"))
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     expected_solution = seed.get("solution") or seed.get("expected_solution")
     expected_refusal = is_safe_refusal(seed_cypher)
@@ -574,7 +619,27 @@ def run_teacher_interaction(
             final_successful_cypher = cypher
             final_validation = validation
             successful_tool_call_index = tool_call_count
-            actual_solution = rows_to_solution_text(seed, validation.get("rows", []))
+            if task_family == "cypher_qa":
+                try:
+                    actual_solution = rows_to_solution_text(seed, validation.get("rows", []))
+                except ResultShapeError as exc:
+                    last_failure_reason = "result_shape_error"
+                    validation = {**validation, "result_shape_error": str(exc)}
+                    if tool_call_count >= max_tool_calls:
+                        return rejected(
+                            "max_tool_calls_exceeded",
+                            messages=messages,
+                            cypher=cypher,
+                            validation=validation,
+                            extra={"last_failure_reason": last_failure_reason},
+                        )
+                    messages.append(
+                        build_tool_result_message(
+                            tool_call_id,
+                            tool_error_content("result_shape_error", [str(exc)]),
+                        )
+                    )
+                    continue
             messages.append(
                 build_tool_result_message(
                     tool_call_id,
@@ -593,16 +658,45 @@ def run_teacher_interaction(
         inner_answer = answer_inner_text(final_answer)
         if inner_answer is None:
             return rejected("missing_answer_tags", messages=messages, final_answer=final_answer)
-        if normalize_answer(actual_solution) != normalize_answer(expected_solution):
+        if task_family == "cypher_qa":
+            valid_actual_format, actual_matches = answer_matches_with_heracles(
+                str(actual_solution),
+                str(expected_solution),
+                output_type,
+            )
+            if not valid_actual_format:
+                return rejected(
+                    "invalid_answer_format",
+                    messages=messages,
+                    cypher=final_successful_cypher,
+                    validation=final_validation,
+                    actual_solution=actual_solution,
+                    final_answer=final_answer,
+                )
+            if not actual_matches:
+                return rejected(
+                    "solution_mismatch",
+                    messages=messages,
+                    cypher=final_successful_cypher,
+                    validation=final_validation,
+                    actual_solution=actual_solution,
+                    final_answer=final_answer,
+                )
+        valid_final_format, final_matches = answer_matches_with_heracles(
+            inner_answer,
+            str(expected_solution),
+            output_type,
+        )
+        if not valid_final_format:
             return rejected(
-                "solution_mismatch",
+                "invalid_answer_format",
                 messages=messages,
                 cypher=final_successful_cypher,
                 validation=final_validation,
                 actual_solution=actual_solution,
                 final_answer=final_answer,
             )
-        if normalize_answer(inner_answer) != normalize_answer(expected_solution):
+        if not final_matches:
             return rejected(
                 "final_answer_mismatch",
                 messages=messages,
@@ -631,11 +725,18 @@ def run_teacher_interaction(
         return TraceDecision(True, record, "accepted", {"messages": messages})
 
 
-def configured_max_tool_calls(args: argparse.Namespace, teacher_config: dict[str, Any]) -> int:
+def configured_max_tool_calls(
+    args: argparse.Namespace,
+    teacher_config: dict[str, Any],
+    profile: ExperimentProfile | None = None,
+) -> int:
     value = (
         args.max_tool_calls
         if args.max_tool_calls is not None
-        else teacher_config.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+        else teacher_config.get(
+            "max_tool_calls",
+            profile.max_tool_calls if profile is not None else DEFAULT_MAX_TOOL_CALLS,
+        )
     )
     max_tool_calls = int(value)
     if max_tool_calls < 1:
@@ -646,8 +747,9 @@ def configured_max_tool_calls(args: argparse.Namespace, teacher_config: dict[str
 def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
     data_config = load_yaml(args.data_config)
+    profile = load_experiment_profile_from_config(data_config)
     model = args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
-    max_tool_calls = configured_max_tool_calls(args, teacher_config)
+    max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
     with OpenRouterTeacherClient(
         model=model,
         timeout=int(teacher_config.get("timeout", 120)),
@@ -679,6 +781,8 @@ def generate_command(args: argparse.Namespace) -> None:
                     decision = run_teacher_interaction(
                         seed,
                         schema=schema,
+                        profile=profile,
+                        tool_interface="openrouter",
                         client=client,
                         teacher_model=model,
                         validator=validator,

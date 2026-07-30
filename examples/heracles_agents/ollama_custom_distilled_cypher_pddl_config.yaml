@@ -1,0 +1,19 @@
+---
+client:
+  client_type: ollama
+model_info:
+  model: 3dsg-cypher-agent-qwen3-4b-distilled
+  temperature: 0.2
+  seed: 123
+agent_info:
+  prompt_settings:
+    base_prompt: $CYPHER_3DSG_AGENT_PATH/configs/prompts/cypher_pddl_agentic_distilled.yaml
+    output_type: PDDL
+  tools:
+    - name: run_cypher_query
+      bound_args:
+        dsgdb_conf:
+          dsg_interface_type: heracles
+          uri: $HERACLES_NEO4J_URI
+  tool_interface: custom
+  max_iterations: 5

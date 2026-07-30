@@ -1,0 +1,38 @@
+labelspace_description: |
+  <Labelspace Description>
+    These are the labels available in the current uhumans2 scene graph. Synonyms should be mapped to a label in the list when possible.
+    <object_labels>
+      armchair
+      ashcan
+      bench
+      book
+      bookcase
+      box
+      bulletin
+      cabinet
+      chair
+      chest
+      computer
+      desk
+      flag
+      light
+      mirror
+      monitor
+      painting
+      plant
+      rug
+      screen
+      shelf
+      signboard
+      sofa
+      stool
+      swivel
+      table
+      wardrobe
+    </object_labels>
+    <mesh_places_labels>
+      floor
+    </mesh_places_labels>
+    <room_labels>
+    </room_labels>
+  </Labelspace Description>

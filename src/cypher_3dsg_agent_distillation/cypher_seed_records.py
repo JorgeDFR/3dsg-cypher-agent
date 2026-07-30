@@ -16,6 +16,8 @@ class CypherSeedRecord(BaseModel):
     question: str
     cypher: str = Field(alias="gold_cypher")
     query_type: str = "unknown"
+    task_family: str | None = None
+    output_type: str | None = None
     read_only: bool = True
     expected_result_hash: str | None = None
     solution: Any | None = None
@@ -31,6 +33,8 @@ class PreparedCypherSeedRecord(BaseModel):
     question: str
     cypher: str
     query_type: str
+    task_family: str = "cypher_qa"
+    output_type: str = "SLDP"
     read_only: bool
     expected_result_hash: str | None = None
     solution: Any | None = None
@@ -67,15 +71,23 @@ def prepare_seed_records(
     raw_records: Iterable[CypherSeedRecord],
     schema_name: str,
     schema_text: str,
+    *,
+    task_family: str = "cypher_qa",
+    output_type: str = "SLDP",
+    metadata_defaults: dict[str, Any] | None = None,
 ) -> list[PreparedCypherSeedRecord]:
     prepared: list[PreparedCypherSeedRecord] = []
     for record in raw_records:
+        metadata = dict(metadata_defaults or {})
+        metadata.update(record.metadata)
         prepared.append(
             PreparedCypherSeedRecord(
                 uid=record.uid,
                 question=record.question,
                 cypher=record.cypher.strip(),
                 query_type=record.query_type,
+                task_family=record.task_family or task_family,
+                output_type=record.output_type or output_type,
                 read_only=record.read_only,
                 expected_result_hash=record.expected_result_hash,
                 solution=record.solution,
@@ -83,7 +95,7 @@ def prepare_seed_records(
                 scene_id=record.scene_id,
                 schema_name=schema_name,
                 schema=schema_text.strip(),
-                metadata=record.metadata,
+                metadata=metadata,
             )
         )
     return prepared

@@ -270,7 +270,10 @@ def command(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
-    parser.add_argument("--templates", default="configs/templates_uhumans2.yaml")
+    parser.add_argument(
+        "--templates",
+        default="data/3dsg/scene_template_values/uhumans2_scene_template_values.yaml",
+    )
     parser.add_argument("--question-templates", default=None)
     parser.add_argument("--output", default="data/raw/generated_questions.yaml")
     parser.add_argument("--limit-per-template", type=int, default=None)

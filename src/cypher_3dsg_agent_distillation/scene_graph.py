@@ -984,8 +984,14 @@ def main() -> None:
         description="Extract dataset template values from a 3DSG JSON."
     )
     parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
-    parser.add_argument("--question-templates", default="configs/question_templates_3dsg.yaml")
-    parser.add_argument("--output", default="configs/templates_uhumans2.yaml")
+    parser.add_argument(
+        "--question-templates",
+        default="configs/question_templates/qa/cypher_qa_3dsg.yaml",
+    )
+    parser.add_argument(
+        "--output",
+        default="data/3dsg/scene_template_values/uhumans2_scene_template_values.yaml",
+    )
     parser.add_argument("--scene-id", default="uhumans2")
     parser.add_argument("--max-classes", type=int, default=30)
     parser.add_argument("--max-object-symbols", type=int, default=50)

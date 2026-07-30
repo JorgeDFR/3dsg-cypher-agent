@@ -1,4 +1,5 @@
 from cypher_3dsg_agent_distillation.evaluation import (
+    answer_matches,
     build_summary,
     evaluate_records,
     normalize_answer,
@@ -16,6 +17,20 @@ def test_rows_to_solution_text_matches_simplified_set_solution():
     actual = rows_to_solution_text(record, rows)
 
     assert normalize_answer(actual) == normalize_answer(record["solution"])
+
+
+def test_answer_matches_sldp_set_with_loose_order():
+    expected = "<\n  armchair,\n  chair,\n  sofa\n>\n"
+    actual = "<sofa, armchair, chair>"
+
+    assert answer_matches(actual, expected)
+
+
+def test_answer_matches_does_not_accept_missing_set_items():
+    expected = "<armchair, chair, sofa>"
+    actual = "sofa, chair"
+
+    assert not answer_matches(actual, expected)
 
 
 def test_rows_to_solution_text_uses_informative_set_of_dicts():

@@ -1,0 +1,16 @@
+domain_description: |
+  <PDDL Domain>
+    The PDDL domain consists of predicates parameterized by symbols from a 3D scene graph.
+
+    (visited-place ?P): the robot must visit Place or MeshPlace ?P.
+    (at-place ?P): the robot must end at Place or MeshPlace ?P.
+    (visited-object ?O): the robot must visit Object ?O.
+    (at-object ?O): the robot must end at Object ?O.
+    (safe ?O): the robot must inspect Object ?O.
+    (visited-room ?R): the robot must visit Room ?R.
+    (in-room ?R): the robot must end in Room ?R.
+    (holding ?O): the robot must hold Object ?O.
+    (object-in-place ?O ?P): Object ?O must be located inside Place or MeshPlace ?P.
+
+    Compose predicates with 'not', 'and', and 'or'. When an instruction is ambiguous about which object, place, mesh place, or room is intended, use 'or' so the planner can choose among valid alternatives.
+  </PDDL Domain>

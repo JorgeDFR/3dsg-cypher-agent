@@ -1,3 +1,6 @@
 [submodule "external/heracles"]
 	path = external/heracles
 	url = https://github.com/GoldenZephyr/heracles.git
+[submodule "external/heracles_agents"]
+	path = external/heracles_agents
+	url = https://github.com/JorgeDFR/heracles_agents.git

@@ -20,6 +20,10 @@ from cypher_3dsg_agent_distillation.cypher_seed_records import (
     load_raw_seed_records_from_config,
     prepare_seed_records,
 )
+from cypher_3dsg_agent_distillation.experiment_profiles import (
+    load_experiment_profile_from_config,
+    profile_seed_defaults,
+)
 from cypher_3dsg_agent_distillation.io import read_jsonl, write_jsonl
 from cypher_3dsg_agent_distillation.neo4j_validation import is_safe_refusal
 
@@ -288,11 +292,16 @@ def bootstrap_command(args: argparse.Namespace) -> None:
 def prepare_seeds_command(args: argparse.Namespace) -> None:
     data_config = load_yaml(args.config)
     schema_config = load_yaml(data_config["schema_path"])
+    profile = load_experiment_profile_from_config(data_config)
+    seed_defaults = profile_seed_defaults(profile)
     raw_records = load_raw_seed_records_from_config(data_config)
     prepared = prepare_seed_records(
         raw_records=raw_records,
         schema_name=schema_config.get("name", "3dsg"),
         schema_text=schema_config["interface_description"],
+        task_family=seed_defaults.get("task_family", "cypher_qa"),
+        output_type=seed_defaults.get("output_type", "SLDP"),
+        metadata_defaults=seed_defaults.get("metadata", {}),
     )
     write_jsonl(prepared, data_config["seed_records_jsonl_path"])
 

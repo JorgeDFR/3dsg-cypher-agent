@@ -297,6 +297,41 @@ def test_teacher_interaction_repairs_execution_failure_within_tool_limit():
     assert '"error_type": "execution_failed"' in decision.record.messages[3].content
 
 
+def test_teacher_interaction_repairs_result_shape_error_within_tool_limit():
+    validator = FakeValidator(
+        [
+            {"executable": True, "rows": [{"category": "chair"}], "error": None},
+            {"executable": True, "rows": [{"class": "chair"}], "error": None},
+        ]
+    )
+
+    decision, _client = run_interaction(
+        seed_record(
+            query_type="object_class_inventory",
+            solution="chair",
+        ),
+        [
+            tool_assistant(
+                "MATCH (o:Object) RETURN o.class AS category",
+                tool_call_id="call_1",
+            ),
+            tool_assistant(
+                "MATCH (o:Object) RETURN o.class AS class",
+                tool_call_id="call_2",
+            ),
+            final_assistant("chair"),
+        ],
+        validator=validator,
+    )
+
+    assert decision.accepted
+    assert validator.cyphers == [
+        "MATCH (o:Object) RETURN o.class AS category",
+        "MATCH (o:Object) RETURN o.class AS class",
+    ]
+    assert '"error_type": "result_shape_error"' in decision.record.messages[3].content
+
+
 def test_teacher_interaction_rejects_when_max_tool_calls_exceeded():
     decision, _client = run_interaction(
         seed_record(),
@@ -312,11 +347,83 @@ def test_teacher_interaction_rejects_when_max_tool_calls_exceeded():
     assert decision.payload["last_failure_reason"] == "static_issues"
 
 
+def test_teacher_interaction_rejects_result_shape_error_at_tool_limit():
+    validator = FakeValidator(
+        [
+            {"executable": True, "rows": [{"category": "chair"}], "error": None},
+        ]
+    )
+
+    decision, _client = run_interaction(
+        seed_record(query_type="object_class_inventory", solution="chair"),
+        [tool_assistant("MATCH (o:Object) RETURN o.class AS category")],
+        validator=validator,
+        max_tool_calls=1,
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "max_tool_calls_exceeded"
+    assert decision.payload["last_failure_reason"] == "result_shape_error"
+    assert "missing `class`" in decision.payload["validation"]["result_shape_error"]
+
+
 def test_teacher_interaction_rejects_final_answer_mismatch():
     decision, _client = run_interaction(seed_record(), [tool_assistant(), final_assistant("4")])
 
     assert not decision.accepted
     assert decision.reason == "final_answer_mismatch"
+
+
+def test_teacher_interaction_rejects_invalid_sldp_final_answer():
+    decision, _client = run_interaction(seed_record(), [tool_assistant(), final_assistant("3, 4")])
+
+    assert not decision.accepted
+    assert decision.reason == "invalid_answer_format"
+
+
+def test_teacher_interaction_accepts_pddl_without_row_solution_conversion():
+    validator = FakeValidator(
+        [
+            {
+                "executable": True,
+                "rows": [{"not_a_supported_qa_shape": "O1"}],
+                "error": None,
+            },
+        ]
+    )
+
+    decision, _client = run_interaction(
+        seed_record(
+            query_type="pddl_direct_symbol",
+            task_family="cypher_pddl",
+            output_type="PDDL",
+            solution="(visited-object O1)",
+        ),
+        [
+            tool_assistant("MATCH (o:Object {nodeSymbol: 'O1'}) RETURN o"),
+            final_assistant("(visited-object O1)"),
+        ],
+        validator=validator,
+    )
+
+    assert decision.accepted
+    assert decision.record.metadata["task_family"] == "cypher_pddl"
+    assert decision.record.metadata["output_type"] == "PDDL"
+
+
+def test_teacher_interaction_rejects_invalid_pddl_final_answer():
+    decision, _client = run_interaction(
+        seed_record(
+            query_type="pddl_direct_symbol",
+            task_family="cypher_pddl",
+            output_type="PDDL",
+            solution="(visited-object O1)",
+        ),
+        [tool_assistant(), final_assistant("visited-object O1")],
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "invalid_answer_format"
 
 
 def test_teacher_interaction_accepts_refusal_without_tool_call():
