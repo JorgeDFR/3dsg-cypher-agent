@@ -5,6 +5,8 @@ Neo4j-backed 3D Scene Graphs. The active target is an agent that answers by
 calling `run_cypher_query(cypher_string: str)` through either Ollama-native tool
 calls or a custom XML fallback interface.
 
+- Distribution: `cypher-3dsg-agent-distillation`
+- Python import package: `cypher_3dsg_agent_distillation`
 - Default teacher: `openai/gpt-oss-120b` through OpenRouter
 - Primary student: Qwen3 4B instruct, exported to Ollama for Jetson Orin NX 16GB
 
@@ -20,8 +22,8 @@ The active workflow is:
 6. Train QLoRA student agents on grouped, leakage-checked splits.
 7. Export project-local Ollama metadata and Heracles Agents example configs.
 
-Cypher seed records remain as internal support for teacher trace generation. The
-public training and evaluation surface is agent-trace based.
+Cypher seed records remain as internal support for teacher trace generation.
+The public training and evaluation surface is agent-trace based.
 
 ## Setup
 
@@ -71,7 +73,7 @@ Check OpenRouter model availability:
 Generate and validate teacher traces:
 
 ```bash
-.venv/bin/python scripts/generatetraces.py generate \
+.venv/bin/python scripts/generate_traces.py generate \
   --teacher-config configs/teacher_openrouter_gpt_oss_120b.yaml \
   --data-config configs/data.yaml \
   --input data/3dsg/seeds/cypher_seed_records.jsonl \

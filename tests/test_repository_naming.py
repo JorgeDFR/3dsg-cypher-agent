@@ -15,17 +15,15 @@ SKIP_DIRS = {
     "outputs",
 }
 FORBIDDEN_REPO_STRINGS = {
-    "dsg" + "_agent_distillation",
     "agent3dsg" + "_distillation",
+    "agent3dsg" + "_cypher_distillation",
     "text2cypher" + "_3dsg",
     "3dsg" + "-text2cypher",
     "Text-" + "to-Cypher",
     "text-" + "to-Cypher",
     "cypher" + "_only" + "_baseline",
     "generate" + "_predictions",
-    "scripts/" + "prepare_" + "dataset.py",
     "model_" + "gemma4.yaml",
-    "configs/" + "data.yaml",
 }
 
 
@@ -39,14 +37,15 @@ def repo_owned_text_files():
             yield path
 
 
-def test_repository_uses_agent3dsg_cypher_distillation_names():
+def test_repository_uses_cypher_3dsg_agent_distillation_names():
     assert not (REPO_ROOT / "src" / ("dsg" + "_agent_distillation")).exists()
-    assert (REPO_ROOT / "src/agent3dsg_cypher_distillation").exists()
+    assert not (REPO_ROOT / "src" / ("agent3dsg" + "_cypher_distillation")).exists()
+    assert (REPO_ROOT / "src/cypher_3dsg_agent_distillation").exists()
 
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
-    assert project["name"] == "3dsg-cypher-agent-distillation"
+    assert project["name"] == "cypher-3dsg-agent-distillation"
 
     offenders = []
     for path in repo_owned_text_files():
