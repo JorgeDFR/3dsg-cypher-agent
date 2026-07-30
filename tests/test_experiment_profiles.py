@@ -28,7 +28,7 @@ def test_supported_tool_interfaces_are_limited_to_requested_set():
 
 
 def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
-    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_uhumans2.yaml")
+    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml")
     seed = seed_record()
 
     messages = render_profile_messages(profile, seed, tool_interface="openrouter")
@@ -68,7 +68,7 @@ def test_native_pddl_seed_prompt_rendering_includes_pddl_context_only():
 
 
 def test_profile_rejects_unconfigured_tool_interface():
-    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_uhumans2.yaml")
+    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml")
     profile.tool_interfaces = ["ollama"]
 
     try:

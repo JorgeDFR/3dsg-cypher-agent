@@ -1,4 +1,4 @@
-name: cypher_qa_uhumans2
+name: cypher_qa_template
 task_family: cypher_qa
 output_type: SLDP
 prompt_path: configs/prompts/cypher_qa_agentic_distilled.yaml
@@ -8,7 +8,7 @@ interface_description_path: configs/schema_3dsg.yaml
 domain_description_path: null
 in_context_examples_path: null
 answer_type_hint: true
-max_tool_calls: 5
+max_tool_calls: 3
 reasoning_policy: none
 tool_interfaces:
   - ollama

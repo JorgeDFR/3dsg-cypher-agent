@@ -8,7 +8,7 @@ interface_description_path: configs/schema_3dsg.yaml
 domain_description_path: configs/prompts/pddl_domain_description.yaml
 in_context_examples_path: configs/prompts/pddl_in_context_examples.yaml
 answer_type_hint: false
-max_tool_calls: 5
+max_tool_calls: 3
 reasoning_policy: none
 tool_interfaces:
   - ollama

@@ -1,13 +1,13 @@
 .cache/
-.venv/
+.ruff_cache/
+.pytest_cache/
 __pycache__/
 *.py[cod]
 *.egg-info/
+.venv/
 .env
 .env.*
 !.env.example
 
-
+data/*
 !data/scenes
-outputs/
-wandb/
