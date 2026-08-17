@@ -11,7 +11,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.io import read_jsonl
 
 DEFAULT_LORA_TARGETS = [
@@ -307,7 +307,8 @@ def command(args: argparse.Namespace) -> None:
     LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer = (
         require_training_dependencies()
     )
-    config = load_yaml(args.model_config)
+    config = load_yaml(args.student_config)
+    data_config = load_data_config(args.data_config)
     model, tokenizer = load_model_and_tokenizer(config)
 
     if config["model"].get("load_in_4bit", False):
@@ -331,8 +332,8 @@ def command(args: argparse.Namespace) -> None:
         ),
     )
 
-    train_dataset = build_dataset(args.train, tokenizer)
-    eval_dataset = build_dataset(args.eval, tokenizer) if args.eval else None
+    train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
+    eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
     training_config = config["training"]
     training_args = SFTConfig(
         **sft_config_kwargs(
@@ -361,11 +362,10 @@ def main() -> None:
         description="LoRA fine-tune a 3DSG Cypher tool-using agent model."
     )
     parser.add_argument(
-        "--model-config",
+        "--student-config",
         default="configs/student_qwen3_4b.yaml",
     )
-    parser.add_argument("--train", default="data/3dsg/agent/splits/train.ollama_native.jsonl")
-    parser.add_argument("--eval", default="data/3dsg/agent/splits/eval.ollama_native.jsonl")
+    parser.add_argument("--data-config", default="configs/data.yaml")
     args = parser.parse_args()
     command(args)
 

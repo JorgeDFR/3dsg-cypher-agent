@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.config import data_paths_from_config, load_yaml
 
 
 class CypherSeedRecord(BaseModel):
@@ -54,16 +54,14 @@ def load_raw_seed_records(path: str | Path) -> list[CypherSeedRecord]:
 
 
 def load_raw_seed_records_from_config(data_config: dict[str, Any]) -> list[CypherSeedRecord]:
-    paths = [data_config["raw_questions_path"]]
-    paths.extend(data_config.get("additional_raw_questions_paths", []))
+    path = data_paths_from_config(data_config).raw_questions_path
     records: list[CypherSeedRecord] = []
     seen_uids: set[str] = set()
-    for path in paths:
-        for record in load_raw_seed_records(path):
-            if record.uid in seen_uids:
-                raise ValueError(f"Duplicate uid `{record.uid}` while loading {path}.")
-            seen_uids.add(record.uid)
-            records.append(record)
+    for record in load_raw_seed_records(path):
+        if record.uid in seen_uids:
+            raise ValueError(f"Duplicate uid `{record.uid}` while loading {path}.")
+        seen_uids.add(record.uid)
+        records.append(record)
     return records
 
 

@@ -9,7 +9,7 @@ from typing import Any
 import spark_dsg
 import yaml
 
-from cypher_3dsg_agent_distillation.config import ensure_parent
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 
 LOCAL_ID_MASK = (1 << 56) - 1
 
@@ -933,14 +933,11 @@ def build_hop_cases(
 
 def build_template_config(
     scene_path: str | Path,
-    question_templates_path: str | Path,
     scene_id: str,
     limits: argparse.Namespace,
 ) -> dict[str, Any]:
     return {
         "scene_id": scene_id,
-        "source_3dsg": str(scene_path),
-        "question_templates_path": str(question_templates_path),
         "solution_mode": "simplified",
         "values": scene_values(
             scene_path=scene_path,
@@ -962,13 +959,13 @@ def build_template_config(
 
 
 def command(args: argparse.Namespace) -> None:
+    data_config = load_data_config(args.data_config)
     config = build_template_config(
-        scene_path=args.scene,
-        question_templates_path=args.question_templates,
-        scene_id=args.scene_id,
+        scene_path=data_config["scene_path"],
+        scene_id=data_config["scene_id"],
         limits=args,
     )
-    output = ensure_parent(args.output)
+    output = ensure_parent(data_config["scene_template_values_path"])
     with output.open("w", encoding="utf-8") as handle:
         yaml.dump(
             config,
@@ -983,16 +980,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Extract dataset template values from a 3DSG JSON."
     )
-    parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
-    parser.add_argument(
-        "--question-templates",
-        default="configs/question_templates/qa/cypher_qa_3dsg.yaml",
-    )
-    parser.add_argument(
-        "--output",
-        default="data/3dsg/scene_template_values/uhumans2_scene_template_values.yaml",
-    )
-    parser.add_argument("--scene-id", default="uhumans2")
+    parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--max-classes", type=int, default=30)
     parser.add_argument("--max-object-symbols", type=int, default=50)
     parser.add_argument("--max-place-symbols", type=int, default=50)

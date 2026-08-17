@@ -21,7 +21,7 @@ from cypher_3dsg_agent_distillation.agent_records import (
     AgentTraceRecord,
     split_group_for_record,
 )
-from cypher_3dsg_agent_distillation.config import ensure_parent, load_yaml
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.evaluation import (
     ResultShapeError,
     normalize_answer,
@@ -47,7 +47,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     static_checks,
 )
 
-DEFAULT_MAX_TOOL_CALLS = 5
+DEFAULT_MAX_TOOL_CALLS = 3
 TOOL_REPAIR_MESSAGE = "The query could not be executed safely. Revise the Cypher query."
 
 
@@ -266,6 +266,12 @@ def tool_success_content(rows: list[dict[str, Any]]) -> str:
     return json.dumps({"ok": True, "rows": rows}, ensure_ascii=False, default=str)
 
 
+def seed_expected_solution(seed: dict[str, Any]) -> Any:
+    if "solution" in seed:
+        return seed["solution"]
+    return seed.get("expected_solution")
+
+
 def build_candidate_trace(
     seed: dict[str, Any],
     candidate: dict[str, Any],
@@ -279,7 +285,7 @@ def build_candidate_trace(
         query_type=seed.get("query_type", "unknown"),
         messages=candidate["messages"],
         gold_cypher=cypher,
-        expected_solution=seed.get("solution") or seed.get("expected_solution"),
+        expected_solution=seed_expected_solution(seed),
         split_group=split_group_for_record(
             seed.get("scene_id"),
             seed.get("query_type", "unknown"),
@@ -334,7 +340,7 @@ def build_interaction_trace(
         query_type=seed.get("query_type", "unknown"),
         messages=messages,
         gold_cypher=cypher,
-        expected_solution=seed.get("solution") or seed.get("expected_solution"),
+        expected_solution=seed_expected_solution(seed),
         split_group=split_group_for_record(
             seed.get("scene_id"),
             seed.get("query_type", "unknown"),
@@ -486,7 +492,7 @@ def run_teacher_interaction(
     task_family = str(seed.get("task_family") or (profile.task_family if profile else "cypher_qa"))
     output_type = str(seed.get("output_type") or (profile.output_type if profile else "SLDP"))
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
-    expected_solution = seed.get("solution") or seed.get("expected_solution")
+    expected_solution = seed_expected_solution(seed)
     expected_refusal = is_safe_refusal(seed_cypher)
     tool_call_count = 0
     successful_tool_call_index: int | None = None
@@ -746,10 +752,15 @@ def configured_max_tool_calls(
 
 def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
-    data_config = load_yaml(args.data_config)
+    data_config = load_data_config(args.data_config)
     profile = load_experiment_profile_from_config(data_config)
     model = args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
     max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
+    traces_per_seed = int(
+        args.traces_per_seed
+        if args.traces_per_seed is not None
+        else teacher_config.get("traces_per_seed", 3)
+    )
     with OpenRouterTeacherClient(
         model=model,
         timeout=int(teacher_config.get("timeout", 120)),
@@ -773,11 +784,11 @@ def generate_command(args: argparse.Namespace) -> None:
             )
 
         try:
-            seeds = read_jsonl(args.input)
+            seeds = read_jsonl(data_config["seed_records_jsonl_path"])
             accepted: list[dict[str, Any]] = []
             rejected_records: list[dict[str, Any]] = []
             for seed in seeds:
-                for _ in range(args.traces_per_seed):
+                for _ in range(traces_per_seed):
                     decision = run_teacher_interaction(
                         seed,
                         schema=schema,
@@ -806,11 +817,11 @@ def generate_command(args: argparse.Namespace) -> None:
             if validator is not None:
                 validator.close()
 
-    ensure_parent(args.output).write_text(
+    ensure_parent(data_config["traces_jsonl_path"]).write_text(
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in accepted),
         encoding="utf-8",
     )
-    ensure_parent(args.rejected_output).write_text(
+    ensure_parent(data_config["rejected_traces_path"]).write_text(
         json.dumps(rejected_records, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -832,7 +843,7 @@ def main() -> None:
     preflight_parser = subparsers.add_parser("preflight")
     preflight_parser.add_argument(
         "--teacher-config",
-        default="configs/teacher_openrouter_gpt_oss_120b.yaml",
+        default="configs/teacher_gpt_oss_120b.yaml",
     )
     preflight_parser.add_argument("--teacher-model", default=None)
     preflight_parser.set_defaults(func=preflight_command)
@@ -840,20 +851,11 @@ def main() -> None:
     generate_parser = subparsers.add_parser("generate")
     generate_parser.add_argument(
         "--teacher-config",
-        default="configs/teacher_openrouter_gpt_oss_120b.yaml",
+        default="configs/teacher_gpt_oss_120b.yaml",
     )
     generate_parser.add_argument("--data-config", default="configs/data.yaml")
     generate_parser.add_argument("--teacher-model", default=None)
-    generate_parser.add_argument("--input", default="data/3dsg/seeds/cypher_seed_records.jsonl")
-    generate_parser.add_argument(
-        "--output",
-        default="data/agent/traces_openrouter.accepted.jsonl",
-    )
-    generate_parser.add_argument(
-        "--rejected-output",
-        default="data/agent/traces_openrouter.rejected.json",
-    )
-    generate_parser.add_argument("--traces-per-seed", type=int, default=3)
+    generate_parser.add_argument("--traces-per-seed", type=int, default=None)
     generate_parser.add_argument("--preflight", action="store_true")
     generate_parser.add_argument("--max-tool-calls", type=int, default=None)
     generate_parser.add_argument(

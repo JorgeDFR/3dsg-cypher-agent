@@ -64,6 +64,17 @@ def test_grouped_split_keeps_challenge_task_out_of_main_splits():
     assert "three" not in {record.uid for record in train + eval_records + test}
 
 
+def test_grouped_split_rejects_split_sizes_that_do_not_sum_to_one():
+    with pytest.raises(ValueError, match="must sum to 1.0"):
+        grouped_split_records(
+            [],
+            train_size=0.5,
+            eval_size=0.1,
+            test_size=0.1,
+            seed=1,
+        )
+
+
 def test_optimize_student_trace_leaves_one_tool_trace_unchanged():
     record = make_record("one", "count", "MATCH (n) RETURN count(n) AS count")
 

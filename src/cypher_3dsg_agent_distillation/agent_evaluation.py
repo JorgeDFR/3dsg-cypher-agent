@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cypher_3dsg_agent_distillation.agent_records import DEFAULT_AGENT_TOOL, AgentTraceRecord
-from cypher_3dsg_agent_distillation.config import ensure_parent
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 from cypher_3dsg_agent_distillation.evaluation import build_summary as build_cypher_summary
 from cypher_3dsg_agent_distillation.io import read_jsonl
 
@@ -123,14 +123,23 @@ def write_report(evaluated: list[dict[str, Any]], output: str | Path) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    evaluated = evaluate_records(read_jsonl(args.input))
-    write_report(evaluated, args.output)
+    data_config = load_data_config(args.data_config)
+    split_path = data_config["splits"][args.split]
+    report_path = Path(data_config["test_report_path"]).with_name(
+        f"{args.split}.agent.report.json"
+    )
+    evaluated = evaluate_records(read_jsonl(split_path))
+    write_report(evaluated, report_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate agent trace records.")
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument(
+        "--split",
+        choices=["train", "eval", "test", "challenge"],
+        default="test",
+    )
     args = parser.parse_args()
     command(args)
 

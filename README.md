@@ -61,29 +61,58 @@ Supported render views:
 
 ## Workflow
 
-Prepare seed records from configured raw 3DSG questions:
+Generated dataset artifacts are resolved from `scene_id` in `configs/data.yaml`
+and written under `data/3dsg/{scene_id}/...`. The source 3DSG JSON is not
+derived from `scene_id`; configure the user-provided Hydra/Spark DSG file with
+`scene_path`.
+
+Extract template values from the configured 3DSG scene:
+
+```bash
+.venv/bin/python scripts/extract_3dsg_values.py \
+  --data-config configs/data.yaml
+```
+
+Generate raw 3DSG questions from those template values:
+
+```bash
+.venv/bin/python scripts/generate_3dsg_seed_templates.py \
+  --data-config configs/data.yaml
+```
+
+Prepare seed records from the configured raw 3DSG questions:
 
 ```bash
 .venv/bin/python scripts/prepare_dataset.py prepare-seeds \
-  --config configs/data.yaml
+  --data-config configs/data.yaml
 ```
+
+Start Neo4j and load the same scene configured by `scene_path`:
+
+```bash
+scripts/docker/heracles_neo4j.sh up
+.venv/bin/python scripts/load_3dsg_neo4j.py \
+  --scene data/scenes/3dsg_uhumans2.json
+```
+
+The Neo4j helper starts a local container using Bolt on
+`neo4j://127.0.0.1:7683`, HTTP on `http://127.0.0.1:7469`, username `neo4j`,
+and password `neo4j_pw`. The trace generator validates teacher Cypher tool calls
+against this database, so reload the database whenever `scene_path` changes.
 
 Check OpenRouter model availability:
 
 ```bash
 .venv/bin/python scripts/generate_traces.py preflight \
-  --teacher-config configs/teacher_openrouter_gpt_oss_120b.yaml
+  --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
 Generate and validate teacher traces:
 
 ```bash
 .venv/bin/python scripts/generate_traces.py generate \
-  --teacher-config configs/teacher_openrouter_gpt_oss_120b.yaml \
   --data-config configs/data.yaml \
-  --input data/3dsg/seeds/cypher_seed_records.jsonl \
-  --output data/3dsg/agent/traces_openrouter.accepted.jsonl \
-  --rejected-output data/3dsg/agent/traces_openrouter.rejected.json
+  --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
 The teacher receives the normal agent prompt, the schema context, and the
@@ -95,7 +124,7 @@ Create grouped splits:
 
 ```bash
 .venv/bin/python scripts/prepare_dataset.py split \
-  --config configs/data.yaml \
+  --data-config configs/data.yaml \
   --render-view ollama_native
 ```
 
@@ -104,7 +133,7 @@ split/render output:
 
 ```bash
 .venv/bin/python scripts/prepare_dataset.py split \
-  --config configs/data.yaml \
+  --data-config configs/data.yaml \
   --render-view ollama_native \
   --optimize-student-traces
 ```
@@ -113,24 +142,22 @@ Train the primary student:
 
 ```bash
 .venv/bin/python scripts/train_agent_lora.py \
-  --model-config configs/student_qwen3_4b.yaml \
-  --train data/3dsg/agent/splits/train.ollama_native.jsonl \
-  --eval data/3dsg/agent/splits/eval.ollama_native.jsonl
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3_4b.yaml
 ```
 
 Evaluate traces:
 
 ```bash
 .venv/bin/python scripts/evaluate_traces.py \
-  --input data/3dsg/agent/splits/test.ollama_native.jsonl \
-  --output data/3dsg/agent/reports/test.agent.report.json
+  --data-config configs/data.yaml
 ```
 
 Generate Ollama export metadata:
 
 ```bash
 .venv/bin/python scripts/export_agent_ollama.py \
-  --config configs/data.yaml
+  --data-config configs/data.yaml
 ```
 
 The export helper writes a project-local `Modelfile` scaffold. Adapter merging,

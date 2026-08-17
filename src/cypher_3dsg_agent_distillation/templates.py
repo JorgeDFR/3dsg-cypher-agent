@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from cypher_3dsg_agent_distillation.config import ensure_parent, load_yaml
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.scene_graph import SOLUTION_MODES, SceneIndex
 
 
@@ -230,10 +230,9 @@ def generate_records(
 
 
 def load_question_templates(
-    config: dict[str, Any],
-    explicit_path: str | None,
+    config: dict[str, Any]
 ) -> dict[str, Any] | None:
-    template_path = explicit_path or config.get("question_templates_path")
+    template_path = config.get("question_templates_path")
     if template_path:
         return load_yaml(template_path)
     return None
@@ -257,25 +256,24 @@ def write_questions_yaml(records: list[dict[str, Any]], path: str) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    config = load_yaml(args.templates)
-    question_templates_config = load_question_templates(config, args.question_templates)
+    data_config = load_data_config(args.data_config)
+    config = load_yaml(data_config["scene_template_values_path"])
+    config["scene_id"] = data_config["scene_id"]
+    config["source_3dsg"] = data_config["scene_path"]
+    config["question_templates_path"] = data_config["question_templates_path"]
+    question_templates_config = load_question_templates(config)
     records = generate_records(
         config,
         question_templates_config=question_templates_config,
         limit_per_template=args.limit_per_template,
         solution_mode=args.solution_mode,
     )
-    write_questions_yaml(records, args.output)
+    write_questions_yaml(records, data_config["raw_questions_path"])
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
-    parser.add_argument(
-        "--templates",
-        default="data/3dsg/scene_template_values/uhumans2_scene_template_values.yaml",
-    )
-    parser.add_argument("--question-templates", default=None)
-    parser.add_argument("--output", default="data/raw/generated_questions.yaml")
+    parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--limit-per-template", type=int, default=None)
     parser.add_argument(
         "--solution-mode",

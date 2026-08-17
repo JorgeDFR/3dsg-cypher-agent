@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -15,7 +16,7 @@ from cypher_3dsg_agent_distillation.agent_records import (
     split_group_for_record,
 )
 from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
-from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.cypher_seed_records import (
     load_raw_seed_records_from_config,
     prepare_seed_records,
@@ -179,6 +180,23 @@ SplitResult = tuple[
 ]
 
 
+def validate_split_sizes(train_size: float, eval_size: float, test_size: float) -> None:
+    sizes = {
+        "train_size": train_size,
+        "eval_size": eval_size,
+        "test_size": test_size,
+    }
+    for name, value in sizes.items():
+        if value < 0 or value > 1:
+            raise ValueError(f"{name} must be between 0 and 1, got {value}.")
+    total = train_size + eval_size + test_size
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError(
+            "train_size, eval_size, and test_size must sum to 1.0, "
+            f"got {total:.6g}."
+        )
+
+
 def grouped_split_records(
     records: list[AgentTraceRecord],
     *,
@@ -188,6 +206,7 @@ def grouped_split_records(
     seed: int,
     challenge_task_types: set[str] | None = None,
 ) -> SplitResult:
+    validate_split_sizes(train_size, eval_size, test_size)
     challenge_task_types = challenge_task_types or set()
     challenge = [record for record in records if record.task_type in challenge_task_types]
     main_records = [record for record in records if record.task_type not in challenge_task_types]
@@ -260,7 +279,7 @@ def write_rendered_split(
 
 
 def split_command(args: argparse.Namespace) -> None:
-    config = load_yaml(args.config)
+    config = load_data_config(args.data_config)
     records = read_agent_jsonl(config["traces_jsonl_path"])
     if args.optimize_student_traces or bool(config.get("optimize_student_traces", False)):
         records = optimize_student_traces(records)
@@ -282,15 +301,16 @@ def split_command(args: argparse.Namespace) -> None:
 
 
 def bootstrap_command(args: argparse.Namespace) -> None:
+    data_config = load_data_config(args.data_config)
     bootstrap_traces_from_prepared(
-        input_path=args.input,
-        output_path=args.output,
+        input_path=data_config["seed_records_jsonl_path"],
+        output_path=data_config["bootstrap_traces_jsonl_path"],
         teacher_model=args.teacher_model,
     )
 
 
 def prepare_seeds_command(args: argparse.Namespace) -> None:
-    data_config = load_yaml(args.config)
+    data_config = load_data_config(args.data_config)
     schema_config = load_yaml(data_config["schema_path"])
     profile = load_experiment_profile_from_config(data_config)
     seed_defaults = profile_seed_defaults(profile)
@@ -311,20 +331,16 @@ def main() -> None:
     subparsers = parser.add_subparsers(required=True)
 
     seeds_parser = subparsers.add_parser("prepare-seeds")
-    seeds_parser.add_argument("--config", default="configs/data.yaml")
+    seeds_parser.add_argument("--data-config", default="configs/data.yaml")
     seeds_parser.set_defaults(func=prepare_seeds_command)
 
     bootstrap_parser = subparsers.add_parser("bootstrap")
-    bootstrap_parser.add_argument(
-        "--input",
-        default="data/3dsg/seeds/cypher_seed_records.jsonl",
-    )
-    bootstrap_parser.add_argument("--output", default="data/3dsg/agent/traces_bootstrap.jsonl")
+    bootstrap_parser.add_argument("--data-config", default="configs/data.yaml")
     bootstrap_parser.add_argument("--teacher-model", default=DEFAULT_TEACHER_MODEL)
     bootstrap_parser.set_defaults(func=bootstrap_command)
 
     split_parser = subparsers.add_parser("split")
-    split_parser.add_argument("--config", default="configs/data.yaml")
+    split_parser.add_argument("--data-config", default="configs/data.yaml")
     split_parser.add_argument(
         "--render-view",
         choices=[view.value for view in RenderView],

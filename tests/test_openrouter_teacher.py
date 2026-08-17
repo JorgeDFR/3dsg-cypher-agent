@@ -11,6 +11,7 @@ from cypher_3dsg_agent_distillation.openrouter_teacher import (
     evaluate_candidate_trace,
     normalize_assistant_message,
     run_teacher_interaction,
+    seed_expected_solution,
 )
 
 
@@ -236,6 +237,32 @@ def test_teacher_interaction_accepts_one_tool_conversation_without_synthetic_pro
     assert "Expected answer notation" not in rendered_first_call
     assert "MATCH (o:Object) RETURN count(o) AS count" not in rendered_first_call
     assert "solution" not in rendered_first_call.lower()
+
+
+def test_seed_expected_solution_preserves_falsy_solution_values():
+    assert seed_expected_solution({"solution": 0, "expected_solution": 99}) == 0
+    assert seed_expected_solution({"solution": [], "expected_solution": ["fallback"]}) == []
+
+
+def test_teacher_interaction_accepts_zero_expected_solution():
+    validator = FakeValidator(
+        [
+            {
+                "executable": True,
+                "rows": [{"count": 0}],
+                "error": None,
+            },
+        ]
+    )
+
+    decision, _client = run_interaction(
+        seed_record(solution=0),
+        [tool_assistant(), final_assistant("0")],
+        validator=validator,
+    )
+
+    assert decision.accepted
+    assert decision.record.expected_solution == 0
 
 
 def test_teacher_interaction_normalizes_tool_arguments_for_stored_record():

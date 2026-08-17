@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.config import data_paths_from_config, load_yaml
 from cypher_3dsg_agent_distillation.heracles_validation import (
     answer_formatting_guidance,
     answer_type_hint,
@@ -32,7 +32,7 @@ class ExperimentProfile(BaseModel):
     domain_description_path: str | None = None
     in_context_examples_path: str | None = None
     answer_type_hint: bool = False
-    max_tool_calls: int = 5
+    max_tool_calls: int = 3
     reasoning_policy: ReasoningPolicy = "none"
     tool_interfaces: list[ToolInterface] = Field(
         default_factory=lambda: ["ollama", "openrouter", "custom"]
@@ -89,7 +89,7 @@ def load_experiment_profile(path: str | Path) -> ExperimentProfile:
 
 
 def load_experiment_profile_from_config(data_config: dict[str, Any]) -> ExperimentProfile | None:
-    profile_path = data_config.get("experiment_profile_path")
+    profile_path = data_paths_from_config(data_config).experiment_profile_path
     if not profile_path:
         return None
     return load_experiment_profile(profile_path)

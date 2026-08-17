@@ -15,8 +15,8 @@ from neo4j.exceptions import Neo4jError
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_yaml
 from cypher_3dsg_agent_distillation.io import read_jsonl
 
-FORBIDDEN_SUBSTRINGS = ("apoc.", " distance(")
-WRITE_KEYWORDS = ("CREATE ", "MERGE ", "DELETE ", "DETACH ", "SET ", "REMOVE ", "DROP ")
+DEFAULT_FORBIDDEN_FUNCTIONS = ("apoc", "distance")
+WRITE_KEYWORDS = ("CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "DROP")
 SAFE_REFUSALS = {"// WRITE_QUERY_NOT_ALLOWED", "WRITE_QUERY_NOT_ALLOWED"}
 DEFAULT_HERACLES_NEO4J_URI = "neo4j://neo4j:7683"
 FALLBACK_HERACLES_NEO4J_URI = "neo4j://127.0.0.1:7683"
@@ -44,9 +44,13 @@ def schema_policy(schema_config: dict[str, Any]) -> dict[str, Any]:
         "labels": labels,
         "relationships": relationships,
         "properties": properties,
-        "forbidden_functions": set(safety.get("forbidden_functions", [])),
+        "forbidden_functions": {
+            str(function_name).strip().lower()
+            for function_name in safety.get("forbidden_functions", [])
+        },
         "forbidden_write_keywords": tuple(
-            f"{keyword.upper()} " for keyword in safety.get("forbidden_write_keywords", [])
+            str(keyword).strip().upper()
+            for keyword in safety.get("forbidden_write_keywords", [])
         )
         or WRITE_KEYWORDS,
         "require_bounded_variable_length_paths": bool(
@@ -57,6 +61,32 @@ def schema_policy(schema_config: dict[str, Any]) -> dict[str, Any]:
 
 def is_safe_refusal(cypher: str) -> bool:
     return cypher.strip() in SAFE_REFUSALS
+
+
+def contains_cypher_keyword(cypher: str, keyword: str) -> bool:
+    keyword = keyword.strip().upper()
+    if not keyword:
+        return False
+    pattern = rf"(?<![.`A-Za-z0-9_]){re.escape(keyword)}(?![`A-Za-z0-9_])"
+    return re.search(pattern, cypher, flags=re.IGNORECASE) is not None
+
+
+def forbidden_function_issues(cypher: str, policy: dict[str, Any]) -> list[str]:
+    forbidden_functions = set(policy.get("forbidden_functions") or DEFAULT_FORBIDDEN_FUNCTIONS)
+    issues = []
+    for function_name in sorted(str(function).strip().lower() for function in forbidden_functions):
+        if not function_name:
+            continue
+        escaped = re.escape(function_name)
+        if function_name == "distance":
+            if re.search(rf"(?<![.A-Za-z_]){escaped}\s*\(", cypher, flags=re.IGNORECASE):
+                issues.append("forbidden function: distance")
+        elif function_name == "apoc":
+            if re.search(rf"(?<![A-Za-z0-9_]){escaped}\s*[.(]", cypher, flags=re.IGNORECASE):
+                issues.append("forbidden function: apoc")
+        elif re.search(rf"(?<![.A-Za-z_]){escaped}\s*\(", cypher, flags=re.IGNORECASE):
+            issues.append(f"forbidden function: {function_name}")
+    return issues
 
 
 def result_hash(rows: list[dict[str, Any]]) -> str:
@@ -87,17 +117,13 @@ def static_checks(
         return []
 
     policy = policy or {}
-    upper = f" {cypher.upper()} "
     issues = []
-    for substring in FORBIDDEN_SUBSTRINGS:
-        if substring in cypher.lower():
-            issues.append(f"forbidden substring: {substring.strip()}")
-    if re.search(r"(^|[^.A-Za-z_])distance\s*\(", cypher, flags=re.IGNORECASE):
-        issues.append("forbidden function: distance")
+    issues.extend(forbidden_function_issues(cypher, policy))
     if not allow_writes:
         for keyword in policy.get("forbidden_write_keywords", WRITE_KEYWORDS):
-            if keyword in upper:
-                issues.append(f"write keyword not allowed: {keyword.strip()}")
+            keyword = str(keyword).strip().upper()
+            if contains_cypher_keyword(cypher, keyword):
+                issues.append(f"write keyword not allowed: {keyword}")
 
     allowed_labels = policy.get("labels")
     if allowed_labels:

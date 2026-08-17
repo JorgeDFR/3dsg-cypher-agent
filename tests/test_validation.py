@@ -56,6 +56,30 @@ def test_static_checks_reject_unknown_schema_and_unbounded_paths():
     assert "write keyword not allowed: DELETE" in issues
 
 
+def test_static_checks_reject_write_keywords_without_space_delimiters():
+    cases = {
+        "CREATE(o:Object)": "CREATE",
+        "MATCH (o:Object)\nSET\no.name = 'x'": "SET",
+        "MATCH (o:Object)\nDELETE\no": "DELETE",
+        "MATCH (o:Object) DETACH\nDELETE o": "DETACH",
+    }
+
+    for cypher, keyword in cases.items():
+        issues = static_checks(cypher, allow_writes=False)
+        assert f"write keyword not allowed: {keyword}" in issues
+
+
+def test_static_checks_rejects_unqualified_distance_but_allows_point_distance():
+    assert static_checks(
+        "MATCH (o:Object) RETURN point.distance(o.center, o.center)",
+        allow_writes=False,
+    ) == []
+    assert "forbidden function: distance" in static_checks(
+        "MATCH (o:Object) RETURN distance(o.center, o.center)",
+        allow_writes=False,
+    )
+
+
 def test_neo4j_connection_settings_default_to_heracles_docker_then_host():
     settings = neo4j_connection_settings(
         argparse.Namespace(uri=None, username=None, password=None, database=None)

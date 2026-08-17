@@ -25,9 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-heracles-agents = [
-  "heracles_agents @ git+https://github.com/JorgeDFR/heracles_agents.git@dcbfd4f2ceb9a415f3525db51f0de585eb190c98",
-]
 train = [
   "accelerate>=0.33.0",
   "bitsandbytes>=0.43.0; platform_system == 'Linux'",

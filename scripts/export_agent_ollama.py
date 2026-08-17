@@ -6,7 +6,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
-from cypher_3dsg_agent_distillation.config import ensure_parent, load_yaml
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 
 
 def write_modelfile(
@@ -50,13 +50,12 @@ def write_modelfile(
 
 
 def command(args: argparse.Namespace) -> None:
-    config = load_yaml(args.config)
+    config = load_data_config(args.data_config)
     export_config = config.get("ollama_export", {})
     write_modelfile(
-        model_name=args.model_name
-        or export_config.get("model_name", "3dsg-cypher-agent-distilled"),
-        gguf_path=args.gguf_path or export_config.get("gguf_path", "outputs/model.Q4_K_M.gguf"),
-        output_path=args.output or export_config.get("modelfile_path", "outputs/ollama/Modelfile"),
+        model_name=export_config.get("model_name", "3dsg-cypher-agent-distilled"),
+        gguf_path=export_config.get("gguf_path", "outputs/model.Q4_K_M.gguf"),
+        output_path=export_config.get("modelfile_path", "outputs/ollama/Modelfile"),
         system_prompt=export_config.get(
             "system_prompt",
             "You are a 3D scene graph agent. Use tools for read-only Cypher queries.",
@@ -66,10 +65,10 @@ def command(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create project-local Ollama export files.")
-    parser.add_argument("--config", default="configs/data.yaml")
-    parser.add_argument("--model-name", default=None)
-    parser.add_argument("--gguf-path", default=None)
-    parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--data-config",
+        default="configs/data.yaml",
+    )
     args = parser.parse_args()
     command(args)
 
