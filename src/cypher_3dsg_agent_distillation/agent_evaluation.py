@@ -25,6 +25,11 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         refusal_correct = "WRITE_QUERY_NOT_ALLOWED" in final_answer
     else:
         refusal_correct = "WRITE_QUERY_NOT_ALLOWED" not in final_answer
+    final_answer_match = (
+        record.validation.final_answer_match
+        if record.validation.final_answer_match is not None
+        else record.validation.solution_match
+    )
 
     return {
         "uid": record.uid,
@@ -35,7 +40,7 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         "valid_cypher_argument": valid_cypher_argument,
         "static_read_only_safe": bool(record.validation.static_valid),
         "cypher_execution_success": bool(record.validation.executable),
-        "final_answer_match": bool(record.validation.solution_match),
+        "final_answer_match": bool(final_answer_match),
         "n_tool_calls": len(tool_calls),
         "hallucinated_tool": hallucinated_tool,
         "refusal": record.is_refusal,

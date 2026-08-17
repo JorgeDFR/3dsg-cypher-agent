@@ -7,7 +7,12 @@ from cypher_3dsg_agent_distillation.heracles_loader import (
     write_heracles_labelspace,
 )
 from cypher_3dsg_agent_distillation.load_neo4j import extract_graph_records
-from cypher_3dsg_agent_distillation.scene_graph import SceneIndex, node_symbol, scene_values
+from cypher_3dsg_agent_distillation.scene_graph import (
+    SceneIndex,
+    node_symbol,
+    objects_in_bbox,
+    scene_values,
+)
 
 SCENE_PATH = Path("data/scenes/3dsg_uhumans2.json")
 
@@ -20,10 +25,14 @@ def test_node_symbol_matches_spark_dsg_encoding():
 
 def test_extract_scene_values_from_spark_dsg():
     values = scene_values(SCENE_PATH, 30, 10, 10, 10, 3)
-    assert values["object_classes"][:3] == ["light", "cabinet", "desk"]
+    assert values["object_classes"][:3] == ["bookcase", "bulletin", "mirror"]
+    assert "light" not in values["object_classes"]
     assert values["object_symbols"][:3] == ["O0", "O1", "O3"]
     assert values["place_symbols"][:3] == ["p0", "p1", "p4"]
     assert values["mesh_place_symbols"][:3] == ["P5670", "P5671", "P5672"]
+    index = SceneIndex(SCENE_PATH)
+    assert len(values["bboxes"]) == 3
+    assert all(len(objects_in_bbox(index, bbox)) <= 20 for bbox in values["bboxes"])
     assert len(values["place_object_cases"]) == 20
     assert len(values["object_radius_cases"]) == 40
     assert len(values["nearest_object_mesh_cases"]) == 60
@@ -63,21 +72,13 @@ def test_heracles_labelspace_uses_embedded_spark_dsg_labels(tmp_path):
     assert "light" in output.read_text()
 
 
-def test_solution_modes_can_be_selected():
+def test_solution_for_returns_simplified_values():
     index = SceneIndex(SCENE_PATH)
     variables = {"class": "stool"}
 
-    simplified = index.solution_for("object_class_centers", variables, mode="simplified")
-    informative = index.solution_for("object_class_centers", variables, mode="informative")
+    solution = index.solution_for("object_class_centers", variables)
 
-    assert simplified == "POINT(11.832 26.993 1.432)"
-    assert informative == [
-        {
-            "nodeSymbol": "O481",
-            "center": "POINT(11.832 26.993 1.432)",
-            "class": "stool",
-        }
-    ]
+    assert solution == "POINT(11.832 26.993 1.432)"
 
 
 def test_simplified_spatial_solutions_use_object_symbols():
@@ -125,4 +126,4 @@ def test_curated_cases_include_empty_and_non_empty_solutions():
     assert sum(solution == set() for solution in place_solutions) == 6
     assert sum(solution != set() for solution in place_solutions) == 14
     assert sum(solution == set() for solution in radius_solutions) >= 10
-    assert sum(solution != set() for solution in radius_solutions) >= 25
+    assert sum(solution != set() for solution in radius_solutions) >= 20

@@ -1,6 +1,7 @@
 templates:
   - query_type: object_class_inventory
     tags: [class_inventory]
+    solution_formats: ["set[str]"]
     cypher: |
       MATCH (o:Object)
       RETURN DISTINCT o.class AS class
@@ -13,6 +14,7 @@ templates:
 
   - query_type: object_class_centers
     tags: [object_lookup, positions]
+    solution_formats: ["set[point]"]
     variables:
       class: object_classes
     cypher: |
@@ -27,6 +29,7 @@ templates:
 
   - query_type: object_class_count
     tags: [aggregation]
+    solution_formats: [int]
     variables:
       class: object_classes
     cypher: |
@@ -39,6 +42,7 @@ templates:
 
   - query_type: top_object_classes_by_count
     tags: [aggregation, class_inventory]
+    solution_formats: ["set[str]"]
     variables:
       limit: top_class_limits
     cypher: |
@@ -52,6 +56,7 @@ templates:
 
   - query_type: objects_in_room_symbol
     tags: [hierarchy]
+    solution_formats: ["set[str]"]
     variables:
       room: room_symbols
     cypher: |
@@ -65,6 +70,7 @@ templates:
 
   - query_type: objects_in_room_class
     tags: [hierarchy]
+    solution_formats: ["set[str]"]
     variables:
       room_class: room_classes
     cypher: |
@@ -77,6 +83,7 @@ templates:
 
   - query_type: objects_in_place_symbol
     tags: [hierarchy]
+    solution_formats: ["set[str]"]
     variables:
       case: place_object_cases
     cypher: |
@@ -90,6 +97,7 @@ templates:
 
   - query_type: object_place_lookup
     tags: [hierarchy]
+    solution_formats: [str]
     variables:
       object: object_symbols
     cypher: |
@@ -102,6 +110,7 @@ templates:
 
   - query_type: nearest_object_to_mesh_place
     tags: [spatial, nearest]
+    solution_formats: [str]
     variables:
       case: nearest_object_mesh_cases
     cypher: |
@@ -117,6 +126,7 @@ templates:
 
   - query_type: object_radius_from_point
     tags: [spatial, distance]
+    solution_formats: ["set[str]"]
     variables:
       case: object_radius_cases
     cypher: |
@@ -132,6 +142,7 @@ templates:
 
   - query_type: nearest_object_to_object
     tags: [spatial, nearest, object_reference]
+    solution_formats: [str]
     variables:
       case: nearest_object_cases
     cypher: |
@@ -148,6 +159,7 @@ templates:
 
   - query_type: objects_in_bounding_box
     tags: [spatial, bounding_box]
+    solution_formats: ["set[str]"]
     variables:
       bbox: bboxes
     cypher: |
@@ -163,6 +175,7 @@ templates:
 
   - query_type: mesh_place_hops
     tags: [connectivity, spatial]
+    solution_formats: ["set[str]"]
     variables:
       case: mesh_place_hop_cases
     cypher: |
@@ -177,6 +190,7 @@ templates:
 
   - query_type: room_adjacency_count
     tags: [connectivity, aggregation]
+    solution_formats: [int]
     variables:
       room: room_symbols
     cypher: |
@@ -189,6 +203,7 @@ templates:
 
   - query_type: place_hops
     tags: [connectivity, spatial]
+    solution_formats: ["set[str]"]
     variables:
       case: place_hop_cases
     cypher: |
@@ -203,6 +218,7 @@ templates:
 
   - query_type: write_refusal
     tags: [safety, read_only]
+    solution_formats: [str]
     read_only: true
     cypher: |
       // WRITE_QUERY_NOT_ALLOWED

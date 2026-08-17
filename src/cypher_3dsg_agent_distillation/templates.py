@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
-from cypher_3dsg_agent_distillation.scene_graph import SOLUTION_MODES, SceneIndex
+from cypher_3dsg_agent_distillation.scene_graph import SceneIndex
 
 
 class LiteralString(str):
@@ -109,6 +109,153 @@ def format_number(value: int | float) -> str:
     return str(number)
 
 
+COLLECTION_FORMAT_RE = re.compile(r"^(set|list)\[([A-Za-z_][A-Za-z0-9_]*)\]$")
+SOLUTION_TYPE_ALIASES = {
+    "string": "str",
+    "strings": "str",
+    "integer": "int",
+    "integers": "int",
+    "number": "float",
+    "numbers": "float",
+    "point": "point",
+    "points": "point",
+}
+
+
+def canonical_solution_type(value: str) -> str:
+    normalized = value.strip().lower()
+    return SOLUTION_TYPE_ALIASES.get(normalized, normalized)
+
+
+def canonical_solution_format(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    human_collection = re.fullmatch(r"(set|list) of ([A-Za-z_][A-Za-z0-9_]*)", normalized)
+    if human_collection:
+        collection_kind, item_type = human_collection.groups()
+        return f"{collection_kind}[{canonical_solution_type(item_type)}]"
+
+    compact = normalized.replace(" ", "")
+    collection = COLLECTION_FORMAT_RE.fullmatch(compact)
+    if collection:
+        collection_kind, item_type = collection.groups()
+        return f"{collection_kind}[{canonical_solution_type(item_type)}]"
+    return canonical_solution_type(normalized)
+
+
+def normalize_solution_formats(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        formats = [value]
+    elif isinstance(value, list | tuple):
+        formats = list(value)
+    else:
+        raise TypeError("solution_formats must be a string or list of strings.")
+
+    normalized = []
+    for solution_format in formats:
+        if not isinstance(solution_format, str):
+            raise TypeError("solution_formats entries must be strings.")
+        canonical = canonical_solution_format(solution_format)
+        if not canonical:
+            raise ValueError("solution_formats entries must not be empty.")
+        normalized.append(canonical)
+    return normalized
+
+
+def collection_format_kind(solution_format: str) -> str | None:
+    match = COLLECTION_FORMAT_RE.fullmatch(solution_format)
+    return match.group(1) if match else None
+
+
+def is_collection_value(value: Any) -> bool:
+    return isinstance(value, SolutionSet | set | list | tuple)
+
+
+def solution_collection_items(value: Any) -> list[Any]:
+    if isinstance(value, set):
+        return sorted(value, key=lambda item: format_solution_value(item))
+    if isinstance(value, SolutionSet | list | tuple):
+        return list(value)
+    if value is None:
+        return []
+    return [value]
+
+
+def scalar_format_matches(value: Any, solution_format: str) -> bool:
+    if solution_format == "bool":
+        return isinstance(value, bool)
+    if solution_format == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if solution_format == "float":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if solution_format == "point":
+        return isinstance(value, str) and value.startswith("POINT(")
+    if solution_format == "str":
+        return isinstance(value, str)
+    return True
+
+
+def select_solution_format(value: Any, solution_formats: list[str]) -> str | None:
+    if not solution_formats:
+        return None
+
+    collection_formats = [
+        solution_format
+        for solution_format in solution_formats
+        if collection_format_kind(solution_format) is not None
+    ]
+    scalar_formats = [
+        solution_format
+        for solution_format in solution_formats
+        if collection_format_kind(solution_format) is None
+    ]
+
+    if is_collection_value(value):
+        if collection_formats:
+            return collection_formats[0]
+        items = solution_collection_items(value)
+        if len(items) == 1 and scalar_formats:
+            return scalar_formats[0]
+        return solution_formats[0]
+
+    compatible_scalar_formats = [
+        solution_format
+        for solution_format in scalar_formats
+        if scalar_format_matches(value, solution_format)
+    ]
+    if compatible_scalar_formats:
+        return compatible_scalar_formats[0]
+    if collection_formats:
+        return collection_formats[0]
+    if scalar_formats:
+        return scalar_formats[0]
+    return solution_formats[0]
+
+
+def coerce_solution_format(value: Any, solution_format: str | None) -> Any:
+    if solution_format is None:
+        return value
+
+    collection_kind = collection_format_kind(solution_format)
+    if collection_kind is not None:
+        items = solution_collection_items(value)
+        if collection_kind == "set":
+            return SolutionSet(items)
+        return items
+
+    if is_collection_value(value):
+        items = solution_collection_items(value)
+        if len(items) == 1:
+            return items[0]
+    return value
+
+
+def solution_formats_for_template(template: dict[str, Any]) -> list[str]:
+    formats = template.get("solution_formats", template.get("solution_format"))
+    return normalize_solution_formats(formats)
+
+
 def format_solution_value(value: Any, indent: int = 0) -> str:
     if value is None:
         return "[]"
@@ -161,13 +308,23 @@ def format_solution_collection(
     return "\n".join(lines)
 
 
-def format_solution_field(value: Any, list_style: str = "list") -> Any:
+def format_solution_field(
+    value: Any,
+    solution_formats: Any = None,
+    list_style: str = "list",
+) -> Any:
+    normalized_formats = normalize_solution_formats(solution_formats)
+    if normalized_formats:
+        value = coerce_solution_format(
+            value,
+            select_solution_format(value, normalized_formats),
+        )
+    elif list_style == "set" and isinstance(value, list):
+        value = SolutionSet(value)
+
     if isinstance(value, int | float) and not isinstance(value, bool):
         number = float(value)
         return int(number) if number.is_integer() else float(format_number(number))
-
-    if list_style == "set" and isinstance(value, list):
-        value = SolutionSet(value)
 
     formatted = format_solution_value(value)
     if "\n" in formatted or ": " in formatted or formatted.startswith(("[", "{", "<")):
@@ -179,14 +336,8 @@ def generate_records(
     config: dict[str, Any],
     question_templates_config: dict[str, Any] | None = None,
     limit_per_template: int | None = None,
-    solution_mode: str | None = None,
 ) -> list[dict[str, Any]]:
     values = config.get("values", {})
-    solution_mode = solution_mode or config.get("solution_mode", "simplified")
-    if solution_mode not in SOLUTION_MODES:
-        raise ValueError(
-            f"Unsupported solution mode `{solution_mode}`. Choose one of {sorted(SOLUTION_MODES)}."
-        )
     templates = (
         question_templates_config.get("templates", [])
         if question_templates_config is not None
@@ -197,14 +348,12 @@ def generate_records(
     for template in templates:
         generated_for_template = 0
         query_type = template["query_type"]
+        solution_formats = solution_formats_for_template(template)
+        if scene_index is not None and not solution_formats:
+            raise KeyError(f"Template `{query_type}` must define solution_formats.")
         for variables in variable_product(template, values):
             cypher = format_nested(template["cypher"], variables).strip()
-            solution = (
-                scene_index.solution_for(query_type, variables, mode=solution_mode)
-                if scene_index
-                else None
-            )
-            solution_list_style = "set" if solution_mode == "informative" else "list"
+            solution = scene_index.solution_for(query_type, variables) if scene_index else None
             for question_template in template["questions"]:
                 question = format_nested(question_template, variables).strip()
                 record = {
@@ -212,9 +361,10 @@ def generate_records(
                     "query_type": query_type,
                     "question": question,
                     "gold_cypher": LiteralString(f"{cypher}\n"),
+                    "solution_formats": deepcopy(solution_formats),
                     "solution": format_solution_field(
                         deepcopy(solution),
-                        list_style=solution_list_style,
+                        solution_formats=solution_formats,
                     ),
                     "scene_id": config.get("scene_id"),
                     "read_only": bool(template.get("read_only", True)),
@@ -266,7 +416,6 @@ def command(args: argparse.Namespace) -> None:
         config,
         question_templates_config=question_templates_config,
         limit_per_template=args.limit_per_template,
-        solution_mode=args.solution_mode,
     )
     write_questions_yaml(records, data_config["raw_questions_path"])
 
@@ -275,12 +424,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--limit-per-template", type=int, default=None)
-    parser.add_argument(
-        "--solution-mode",
-        choices=sorted(SOLUTION_MODES),
-        default=None,
-        help="Solution rendering mode. Defaults to config solution_mode or simplified.",
-    )
     args = parser.parse_args()
     command(args)
 

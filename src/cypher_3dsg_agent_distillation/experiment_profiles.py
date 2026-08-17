@@ -10,6 +10,7 @@ from cypher_3dsg_agent_distillation.config import data_paths_from_config, load_y
 from cypher_3dsg_agent_distillation.heracles_validation import (
     answer_formatting_guidance,
     answer_type_hint,
+    answer_type_hint_from_solution_formats,
 )
 
 TaskFamily = Literal["cypher_qa", "cypher_pddl"]
@@ -142,8 +143,15 @@ def render_profile_messages(
         ),
         answer_formatting_guidance(profile.output_type),
     ]
-    if profile.answer_type_hint and seed.get("solution") is not None:
-        sections.append(answer_type_hint(str(seed["solution"]), profile.output_type))
+    if profile.answer_type_hint:
+        solution_format_hint = answer_type_hint_from_solution_formats(
+            seed.get("solution_formats") or seed.get("solution_format"),
+            profile.output_type,
+        )
+        if solution_format_hint is not None:
+            sections.append(solution_format_hint)
+        elif seed.get("solution") is not None:
+            sections.append(answer_type_hint(str(seed["solution"]), profile.output_type))
 
     return [
         {"role": "user", "content": section}

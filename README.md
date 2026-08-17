@@ -49,10 +49,13 @@ Canonical training data is validated by `AgentTraceRecord`. Answerable examples
 call `run_cypher_query`; refusal examples call no tool and answer
 `<answer>WRITE_QUERY_NOT_ALLOWED</answer>`.
 
-Teacher-generated traces are captured from real interactions. The raw accepted
-trace preserves the full teacher conversation, including failed bounded repair
-attempts. Student split rendering can optionally use a pruned view that keeps the
-successful tool call and final answer while leaving raw traces unchanged.
+Teacher-generated traces are captured from real interactions. The
+training-ready accepted teacher traces are written to `teacher_traces.jsonl`.
+Debug copies are written to `accepted.json` and `rejected.json`; both include
+the seed `real_solution`, the executed `cypher_solution`, and the parsed
+`final_answer`. Student split rendering can optionally use a pruned view that
+keeps the successful tool call and final answer while leaving raw traces
+unchanged.
 
 Supported render views:
 

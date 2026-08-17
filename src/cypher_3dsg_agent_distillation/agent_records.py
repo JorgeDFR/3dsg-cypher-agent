@@ -63,6 +63,9 @@ class TraceValidation(BaseModel):
     static_valid: bool = False
     executable: bool = False
     solution_match: bool = False
+    cypher_solution_match: bool | None = None
+    final_answer_match: bool | None = None
+    final_answer_cypher_match: bool | None = None
     static_issues: list[str] = Field(default_factory=list)
     error: str | None = None
 
@@ -78,6 +81,9 @@ class AgentTraceRecord(BaseModel):
     messages: list[AgentMessage]
     gold_cypher: str
     expected_solution: Any | None = None
+    real_solution: Any | None = None
+    cypher_solution: Any | None = None
+    final_answer: str | None = None
     split_group: str | None = None
     teacher_model: str = DEFAULT_TEACHER_MODEL
     validation: TraceValidation = Field(default_factory=TraceValidation)
@@ -89,6 +95,10 @@ class AgentTraceRecord(BaseModel):
     def validate_trace(self) -> AgentTraceRecord:
         if not self.messages:
             raise ValueError("Agent trace must include at least one message.")
+        if self.real_solution is None and self.expected_solution is not None:
+            self.real_solution = self.expected_solution
+        elif self.expected_solution is None and self.real_solution is not None:
+            self.expected_solution = self.real_solution
         if self.split_group is None:
             self.split_group = split_group_for_record(
                 self.scene_id,

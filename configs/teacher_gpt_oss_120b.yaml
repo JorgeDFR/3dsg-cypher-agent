@@ -1,9 +1,7 @@
 provider: openrouter
 model: openai/gpt-oss-120b
-fallback_models:
-  - openai/gpt-oss-20b
 temperature: 0.2
 max_tokens: 2048
 timeout: 120
-traces_per_seed: 3
+traces_per_seed: 1
 max_tool_calls: 3

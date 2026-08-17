@@ -11,6 +11,7 @@ def test_prepare_seed_records_adds_schema_context_without_chat_messages():
             question="What objects exist?",
             gold_cypher="MATCH (o:Object) RETURN DISTINCT o.class AS class",
             query_type="class_listing",
+            solution_formats=["set[str]"],
         )
     ]
 
@@ -21,6 +22,7 @@ def test_prepare_seed_records_adds_schema_context_without_chat_messages():
     assert prepared[0].cypher.startswith("MATCH")
     assert prepared[0].task_family == "cypher_qa"
     assert prepared[0].output_type == "SLDP"
+    assert prepared[0].solution_formats == ["set[str]"]
 
 
 def test_prepare_seed_records_preserves_native_pddl_fields():

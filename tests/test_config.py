@@ -36,8 +36,18 @@ def test_data_paths_keep_scene_path_explicit_and_derive_generated_scene_dir():
         / "data"
         / "3dsg"
         / "office_scene"
-        / "seeds"
         / "cypher_seed_records.jsonl"
+    )
+    assert paths.teacher_traces_jsonl_path == (
+        PROJECT_ROOT
+        / "data"
+        / "3dsg"
+        / "office_scene"
+        / "traces"
+        / "teacher_traces.jsonl"
+    )
+    assert paths.accepted_traces_path == (
+        PROJECT_ROOT / "data" / "3dsg" / "office_scene" / "traces" / "accepted.json"
     )
     assert paths.splits["test"] == (
         PROJECT_ROOT / "data" / "3dsg" / "office_scene" / "splits" / "test.jsonl"
@@ -61,8 +71,11 @@ def test_load_data_config_expands_derived_paths(tmp_path):
 
     assert config["scene_path"] == str(PROJECT_ROOT / "data" / "scenes" / "3dsg_uhumans2.json")
     assert config["schema_path"] == str(PROJECT_ROOT / "configs" / "schema_3dsg.yaml")
-    assert config["traces_jsonl_path"] == str(
-        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "accepted.jsonl"
+    assert config["teacher_traces_jsonl_path"] == str(
+        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "teacher_traces.jsonl"
+    )
+    assert config["accepted_traces_path"] == str(
+        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "accepted.json"
     )
     assert config["splits"]["train"] == str(
         PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "splits" / "train.jsonl"

@@ -14,6 +14,7 @@ def seed_record(**overrides):
         "output_type": "SLDP",
         "gold_cypher": "MATCH (o:Object) RETURN DISTINCT o.class AS class",
         "solution": "<chair, table>",
+        "solution_formats": ["set[str]"],
     }
     payload.update(overrides)
     return payload
@@ -40,7 +41,7 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     assert text.index("<Labelspace Description>") < text.index("Labels in Database:")
     assert "Which object classes exist?" in text
     assert "SLDP Equality Language" in text
-    assert "Your answer should be an SLDP set" in text
+    assert "Your answer should be an SLDP set of strings" in text
     assert seed["gold_cypher"] not in text
     assert seed["solution"] not in text
     assert "Explain your reasoning" not in text
@@ -65,6 +66,45 @@ def test_native_pddl_seed_prompt_rendering_includes_pddl_context_only():
     assert seed["solution"] not in text
     assert "Your answer should be an SLDP" not in text
     assert "Explain your reasoning" not in text
+
+
+def test_native_qa_seed_prompt_rendering_uses_solution_formats_for_hint():
+    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml")
+
+    point_messages = render_profile_messages(
+        profile,
+        seed_record(
+            query_type="object_class_centers",
+            solution="<POINT(1 2 3)>",
+            solution_formats=["set[point]"],
+        ),
+        tool_interface="openrouter",
+    )
+    count_messages = render_profile_messages(
+        profile,
+        seed_record(
+            query_type="object_class_count",
+            solution=3,
+            solution_formats=["int"],
+        ),
+        tool_interface="openrouter",
+    )
+    scalar_or_set_messages = render_profile_messages(
+        profile,
+        seed_record(
+            query_type="objects_in_bounding_box",
+            solution="O1",
+            solution_formats=["set[str]", "str"],
+        ),
+        tool_interface="openrouter",
+    )
+
+    assert "Your answer should be an SLDP set of points" in rendered_text(point_messages)
+    assert "Your answer should be an SLDP primitive number" in rendered_text(count_messages)
+    assert (
+        "Your answer should be an SLDP set of strings or a primitive string"
+        in rendered_text(scalar_or_set_messages)
+    )
 
 
 def test_profile_rejects_unconfigured_tool_interface():

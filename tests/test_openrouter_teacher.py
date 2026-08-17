@@ -8,8 +8,10 @@ from cypher_3dsg_agent_distillation.agent_records import (
 )
 from cypher_3dsg_agent_distillation.openrouter_teacher import (
     OpenRouterTeacherClient,
+    debug_trace_record,
     evaluate_candidate_trace,
     normalize_assistant_message,
+    progress_description,
     run_teacher_interaction,
     seed_expected_solution,
 )
@@ -130,6 +132,15 @@ def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static
     return decision, client
 
 
+def test_progress_description_reports_generation_counts():
+    assert progress_description(
+        seed_index=2,
+        seed_count=5,
+        accepted_count=3,
+        rejected_count=1,
+    ) == "teacher traces seed 2/5 accepted=3 rejected=1"
+
+
 def test_evaluate_candidate_trace_accepts_valid_legacy_trace():
     decision = evaluate_candidate_trace(
         seed_record(),
@@ -166,7 +177,7 @@ def test_openrouter_preflight_reports_missing_model():
         raise AssertionError("Expected missing model error")
 
 
-def test_openrouter_chat_uses_sdk_without_json_response_format_or_fallback_models():
+def test_openrouter_chat_uses_sdk_without_json_response_format():
     calls = []
 
     def send(**kwargs):
@@ -230,6 +241,12 @@ def test_teacher_interaction_accepts_one_tool_conversation_without_synthetic_pro
     assert decision.reason == "accepted"
     assert len(decision.record.messages) == 5
     assert decision.record.gold_cypher == "MATCH (o:Object) RETURN count(o) AS count"
+    assert decision.record.real_solution == 3
+    assert decision.record.cypher_solution == "3"
+    assert decision.record.final_answer == "3"
+    assert decision.record.validation.cypher_solution_match is True
+    assert decision.record.validation.final_answer_match is True
+    assert decision.record.validation.final_answer_cypher_match is True
     assert decision.record.metadata["generation_mode"] == "tool_conversation"
     first_call_messages = client.calls[0]["messages"]
     rendered_first_call = json.dumps(first_call_messages)
@@ -324,11 +341,10 @@ def test_teacher_interaction_repairs_execution_failure_within_tool_limit():
     assert '"error_type": "execution_failed"' in decision.record.messages[3].content
 
 
-def test_teacher_interaction_repairs_result_shape_error_within_tool_limit():
+def test_teacher_interaction_accepts_result_alias_within_tool_limit():
     validator = FakeValidator(
         [
             {"executable": True, "rows": [{"category": "chair"}], "error": None},
-            {"executable": True, "rows": [{"class": "chair"}], "error": None},
         ]
     )
 
@@ -342,10 +358,6 @@ def test_teacher_interaction_repairs_result_shape_error_within_tool_limit():
                 "MATCH (o:Object) RETURN o.class AS category",
                 tool_call_id="call_1",
             ),
-            tool_assistant(
-                "MATCH (o:Object) RETURN o.class AS class",
-                tool_call_id="call_2",
-            ),
             final_assistant("chair"),
         ],
         validator=validator,
@@ -354,9 +366,8 @@ def test_teacher_interaction_repairs_result_shape_error_within_tool_limit():
     assert decision.accepted
     assert validator.cyphers == [
         "MATCH (o:Object) RETURN o.class AS category",
-        "MATCH (o:Object) RETURN o.class AS class",
     ]
-    assert '"error_type": "result_shape_error"' in decision.record.messages[3].content
+    assert decision.record.messages[3].content == '{"ok": true, "rows": [{"category": "chair"}]}'
 
 
 def test_teacher_interaction_rejects_when_max_tool_calls_exceeded():
@@ -374,7 +385,7 @@ def test_teacher_interaction_rejects_when_max_tool_calls_exceeded():
     assert decision.payload["last_failure_reason"] == "static_issues"
 
 
-def test_teacher_interaction_rejects_result_shape_error_at_tool_limit():
+def test_teacher_interaction_accepts_result_alias_at_tool_limit():
     validator = FakeValidator(
         [
             {"executable": True, "rows": [{"category": "chair"}], "error": None},
@@ -383,15 +394,15 @@ def test_teacher_interaction_rejects_result_shape_error_at_tool_limit():
 
     decision, _client = run_interaction(
         seed_record(query_type="object_class_inventory", solution="chair"),
-        [tool_assistant("MATCH (o:Object) RETURN o.class AS category")],
+        [
+            tool_assistant("MATCH (o:Object) RETURN o.class AS category"),
+            final_assistant("chair"),
+        ],
         validator=validator,
         max_tool_calls=1,
     )
 
-    assert not decision.accepted
-    assert decision.reason == "max_tool_calls_exceeded"
-    assert decision.payload["last_failure_reason"] == "result_shape_error"
-    assert "missing `class`" in decision.payload["validation"]["result_shape_error"]
+    assert decision.accepted
 
 
 def test_teacher_interaction_rejects_final_answer_mismatch():
@@ -399,6 +410,53 @@ def test_teacher_interaction_rejects_final_answer_mismatch():
 
     assert not decision.accepted
     assert decision.reason == "final_answer_mismatch"
+    assert decision.payload["cypher_solution"] == "3"
+    assert decision.payload["final_answer"] == "4"
+    assert decision.payload["validation"]["cypher_solution_match"] is True
+    assert decision.payload["validation"]["final_answer_match"] is False
+
+
+def test_evaluate_candidate_trace_rejects_final_answer_not_matching_real_solution():
+    candidate = candidate_trace()
+    candidate["messages"][-1]["content"] = "<answer>4</answer>"
+
+    decision = evaluate_candidate_trace(
+        seed_record(),
+        candidate,
+        teacher_model="openai/gpt-oss-120b",
+        validator=FakeValidator(),
+        policy=None,
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "final_answer_mismatch"
+    assert decision.record.cypher_solution == "3"
+    assert decision.record.final_answer == "4"
+
+
+def test_debug_trace_record_uses_shared_solution_fields_for_accepts_and_rejects():
+    seed = seed_record()
+    accepted_decision, _client = run_interaction(seed, [tool_assistant(), final_assistant()])
+    accepted = debug_trace_record(
+        seed,
+        accepted_decision,
+        record_json=accepted_decision.record.model_dump(by_alias=True, exclude_none=True),
+    )
+
+    rejected_decision, _client = run_interaction(
+        seed,
+        [tool_assistant(), final_assistant("4")],
+    )
+    rejected = debug_trace_record(seed, rejected_decision)
+
+    shared_keys = set(accepted)
+    assert set(rejected) == shared_keys | {"reason"}
+    assert "reason" not in accepted
+    assert rejected["reason"] == "final_answer_mismatch"
+    assert accepted["real_solution"] == rejected["real_solution"] == 3
+    assert accepted["cypher_solution"] == rejected["cypher_solution"] == "3"
+    assert accepted["final_answer"] == "3"
+    assert rejected["final_answer"] == "4"
 
 
 def test_teacher_interaction_rejects_invalid_sldp_final_answer():

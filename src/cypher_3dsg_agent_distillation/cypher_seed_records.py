@@ -21,6 +21,7 @@ class CypherSeedRecord(BaseModel):
     read_only: bool = True
     expected_result_hash: str | None = None
     solution: Any | None = None
+    solution_formats: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -38,6 +39,7 @@ class PreparedCypherSeedRecord(BaseModel):
     read_only: bool
     expected_result_hash: str | None = None
     solution: Any | None = None
+    solution_formats: list[str] = Field(default_factory=list)
     tags: list[str]
     scene_id: str | None = None
     schema_name: str
@@ -89,6 +91,7 @@ def prepare_seed_records(
                 read_only=record.read_only,
                 expected_result_hash=record.expected_result_hash,
                 solution=record.solution,
+                solution_formats=record.solution_formats,
                 tags=record.tags,
                 scene_id=record.scene_id,
                 schema_name=schema_name,

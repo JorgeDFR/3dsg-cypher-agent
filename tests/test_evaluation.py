@@ -11,6 +11,7 @@ def test_rows_to_solution_text_matches_simplified_set_solution():
     record = {
         "query_type": "object_radius_from_point",
         "solution": "<O166, O261, O498>",
+        "solution_formats": ["set[str]", "str"],
     }
     rows = [{"object": "O498"}, {"object": "O166"}, {"object": "O261"}]
 
@@ -33,35 +34,50 @@ def test_answer_matches_does_not_accept_missing_set_items():
     assert not answer_matches(actual, expected)
 
 
-def test_rows_to_solution_text_uses_informative_set_of_dicts():
+def test_rows_to_solution_text_uses_declared_set_format():
     record = {
-        "query_type": "object_class_centers",
-        "solution": "<{nodeSymbol: O1, center: POINT(1.000 2.000 3.000), class: chair}>",
+        "query_type": "top_object_classes_by_count",
+        "solution": "<light, cabinet>",
+        "solution_formats": ["set[str]"],
     }
     rows = [
-        {
-            "nodeSymbol": "O1",
-            "center": [1, 2, 3],
-            "class": "chair",
-        }
+        {"class": "light", "count": 57},
+        {"class": "cabinet", "count": 30},
     ]
 
     actual = rows_to_solution_text(record, rows)
 
-    assert actual == "<{nodeSymbol: O1, center: POINT(1.000 2.000 3.000), class: chair}>"
+    assert actual == "<light, cabinet>"
 
 
 def test_rows_to_solution_text_accepts_unaliased_neo4j_expression_keys():
     count_record = {"query_type": "object_class_count", "solution": 17}
     center_record = {
         "query_type": "object_class_centers",
-        "solution": "<POINT(1.000 2.000 3.000)>",
+        "solution": "POINT(1.000 2.000 3.000)",
+        "solution_formats": ["set[point]", "point"],
     }
 
     assert rows_to_solution_text(count_record, [{"count(o)": 17}]) == "17"
     assert rows_to_solution_text(center_record, [{"o.center": [1, 2, 3]}]) == (
         "POINT(1.000 2.000 3.000)"
     )
+
+
+def test_rows_to_solution_text_infers_symbol_from_result_aliases():
+    result_record = {
+        "query_type": "nearest_object_to_mesh_place",
+        "solution": "O8",
+        "solution_formats": ["str"],
+    }
+    light_record = {
+        "query_type": "nearest_object_to_object",
+        "solution": "O8",
+        "solution_formats": ["str"],
+    }
+
+    assert rows_to_solution_text(result_record, [{"result": "O8"}]) == "O8"
+    assert rows_to_solution_text(light_record, [{"light": "O8", "dist": 4.75}]) == "O8"
 
 
 def test_evaluate_records_marks_unexpected_return_shape_as_mismatch():
@@ -84,6 +100,7 @@ def test_evaluate_records_marks_unexpected_return_shape_as_mismatch():
                 "question": "Where are chairs?",
                 "predicted_cypher": "MATCH (o:Object) RETURN o",
                 "solution": "<POINT(1.000 2.000 3.000)>",
+                "solution_formats": ["set[point]", "point"],
                 "read_only": True,
             }
         ],

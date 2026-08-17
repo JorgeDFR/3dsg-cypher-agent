@@ -23,7 +23,8 @@ class DataPaths:
     scene_template_values_path: Path
     raw_questions_path: Path
     seed_records_jsonl_path: Path
-    traces_jsonl_path: Path
+    teacher_traces_jsonl_path: Path
+    accepted_traces_path: Path
     rejected_traces_path: Path
     bootstrap_traces_jsonl_path: Path
     splits: dict[str, Path]
@@ -101,8 +102,9 @@ def data_paths_from_config(config: dict[str, Any]) -> DataPaths:
         scene_dir=scene_dir,
         scene_template_values_path=scene_dir / "scene_template_values.yaml",
         raw_questions_path=scene_dir / "generated_questions.yaml",
-        seed_records_jsonl_path=scene_dir / "seeds" / "cypher_seed_records.jsonl",
-        traces_jsonl_path=scene_dir / "traces" / "accepted.jsonl",
+        seed_records_jsonl_path=scene_dir / "cypher_seed_records.jsonl",
+        teacher_traces_jsonl_path=scene_dir / "traces" / "teacher_traces.jsonl",
+        accepted_traces_path=scene_dir / "traces" / "accepted.json",
         rejected_traces_path=scene_dir / "traces" / "rejected.json",
         bootstrap_traces_jsonl_path=scene_dir / "traces" / "bootstrap.jsonl",
         splits={
@@ -127,7 +129,8 @@ def load_data_config(path: str | Path) -> dict[str, Any]:
             "scene_template_values_path": str(paths.scene_template_values_path),
             "raw_questions_path": str(paths.raw_questions_path),
             "seed_records_jsonl_path": str(paths.seed_records_jsonl_path),
-            "traces_jsonl_path": str(paths.traces_jsonl_path),
+            "teacher_traces_jsonl_path": str(paths.teacher_traces_jsonl_path),
+            "accepted_traces_path": str(paths.accepted_traces_path),
             "rejected_traces_path": str(paths.rejected_traces_path),
             "bootstrap_traces_jsonl_path": str(paths.bootstrap_traces_jsonl_path),
             "splits": {name: str(split_path) for name, split_path in paths.splits.items()},

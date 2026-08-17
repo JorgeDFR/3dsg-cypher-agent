@@ -21,6 +21,8 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
 )
 from cypher_3dsg_agent_distillation.templates import format_solution_field
 
+NODE_SYMBOL_RE = re.compile(r"^[A-Za-z]\d+$")
+
 
 class ResultShapeError(ValueError):
     pass
@@ -113,8 +115,8 @@ def answer_matches(actual: Any, expected: Any, output_type: str = "SLDP") -> boo
     return valid_format and correct
 
 
-def rendered_solution(value: Any, list_style: str = "list") -> str:
-    return str(format_solution_field(value, list_style=list_style)).strip()
+def rendered_solution(value: Any, solution_formats: Any = None) -> str:
+    return str(format_solution_field(value, solution_formats=solution_formats)).strip()
 
 
 def scalar_or_set(values: list[Any]) -> Any:
@@ -123,10 +125,6 @@ def scalar_or_set(values: list[Any]) -> Any:
     if len(values) == 1:
         return values[0]
     return set(values)
-
-
-def expected_uses_informative_solution(expected_solution: Any) -> bool:
-    return "{" in str(expected_solution or "")
 
 
 def node_property(value: Any, property_name: str) -> Any:
@@ -141,6 +139,41 @@ def node_property(value: Any, property_name: str) -> Any:
         return value[property_name]
     except (KeyError, TypeError):
         return None
+
+
+def inferred_row_property(row: dict[str, Any], property_name: str) -> Any:
+    if property_name == "nodeSymbol":
+        for value in row.values():
+            if isinstance(value, str) and NODE_SYMBOL_RE.fullmatch(value):
+                return value
+            nested_value = node_property(value, property_name)
+            if isinstance(nested_value, str) and NODE_SYMBOL_RE.fullmatch(nested_value):
+                return nested_value
+
+    if property_name == "class":
+        string_values = [
+            value
+            for value in row.values()
+            if isinstance(value, str) and not NODE_SYMBOL_RE.fullmatch(value)
+        ]
+        if len(string_values) == 1:
+            return string_values[0]
+
+    if property_name == "center":
+        point_values = []
+        for value in row.values():
+            if isinstance(value, str) and value.startswith("POINT("):
+                point_values.append(value)
+            elif isinstance(value, list | tuple) and len(value) >= 3:
+                point_values.append(value)
+            else:
+                nested_value = node_property(value, property_name)
+                if nested_value is not None:
+                    point_values.append(nested_value)
+        if len(point_values) == 1:
+            return point_values[0]
+
+    return None
 
 
 def row_property(
@@ -168,6 +201,10 @@ def row_property(
             value = node_property(row[key], property_name)
             if value is not None:
                 return value
+
+    inferred = inferred_row_property(row, property_name)
+    if inferred is not None:
+        return inferred
 
     if len(row) == 1:
         value = next(iter(row.values()))
@@ -213,25 +250,9 @@ def row_count_value(rows: list[dict[str, Any]]) -> int | float:
     raise ResultShapeError(f"missing numeric `count` in returned columns: {columns}")
 
 
-def row_dict(row: dict[str, Any], keys: list[str]) -> dict[str, Any]:
-    output = {}
-    for key in keys:
-        value = row.get(key)
-        if value is None:
-            continue
-        if key in {"center", "distance"}:
-            if key == "center":
-                value = point_to_solution(value)
-            elif isinstance(value, int | float):
-                value = round(float(value), 6)
-        output[key] = value
-    return output
-
-
 def rows_to_solution_value(
     query_type: str,
     rows: list[dict[str, Any]],
-    informative: bool,
 ) -> Any:
     if query_type == "object_class_inventory":
         return scalar_or_set(
@@ -247,11 +268,6 @@ def rows_to_solution_value(
             )
         )
     if query_type == "object_class_centers":
-        if informative:
-            return [
-                row_dict(row, ["nodeSymbol", "center", "class"])
-                for row in rows
-            ]
         return scalar_or_set(
             [
                 point_to_solution(center)
@@ -266,20 +282,18 @@ def rows_to_solution_value(
     if query_type == "object_class_count":
         return row_count_value(rows)
     if query_type == "top_object_classes_by_count":
-        if informative:
-            return [
-                {"class": row.get("class"), "count": row.get("count")}
-                for row in rows
-            ]
-        return [row.get("class") for row in rows]
+        return row_values(
+            rows,
+            "class",
+            preferred_keys=["class"],
+            node_keys=["o", "object"],
+        )
     if query_type in {
         "objects_in_room_symbol",
         "objects_in_room_class",
         "objects_in_place_symbol",
         "objects_in_bounding_box",
     }:
-        if informative:
-            return [row_dict(row, ["object", "center", "class"]) for row in rows]
         return scalar_or_set(
             row_values(
                 rows,
@@ -289,8 +303,6 @@ def rows_to_solution_value(
             )
         )
     if query_type == "object_place_lookup":
-        if informative:
-            return [row_dict(row, ["place", "center"]) for row in rows]
         return scalar_or_set(
             row_values(
                 rows,
@@ -302,11 +314,6 @@ def rows_to_solution_value(
     if query_type in {"nearest_object_to_mesh_place", "nearest_object_to_object"}:
         if not rows:
             return set()
-        if informative:
-            row = dict(rows[0])
-            if "distance" in row and isinstance(row["distance"], int | float):
-                row["distance"] = round(float(row["distance"]), 6)
-            return row
         return row_property(
             rows[0],
             "nodeSymbol",
@@ -314,11 +321,6 @@ def rows_to_solution_value(
             node_keys=["o", "object"],
         )
     if query_type == "object_radius_from_point":
-        if informative:
-            return [
-                row_dict(row, ["object", "class", "center", "distance"])
-                for row in rows
-            ]
         return scalar_or_set(
             row_values(
                 rows,
@@ -339,11 +341,6 @@ def rows_to_solution_value(
     if query_type == "room_adjacency_count":
         if not rows:
             return 0
-        if informative:
-            return {
-                "room": rows[0].get("room"),
-                "adjacent_rooms": rows[0].get("adjacent_rooms"),
-            }
         return rows[0].get("adjacent_rooms", 0)
     if query_type == "place_hops":
         return scalar_or_set(
@@ -358,10 +355,9 @@ def rows_to_solution_value(
 
 
 def rows_to_solution_text(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    informative = expected_uses_informative_solution(record.get("solution"))
-    value = rows_to_solution_value(record.get("query_type", ""), rows, informative)
-    list_style = "set" if informative else "list"
-    return rendered_solution(value, list_style=list_style)
+    value = rows_to_solution_value(record.get("query_type", ""), rows)
+    solution_formats = record.get("solution_formats") or record.get("solution_format")
+    return rendered_solution(value, solution_formats=solution_formats)
 
 
 def evaluate_records(

@@ -1,6 +1,7 @@
 from cypher_3dsg_agent_distillation.heracles_validation import (
     answer_matches_with_heracles,
     answer_type_hint,
+    answer_type_hint_from_solution_formats,
     ensure_heracles_agents_importable,
 )
 
@@ -49,3 +50,15 @@ def test_pddl_invalid_format_is_reported():
 
 def test_sldp_answer_type_hint_uses_heracles_parser():
     assert answer_type_hint("<A, B>", "SLDP") == "Your answer should be an SLDP set"
+
+
+def test_sldp_answer_type_hint_uses_solution_formats_when_available():
+    assert (
+        answer_type_hint_from_solution_formats(["set[str]"], "SLDP")
+        == "Your answer should be an SLDP set of strings"
+    )
+    assert (
+        answer_type_hint_from_solution_formats(["set[point]", "point"], "SLDP")
+        == "Your answer should be an SLDP set of points or point"
+    )
+    assert answer_type_hint_from_solution_formats(["str"], "PDDL") is None

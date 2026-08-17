@@ -35,9 +35,6 @@ LABEL_TO_DSG_LAYER = {
     "Building": spark_dsg.DsgLayers.BUILDINGS,
 }
 
-SOLUTION_MODES = {"simplified", "informative"}
-
-
 class NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data: Any) -> bool:
         return True
@@ -234,6 +231,61 @@ def sample_points(points: list[dict[str, float]], limit: int) -> list[dict[str, 
     return selected
 
 
+def select_object_classes_by_solution_size(
+    counts: Counter[str],
+    limit: int,
+    max_solution_size: int,
+) -> list[str]:
+    if limit <= 0:
+        return []
+
+    rare_enough = [
+        (class_name, count)
+        for class_name, count in counts.items()
+        if count <= max_solution_size
+    ]
+    selected = sorted(rare_enough, key=lambda item: (item[1], item[0]))
+    if not selected:
+        selected = sorted(counts.items(), key=lambda item: (item[1], item[0]))
+    selected = selected[:limit]
+    return [class_name for class_name, _ in selected]
+
+
+def bbox_around_point(
+    point: dict[str, float],
+    half_extent: float,
+) -> dict[str, dict[str, float]]:
+    return {
+        "lower": {
+            axis: round(point[axis] - half_extent, 3)
+            for axis in ["x", "y", "z"]
+        },
+        "upper": {
+            axis: round(point[axis] + half_extent, 3)
+            for axis in ["x", "y", "z"]
+        },
+    }
+
+
+def point_in_bbox(
+    point: dict[str, float] | None,
+    bbox: dict[str, dict[str, float]],
+) -> bool:
+    if point is None:
+        return False
+    lower = bbox["lower"]
+    upper = bbox["upper"]
+    return all(lower[axis] <= point[axis] <= upper[axis] for axis in ["x", "y", "z"])
+
+
+def bbox_key(bbox: dict[str, dict[str, float]]) -> tuple[float, ...]:
+    return tuple(
+        bbox[corner][axis]
+        for corner in ["lower", "upper"]
+        for axis in ["x", "y", "z"]
+    )
+
+
 def scene_values(
     scene_path: str | Path,
     max_classes: int,
@@ -241,6 +293,7 @@ def scene_values(
     max_place_symbols: int,
     max_mesh_place_symbols: int,
     max_points: int,
+    max_bboxes: int = 3,
     max_place_object_cases: int = 20,
     max_radius_cases: int = 40,
     max_nearest_mesh_cases: int = 60,
@@ -248,6 +301,8 @@ def scene_values(
     max_mesh_place_hop_cases: int = 25,
     max_place_hop_cases: int = 25,
     non_empty_ratio: float = 0.7,
+    max_object_class_solution_size: int = 10,
+    max_bbox_solution_size: int = 20,
 ) -> dict[str, Any]:
     graph = load_graph(scene_path)
     by_label = nodes_by_label(graph)
@@ -273,11 +328,11 @@ def scene_values(
 
     object_points = finite_positions(by_label["Object"])
     all_points = finite_positions(by_label["Object"] + by_label["Place"] + by_label["MeshPlace"])
-    bbox = scene_bbox(all_points)
-
-    object_classes = [
-        class_name for class_name, _ in object_class_counts.most_common(max_classes)
-    ]
+    object_classes = select_object_classes_by_solution_size(
+        object_class_counts,
+        max_classes,
+        max_object_class_solution_size,
+    )
     mesh_place_symbols = sorted_symbols(by_label["MeshPlace"], max_mesh_place_symbols)
 
     return {
@@ -297,7 +352,11 @@ def scene_values(
         "radii": [2, 5, 10],
         "hop_counts": [2, 5, 6],
         "points": sample_points(object_points or all_points, max_points),
-        "bboxes": [bbox] if bbox else [],
+        "bboxes": build_bounding_box_cases(
+            index=index,
+            limit=max_bboxes,
+            max_solution_size=max_bbox_solution_size,
+        ),
         "place_object_cases": build_place_object_cases(
             index=index,
             limit=max_place_object_cases,
@@ -485,17 +544,7 @@ class SceneIndex:
         self,
         query_type: str,
         variables: dict[str, Any],
-        mode: str = "simplified",
     ) -> Any:
-        if mode not in SOLUTION_MODES:
-            raise ValueError(
-                f"Unsupported solution mode `{mode}`. Choose one of {sorted(SOLUTION_MODES)}."
-            )
-        if mode == "informative":
-            return self.informative_solution_for(query_type, variables)
-        return self.simplified_solution_for(query_type, variables)
-
-    def simplified_solution_for(self, query_type: str, variables: dict[str, Any]) -> Any:
         if query_type == "object_class_inventory":
             class_names = sorted(
                 {
@@ -634,166 +683,6 @@ class SceneIndex:
             return "WRITE_QUERY_NOT_ALLOWED"
         return None
 
-    def informative_solution_for(self, query_type: str, variables: dict[str, Any]) -> Any:
-        if query_type == "object_class_inventory":
-            return sorted(
-                {
-                    self.classes_by_symbol[node_symbol(node.id)]
-                    for node in self.nodes_with_label("Object")
-                    if self.classes_by_symbol[node_symbol(node.id)] is not None
-                }
-            )
-        if query_type == "top_object_classes_by_count":
-            limit = int(variables.get("limit", variables.get("case", {}).get("limit", 2)))
-            return [
-                {"class": class_name, "count": count}
-                for class_name, count in self.object_class_counts().most_common(limit)
-            ]
-        if query_type == "object_class_centers":
-            return [
-                self.node_result(node)
-                for node in self.objects_with_class(str(template_value(variables, "class")))
-            ]
-        if query_type == "object_class_count":
-            return len(self.objects_with_class(str(template_value(variables, "class"))))
-        if query_type == "objects_in_room_symbol":
-            room = self.nodes_by_symbol.get(str(template_value(variables, "room")))
-            if room is None:
-                return []
-            return [self.node_result(node, key="object") for node in self.contained_objects(room)]
-        if query_type == "objects_in_room_class":
-            rows = []
-            seen = set()
-            for room in self.rooms_with_class(str(template_value(variables, "room_class"))):
-                for node in self.contained_objects(room):
-                    symbol = node_symbol(node.id)
-                    if symbol in seen:
-                        continue
-                    seen.add(symbol)
-                    rows.append(self.node_result(node, key="object"))
-            return sorted(rows, key=lambda row: symbol_sort_key(row["object"]))
-        if query_type == "objects_in_place_symbol":
-            return [
-                self.node_result(node, key="object")
-                for node in self.direct_place_objects(str(template_value(variables, "place")))
-            ]
-        if query_type == "object_place_lookup":
-            return [
-                {
-                    "place": node_symbol(node.id),
-                    "center": point_string(self.points_by_symbol[node_symbol(node.id)]),
-                }
-                for node in self.containing_places(str(template_value(variables, "object")))
-            ]
-        if query_type == "nearest_object_to_mesh_place":
-            mesh_place = self.nodes_by_symbol.get(str(template_value(variables, "mesh_place")))
-            if mesh_place is None:
-                return None
-            mesh_point = self.points_by_symbol[node_symbol(mesh_place.id)]
-            candidates = []
-            for node in self.objects_with_class(str(template_value(variables, "class"))):
-                symbol = node_symbol(node.id)
-                node_distance = distance(mesh_point, self.points_by_symbol[symbol])
-                if node_distance is not None:
-                    candidates.append(
-                        {
-                            "object": symbol,
-                            "class": self.classes_by_symbol.get(symbol),
-                            "distance": node_distance,
-                        }
-                    )
-            sorted_candidates = sorted(
-                candidates,
-                key=lambda item: (item["distance"], symbol_sort_key(item["object"])),
-            )
-            return sorted_candidates[0] if sorted_candidates else None
-        if query_type == "object_radius_from_point":
-            query_point = template_value(variables, "point")
-            radius = float(template_value(variables, "radius"))
-            results = []
-            for node in self.objects_with_class(str(template_value(variables, "class"))):
-                symbol = node_symbol(node.id)
-                node_distance = distance(query_point, self.points_by_symbol[symbol])
-                if node_distance is not None and node_distance < radius:
-                    results.append(
-                        {
-                            "object": symbol,
-                            "class": self.classes_by_symbol.get(symbol),
-                            "center": point_string(self.points_by_symbol[symbol]),
-                            "distance": node_distance,
-                        }
-                    )
-            return sorted(
-                results,
-                key=lambda item: (item["distance"], symbol_sort_key(item["object"])),
-            )
-        if query_type == "nearest_object_to_object":
-            source = self.nodes_by_symbol.get(str(template_value(variables, "object")))
-            if source is None:
-                return None
-            source_symbol = node_symbol(source.id)
-            source_point = self.points_by_symbol[source_symbol]
-            candidates = []
-            for node in self.objects_with_class(str(template_value(variables, "class"))):
-                symbol = node_symbol(node.id)
-                if symbol == source_symbol:
-                    continue
-                node_distance = distance(source_point, self.points_by_symbol[symbol])
-                if node_distance is not None:
-                    candidates.append(
-                        {
-                            "object": symbol,
-                            "class": self.classes_by_symbol.get(symbol),
-                            "distance": node_distance,
-                        }
-                    )
-            sorted_candidates = sorted(
-                candidates,
-                key=lambda item: (item["distance"], symbol_sort_key(item["object"])),
-            )
-            return sorted_candidates[0] if sorted_candidates else None
-        if query_type == "objects_in_bounding_box":
-            bbox = variables["bbox"]
-            lower = bbox["lower"]
-            upper = bbox["upper"]
-            results = []
-            for node in self.objects_with_class():
-                symbol = node_symbol(node.id)
-                point = self.points_by_symbol[symbol]
-                if point is None:
-                    continue
-                if all(lower[axis] <= point[axis] <= upper[axis] for axis in ["x", "y", "z"]):
-                    results.append(self.node_result(node, key="object"))
-            return results
-        if query_type == "mesh_place_hops":
-            return self.hop_symbols(
-                str(template_value(variables, "mesh_place")),
-                "MeshPlace",
-                int(template_value(variables, "hops")),
-            )
-        if query_type == "room_adjacency_count":
-            room = self.nodes_by_symbol.get(str(variables["room"]))
-            if room is None:
-                return {"room": str(variables["room"]), "adjacent_rooms": 0}
-            neighbor_ids = {
-                int(neighbor_id)
-                for neighbor_id in room.siblings()
-                if self.node_labels_by_id.get(int(neighbor_id)) == "Room"
-            }
-            return {
-                "room": node_symbol(room.id),
-                "adjacent_rooms": len(neighbor_ids),
-            }
-        if query_type == "place_hops":
-            return self.hop_symbols(
-                str(template_value(variables, "place")),
-                "Place",
-                int(template_value(variables, "hops")),
-            )
-        if query_type == "write_refusal":
-            return "WRITE_QUERY_NOT_ALLOWED"
-        return None
-
 
 def build_place_object_cases(
     index: SceneIndex,
@@ -812,6 +701,53 @@ def build_place_object_cases(
     non_empty = sorted(non_empty, key=lambda case: symbol_sort_key(case["place"]))
     empty = sorted(empty, key=lambda case: symbol_sort_key(case["place"]))
     return select_balanced_cases(non_empty, empty, limit, non_empty_ratio)
+
+
+def objects_in_bbox(
+    index: SceneIndex,
+    bbox: dict[str, dict[str, float]],
+) -> list[str]:
+    symbols = []
+    for node in index.objects_with_class():
+        symbol = node_symbol(node.id)
+        if point_in_bbox(index.points_by_symbol[symbol], bbox):
+            symbols.append(symbol)
+    return symbols
+
+
+def build_bounding_box_cases(
+    index: SceneIndex,
+    limit: int,
+    max_solution_size: int,
+    half_extents: tuple[float, ...] = (1.5, 2.5, 4.0),
+) -> list[dict[str, dict[str, float]]]:
+    if limit <= 0 or max_solution_size <= 0:
+        return []
+
+    candidates: list[tuple[int, str, dict[str, dict[str, float]]]] = []
+    seen_solutions: set[tuple[str, ...]] = set()
+    seen_bboxes: set[tuple[float, ...]] = set()
+    for node in index.objects_with_class():
+        symbol = node_symbol(node.id)
+        point = index.points_by_symbol[symbol]
+        if point is None:
+            continue
+        for half_extent in half_extents:
+            bbox = bbox_around_point(point, half_extent)
+            key = bbox_key(bbox)
+            if key in seen_bboxes:
+                continue
+            seen_bboxes.add(key)
+            solution = tuple(objects_in_bbox(index, bbox))
+            if not solution or len(solution) > max_solution_size:
+                continue
+            if solution in seen_solutions:
+                continue
+            seen_solutions.add(solution)
+            candidates.append((len(solution), symbol, bbox))
+
+    candidates.sort(key=lambda item: (-item[0], symbol_sort_key(item[1]), bbox_key(item[2])))
+    return [bbox for _, _, bbox in candidates[:limit]]
 
 
 def build_object_radius_cases(
@@ -938,7 +874,7 @@ def build_template_config(
 ) -> dict[str, Any]:
     return {
         "scene_id": scene_id,
-        "solution_mode": "simplified",
+        "scene_summary": scene_summary(scene_path),
         "values": scene_values(
             scene_path=scene_path,
             max_classes=limits.max_classes,
@@ -946,6 +882,7 @@ def build_template_config(
             max_place_symbols=limits.max_place_symbols,
             max_mesh_place_symbols=limits.max_mesh_place_symbols,
             max_points=limits.max_points,
+            max_bboxes=limits.max_bboxes,
             max_place_object_cases=limits.max_place_object_cases,
             max_radius_cases=limits.max_radius_cases,
             max_nearest_mesh_cases=limits.max_nearest_mesh_cases,
@@ -953,8 +890,9 @@ def build_template_config(
             max_mesh_place_hop_cases=limits.max_mesh_place_hop_cases,
             max_place_hop_cases=limits.max_place_hop_cases,
             non_empty_ratio=limits.non_empty_ratio,
+            max_object_class_solution_size=limits.max_object_class_solution_size,
+            max_bbox_solution_size=limits.max_bbox_solution_size,
         ),
-        "scene_summary": scene_summary(scene_path),
     }
 
 
@@ -986,6 +924,7 @@ def main() -> None:
     parser.add_argument("--max-place-symbols", type=int, default=50)
     parser.add_argument("--max-mesh-place-symbols", type=int, default=50)
     parser.add_argument("--max-points", type=int, default=5)
+    parser.add_argument("--max-bboxes", type=int, default=3)
     parser.add_argument("--max-place-object-cases", type=int, default=20)
     parser.add_argument("--max-radius-cases", type=int, default=40)
     parser.add_argument("--max-nearest-mesh-cases", type=int, default=60)
@@ -993,6 +932,8 @@ def main() -> None:
     parser.add_argument("--max-mesh-place-hop-cases", type=int, default=25)
     parser.add_argument("--max-place-hop-cases", type=int, default=25)
     parser.add_argument("--non-empty-ratio", type=float, default=0.7)
+    parser.add_argument("--max-object-class-solution-size", type=int, default=10)
+    parser.add_argument("--max-bbox-solution-size", type=int, default=20)
     args = parser.parse_args()
     command(args)
 

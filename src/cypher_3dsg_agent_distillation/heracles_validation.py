@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Literal
+import re
+from typing import Any, Literal
 
 
 def ensure_heracles_agents_importable() -> None:
@@ -66,6 +67,49 @@ def answer_type_hint(solution: str, output_type: OutputType) -> str | None:
     elif sldp_type.lower() == "number":
         sldp_type = "primitive number"
     return f"Your answer should be an SLDP {sldp_type}"
+
+
+def sldp_format_description(solution_format: str) -> str:
+    normalized = str(solution_format).strip().lower()
+    collection_match = re.fullmatch(r"(set|list)\[(.+)\]", normalized)
+    if collection_match:
+        collection_type = collection_match.group(1)
+        item_type = sldp_format_description(collection_match.group(2))
+        if item_type.startswith("primitive "):
+            item_type = item_type.removeprefix("primitive ")
+        if item_type.endswith("s"):
+            plural_item = item_type
+        else:
+            plural_item = f"{item_type}s"
+        return f"{collection_type} of {plural_item}"
+    if normalized in {"str", "string"}:
+        return "primitive string"
+    if normalized in {"int", "integer", "float", "number"}:
+        return "primitive number"
+    if normalized == "point":
+        return "point"
+    if normalized in {"bool", "boolean"}:
+        return "boolean"
+    return normalized
+
+
+def answer_type_hint_from_solution_formats(
+    solution_formats: Any,
+    output_type: OutputType,
+) -> str | None:
+    if output_type != "SLDP" or not solution_formats:
+        return None
+    formats = solution_formats if isinstance(solution_formats, list) else [solution_formats]
+    descriptions = []
+    for solution_format in formats:
+        description = sldp_format_description(str(solution_format))
+        if description not in descriptions:
+            descriptions.append(description)
+    if not descriptions:
+        return None
+    if len(descriptions) == 1:
+        return f"Your answer should be an SLDP {descriptions[0]}"
+    return f"Your answer should be an SLDP {' or a '.join(descriptions)}"
 
 
 def answer_formatting_guidance(output_type: OutputType) -> str:

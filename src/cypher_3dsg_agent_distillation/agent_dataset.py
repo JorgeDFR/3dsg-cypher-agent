@@ -62,6 +62,9 @@ def trace_from_prepared_record(
         messages=messages,
         gold_cypher=cypher,
         expected_solution=final_answer,
+        real_solution=final_answer,
+        cypher_solution=final_answer,
+        final_answer=str(final_answer),
         split_group=record.get("split_group")
         or split_group_for_record(
             record.get("scene_id"),
@@ -280,7 +283,9 @@ def write_rendered_split(
 
 def split_command(args: argparse.Namespace) -> None:
     config = load_data_config(args.data_config)
-    records = read_agent_jsonl(config["traces_jsonl_path"])
+    records = read_agent_jsonl(
+        config.get("teacher_traces_jsonl_path")
+    )
     if args.optimize_student_traces or bool(config.get("optimize_student_traces", False)):
         records = optimize_student_traces(records)
     records = cap_by_task_type(records, config.get("max_per_task_type"))
