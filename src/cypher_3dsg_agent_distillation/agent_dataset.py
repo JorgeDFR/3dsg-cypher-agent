@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import random
 from collections import Counter, defaultdict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ from cypher_3dsg_agent_distillation.experiment_profiles import (
     load_experiment_profile_from_config,
     profile_seed_defaults,
 )
+from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.io import read_jsonl, write_jsonl
 from cypher_3dsg_agent_distillation.neo4j_validation import is_safe_refusal
 
@@ -113,6 +116,229 @@ def cap_by_task_type(
     return capped
 
 
+def read_json_array(path: str | Path) -> list[dict[str, Any]]:
+    resolved = Path(path)
+    if not resolved.exists():
+        return []
+    data = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise TypeError(f"Expected JSON array at {resolved}.")
+    return data
+
+
+def rejected_trace_payload(record: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(record)
+    nested_payload = record.get("payload")
+    if isinstance(nested_payload, dict):
+        payload = {
+            **nested_payload,
+            **{key: value for key, value in record.items() if key != "payload"},
+        }
+    if "cypher_solution" not in payload and "actual_solution" in payload:
+        payload["cypher_solution"] = payload["actual_solution"]
+    return payload
+
+
+def tool_call_cypher(tool_call: dict[str, Any]) -> str | None:
+    function = tool_call.get("function") or {}
+    arguments = function.get("arguments") or {}
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    value = arguments.get("cypher_string")
+    return str(value).strip() if value is not None else None
+
+
+def tool_call_count(messages: list[dict[str, Any]]) -> int:
+    return sum(len(message.get("tool_calls") or []) for message in messages)
+
+
+def successful_tool_call_index(messages: list[dict[str, Any]], cypher: str) -> int | None:
+    target = cypher.strip()
+    call_index = 0
+    successful_index = None
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            call_index += 1
+            if tool_call_cypher(tool_call) == target:
+                successful_index = call_index
+    return successful_index
+
+
+def repaired_messages_with_final_answer(
+    messages: list[dict[str, Any]],
+    final_answer: str,
+) -> list[dict[str, Any]] | None:
+    repaired = deepcopy(messages)
+    for message in reversed(repaired):
+        if (
+            message.get("role") == "assistant"
+            and message.get("content")
+            and not message.get("tool_calls")
+        ):
+            message["content"] = f"<answer>{final_answer}</answer>"
+            return repaired
+    return None
+
+
+def repair_rejected_invalid_answer_trace(
+    record: dict[str, Any],
+) -> AgentTraceRecord | None:
+    trace = rejected_trace_payload(record)
+    if trace.get("reason") != "invalid_answer_format":
+        return None
+
+    validation = dict(trace.get("validation") or {})
+    if validation.get("executable") is False:
+        return None
+
+    real_solution = trace.get("real_solution")
+    cypher_solution = trace.get("cypher_solution")
+    cypher = str(trace.get("cypher") or "").strip()
+    question = trace.get("question")
+    messages = trace.get("messages") or []
+    if (
+        real_solution is None
+        or cypher_solution is None
+        or not cypher
+        or not question
+        or not messages
+    ):
+        return None
+
+    output_type = str(
+        trace.get("output_type")
+        or (trace.get("metadata") or {}).get("output_type")
+        or "SLDP"
+    )
+    valid_cypher_format, cypher_matches_real = answer_matches_with_heracles(
+        str(cypher_solution),
+        str(real_solution),
+        output_type,
+    )
+    if not valid_cypher_format or not cypher_matches_real:
+        return None
+
+    repaired_messages = repaired_messages_with_final_answer(messages, str(cypher_solution))
+    if repaired_messages is None:
+        return None
+
+    raw_tool_call_count = tool_call_count(repaired_messages)
+    successful_index = successful_tool_call_index(repaired_messages, cypher)
+    if successful_index is None and raw_tool_call_count:
+        successful_index = raw_tool_call_count
+
+    metadata = dict(trace.get("metadata") or {})
+    metadata.update(
+        {
+            "generation_mode": metadata.get("generation_mode", "tool_conversation"),
+            "seed_uid": trace.get("seed_uid"),
+            "source_trace_uid": trace.get("uid"),
+            "source_trace_status": "rejected",
+            "source_rejection_reason": "invalid_answer_format",
+            "final_answer_repaired": True,
+            "repair_type": "replace_invalid_final_answer_with_cypher_solution",
+            "original_final_answer": trace.get("final_answer"),
+            "tool_call_count": raw_tool_call_count,
+            "successful_tool_call_index": successful_index,
+        }
+    )
+    validation.update(
+        {
+            "static_valid": True,
+            "executable": True,
+            "solution_match": True,
+            "cypher_solution_match": True,
+            "final_answer_match": True,
+            "final_answer_cypher_match": True,
+            "error": None,
+        }
+    )
+
+    uid = str(trace.get("uid") or trace.get("seed_uid") or "rejected_trace")
+    return AgentTraceRecord.model_validate(
+        {
+            "uid": f"{uid}_repaired",
+            "scene_id": trace.get("scene_id"),
+            "question": question,
+            "query_type": trace.get("query_type", "unknown"),
+            "messages": repaired_messages,
+            "gold_cypher": cypher,
+            "expected_solution": real_solution,
+            "real_solution": real_solution,
+            "cypher_solution": cypher_solution,
+            "final_answer": str(cypher_solution),
+            "split_group": trace.get("split_group"),
+            "teacher_model": trace.get("teacher_model", DEFAULT_TEACHER_MODEL),
+            "validation": validation,
+            "read_only": bool(trace.get("read_only", True)),
+            "tags": trace.get("tags", []),
+            "metadata": metadata,
+        }
+    )
+
+
+def repair_rejected_invalid_answer_traces(
+    records: list[dict[str, Any]],
+) -> list[AgentTraceRecord]:
+    repaired, _counts = repair_rejected_invalid_answer_traces_with_counts(records)
+    return repaired
+
+
+def repair_rejected_invalid_answer_traces_with_counts(
+    records: list[dict[str, Any]],
+) -> tuple[list[AgentTraceRecord], Counter[str]]:
+    repaired = []
+    counts: Counter[str] = Counter()
+    for record in records:
+        payload = rejected_trace_payload(record)
+        reason = str(payload.get("reason") or "unknown")
+        counts[f"rejected_reason:{reason}"] += 1
+        trace = repair_rejected_invalid_answer_trace(record)
+        if trace is not None:
+            repaired.append(trace)
+            counts["repaired_invalid_answer_format"] += 1
+    counts["rejected_total"] = len(records)
+    return repaired, counts
+
+
+def read_student_trace_records_with_counts(
+    config: dict[str, Any],
+    *,
+    include_repaired_rejected: bool,
+) -> tuple[list[AgentTraceRecord], Counter[str]]:
+    records = read_agent_jsonl(
+        config.get("teacher_traces_jsonl_path") or config["traces_jsonl_path"]
+    )
+    counts: Counter[str] = Counter({"accepted_teacher_traces": len(records)})
+    if include_repaired_rejected:
+        rejected_records = read_json_array(config["rejected_traces_path"])
+        repaired_records, repair_counts = repair_rejected_invalid_answer_traces_with_counts(
+            rejected_records
+        )
+        records.extend(repaired_records)
+        counts.update(repair_counts)
+    return records, counts
+
+
+def read_student_trace_records(
+    config: dict[str, Any],
+    *,
+    include_repaired_rejected: bool,
+) -> list[AgentTraceRecord]:
+    records, _counts = read_student_trace_records_with_counts(
+        config,
+        include_repaired_rejected=include_repaired_rejected,
+    )
+    return records
+
+
 def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
     raw_tool_call_count = int(record.metadata.get("tool_call_count") or len(record.tool_calls))
     if raw_tool_call_count <= 1 or record.metadata.get("incomplete_conversation"):
@@ -172,7 +398,24 @@ def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
 
 
 def optimize_student_traces(records: list[AgentTraceRecord]) -> list[AgentTraceRecord]:
-    return [optimize_student_trace(record) for record in records]
+    optimized, _counts = optimize_student_traces_with_counts(records)
+    return optimized
+
+
+def optimize_student_traces_with_counts(
+    records: list[AgentTraceRecord],
+) -> tuple[list[AgentTraceRecord], Counter[str]]:
+    optimized = []
+    counts: Counter[str] = Counter()
+    for record in records:
+        optimized_record = optimize_student_trace(record)
+        optimized.append(optimized_record)
+        if optimized_record is not record and optimized_record.metadata.get("student_optimized"):
+            counts["pruned_failed_tool_attempts"] += 1
+            counts["dropped_tool_calls"] += int(
+                optimized_record.metadata.get("dropped_tool_call_count") or 0
+            )
+    return optimized, counts
 
 
 SplitResult = tuple[
@@ -281,14 +524,89 @@ def write_rendered_split(
     write_jsonl([render_trace(record, view) for record in records], path)
 
 
+def record_task_type_counts(records: list[AgentTraceRecord]) -> Counter[str]:
+    return Counter(record.task_type for record in records)
+
+
+def format_counter(counter: Counter[str]) -> str:
+    if not counter:
+        return "none"
+    return ", ".join(f"{key}={counter[key]}" for key in sorted(counter))
+
+
+def split_report_lines(
+    *,
+    source_counts: Counter[str],
+    optimization_counts: Counter[str],
+    cap_dropped_counts: Counter[str],
+    split_records: dict[str, list[AgentTraceRecord]],
+    split_paths: dict[str, str],
+    optimize_enabled: bool,
+) -> list[str]:
+    lines = [
+        "Dataset split summary:",
+        f"  accepted teacher traces loaded: {source_counts['accepted_teacher_traces']}",
+    ]
+    if optimize_enabled:
+        lines.extend(
+            [
+                (
+                    "  rejected traces scanned: "
+                    f"{source_counts['rejected_total']} "
+                    f"(invalid_answer_format="
+                    f"{source_counts['rejected_reason:invalid_answer_format']})"
+                ),
+                "  optimizations:",
+                (
+                    "    final answer repairs from invalid_answer_format rejects: "
+                    f"{source_counts['repaired_invalid_answer_format']}"
+                ),
+                (
+                    "    pruned failed tool attempts: "
+                    f"{optimization_counts['pruned_failed_tool_attempts']} traces, "
+                    f"{optimization_counts['dropped_tool_calls']} tool calls dropped"
+                ),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "  rejected traces scanned: 0 (optimization disabled)",
+                "  optimizations: disabled",
+            ]
+        )
+
+    if cap_dropped_counts:
+        lines.append(f"  dropped by max_per_task_type: {format_counter(cap_dropped_counts)}")
+
+    lines.append("  split counts:")
+    for split_name in ("train", "eval", "test", "challenge"):
+        records = split_records[split_name]
+        lines.append(
+            f"    {split_name}: {len(records)} questions "
+            f"({format_counter(record_task_type_counts(records))}) -> "
+            f"{split_paths[split_name]}"
+        )
+    return lines
+
+
 def split_command(args: argparse.Namespace) -> None:
     config = load_data_config(args.data_config)
-    records = read_agent_jsonl(
-        config.get("teacher_traces_jsonl_path")
+    optimize_enabled = args.optimize_student_traces or bool(
+        config.get("optimize_student_traces", False)
     )
-    if args.optimize_student_traces or bool(config.get("optimize_student_traces", False)):
-        records = optimize_student_traces(records)
+    records, source_counts = read_student_trace_records_with_counts(
+        config,
+        include_repaired_rejected=optimize_enabled,
+    )
+    optimization_counts: Counter[str] = Counter()
+    if optimize_enabled:
+        records, optimization_counts = optimize_student_traces_with_counts(records)
+    records_before_cap = records
     records = cap_by_task_type(records, config.get("max_per_task_type"))
+    cap_dropped_counts = record_task_type_counts(records_before_cap) - record_task_type_counts(
+        records
+    )
     split_config = config.get("split", {})
     train, eval_records, test, challenge = grouped_split_records(
         records,
@@ -303,6 +621,23 @@ def split_command(args: argparse.Namespace) -> None:
     write_rendered_split(eval_records, paths["eval"], args.render_view)
     write_rendered_split(test, paths["test"], args.render_view)
     write_rendered_split(challenge, paths["challenge"], args.render_view)
+    print(
+        "\n".join(
+            split_report_lines(
+                source_counts=source_counts,
+                optimization_counts=optimization_counts,
+                cap_dropped_counts=cap_dropped_counts,
+                split_records={
+                    "train": train,
+                    "eval": eval_records,
+                    "test": test,
+                    "challenge": challenge,
+                },
+                split_paths=paths,
+                optimize_enabled=optimize_enabled,
+            )
+        )
+    )
 
 
 def bootstrap_command(args: argparse.Namespace) -> None:

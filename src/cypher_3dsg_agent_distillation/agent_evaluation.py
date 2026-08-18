@@ -143,7 +143,7 @@ def main() -> None:
     parser.add_argument(
         "--split",
         choices=["train", "eval", "test", "challenge"],
-        default="test",
+        default="train",
     )
     args = parser.parse_args()
     command(args)

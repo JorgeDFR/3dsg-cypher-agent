@@ -28,17 +28,61 @@ class ResultShapeError(ValueError):
     pass
 
 
+def is_number_like(value: Any) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def is_coordinate_sequence(value: Any) -> bool:
+    if not isinstance(value, list | tuple) or len(value) < 3:
+        return False
+    return all(is_number_like(value[index]) for index in range(3))
+
+
+def point_coordinates(value: Any) -> tuple[Any, Any, Any]:
+    if isinstance(value, Mapping):
+        if all(axis in value for axis in ("x", "y", "z")):
+            return value["x"], value["y"], value["z"]
+        raise ResultShapeError(f"expected point with x/y/z coordinates, got {value!r}")
+
+    try:
+        return value.x, value.y, value.z
+    except AttributeError:
+        pass
+
+    if is_coordinate_sequence(value):
+        return value[0], value[1], value[2]
+
+    raise ResultShapeError(f"expected point value, got {type(value).__name__}")
+
+
+def is_point_like(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.startswith("POINT(")
+    try:
+        x, y, z = point_coordinates(value)
+    except ResultShapeError:
+        return False
+    return is_number_like(x) and is_number_like(y) and is_number_like(z)
+
+
+def is_aggregate_result_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return False
+    if not isinstance(value, list | tuple | set):
+        return False
+    return not is_coordinate_sequence(value)
+
+
 def point_to_solution(value: Any) -> str:
     if isinstance(value, str) and value.startswith("POINT("):
         return value
-    try:
-        x = value.x
-        y = value.y
-        z = value.z
-    except AttributeError:
-        x = value[0]
-        y = value[1]
-        z = value[2]
+    x, y, z = point_coordinates(value)
+    if not all(is_number_like(axis) for axis in (x, y, z)):
+        raise ResultShapeError(f"expected numeric point coordinates, got {value!r}")
     return f"POINT({float(x):.3f} {float(y):.3f} {float(z):.3f})"
 
 
@@ -141,37 +185,77 @@ def node_property(value: Any, property_name: str) -> Any:
         return None
 
 
+def plural_column_key(key: str) -> str:
+    if key.endswith("s"):
+        return key
+    if key.endswith(("ch", "sh", "x", "z")) or key.endswith("class"):
+        return f"{key}es"
+    return f"{key}s"
+
+
+def collection_items(value: Any) -> list[Any]:
+    return list(value) if is_aggregate_result_value(value) else [value]
+
+
+def symbol_values(value: Any) -> list[str] | None:
+    items = collection_items(value)
+    if all(isinstance(item, str) and NODE_SYMBOL_RE.fullmatch(item) for item in items):
+        return items
+    return None
+
+
+def class_values(value: Any) -> list[str] | None:
+    items = collection_items(value)
+    if all(isinstance(item, str) and not NODE_SYMBOL_RE.fullmatch(item) for item in items):
+        return items
+    return None
+
+
+def point_values(value: Any) -> list[Any] | None:
+    items = collection_items(value)
+    if all(is_point_like(item) for item in items):
+        return items
+    return None
+
+
 def inferred_row_property(row: dict[str, Any], property_name: str) -> Any:
     if property_name == "nodeSymbol":
+        collection_matches = []
         for value in row.values():
             if isinstance(value, str) and NODE_SYMBOL_RE.fullmatch(value):
                 return value
+            values = symbol_values(value)
+            if values is not None:
+                collection_matches.append(values)
             nested_value = node_property(value, property_name)
             if isinstance(nested_value, str) and NODE_SYMBOL_RE.fullmatch(nested_value):
                 return nested_value
+        if len(collection_matches) == 1:
+            return collection_matches[0]
 
     if property_name == "class":
-        string_values = [
-            value
-            for value in row.values()
-            if isinstance(value, str) and not NODE_SYMBOL_RE.fullmatch(value)
-        ]
-        if len(string_values) == 1:
-            return string_values[0]
+        matches = []
+        for value in row.values():
+            values = class_values(value)
+            if values is not None:
+                matches.append(values)
+        if len(matches) == 1:
+            return matches[0] if len(matches[0]) != 1 else matches[0][0]
 
     if property_name == "center":
-        point_values = []
+        matches = []
         for value in row.values():
-            if isinstance(value, str) and value.startswith("POINT("):
-                point_values.append(value)
-            elif isinstance(value, list | tuple) and len(value) >= 3:
-                point_values.append(value)
-            else:
-                nested_value = node_property(value, property_name)
-                if nested_value is not None:
-                    point_values.append(nested_value)
-        if len(point_values) == 1:
-            return point_values[0]
+            values = point_values(value)
+            if values is not None:
+                matches.append(values)
+                continue
+            nested_value = node_property(value, property_name)
+            if nested_value is not None:
+                nested_values = point_values(nested_value)
+                if nested_values is not None:
+                    matches.append(nested_values)
+        if len(matches) == 1:
+            return matches[0] if len(matches[0]) != 1 else matches[0][0]
 
     return None
 
@@ -183,13 +267,15 @@ def row_property(
     node_keys: list[str] | None = None,
 ) -> Any:
     for key in preferred_keys or []:
-        value = row.get(key)
+        for column_key in (key, plural_column_key(key)):
+            value = row.get(column_key)
+            if value is not None:
+                return value
+
+    for column_key in (property_name, plural_column_key(property_name)):
+        value = row.get(column_key)
         if value is not None:
             return value
-
-    value = row.get(property_name)
-    if value is not None:
-        return value
 
     suffix = f".{property_name}"
     for key, value in row.items():
@@ -219,6 +305,8 @@ def row_values(
     property_name: str,
     preferred_keys: list[str] | None = None,
     node_keys: list[str] | None = None,
+    *,
+    flatten_collections: bool = False,
 ) -> list[Any]:
     values = []
     for row in rows:
@@ -228,7 +316,10 @@ def row_values(
             raise ResultShapeError(
                 f"missing `{property_name}` in returned columns: {columns}"
             )
-        values.append(value)
+        if flatten_collections and is_aggregate_result_value(value):
+            values.extend(value)
+        else:
+            values.append(value)
     return values
 
 
@@ -263,6 +354,7 @@ def rows_to_solution_value(
                         "class",
                         preferred_keys=["class"],
                         node_keys=["o", "object"],
+                        flatten_collections=True,
                     )
                 )
             )
@@ -276,6 +368,7 @@ def rows_to_solution_value(
                     "center",
                     preferred_keys=["center"],
                     node_keys=["o", "object"],
+                    flatten_collections=True,
                 )
             ]
         )
@@ -287,6 +380,7 @@ def rows_to_solution_value(
             "class",
             preferred_keys=["class"],
             node_keys=["o", "object"],
+            flatten_collections=True,
         )
     if query_type in {
         "objects_in_room_symbol",
@@ -300,6 +394,7 @@ def rows_to_solution_value(
                 "nodeSymbol",
                 preferred_keys=["object", "nodeSymbol"],
                 node_keys=["o", "object"],
+                flatten_collections=True,
             )
         )
     if query_type == "object_place_lookup":
@@ -309,6 +404,7 @@ def rows_to_solution_value(
                 "nodeSymbol",
                 preferred_keys=["place", "nodeSymbol"],
                 node_keys=["p", "place"],
+                flatten_collections=True,
             )
         )
     if query_type in {"nearest_object_to_mesh_place", "nearest_object_to_object"}:
@@ -327,6 +423,7 @@ def rows_to_solution_value(
                 "nodeSymbol",
                 preferred_keys=["object", "nodeSymbol"],
                 node_keys=["o", "object"],
+                flatten_collections=True,
             )
         )
     if query_type == "mesh_place_hops":
@@ -336,6 +433,7 @@ def rows_to_solution_value(
                 "nodeSymbol",
                 preferred_keys=["meshPlace", "nodeSymbol"],
                 node_keys=["m", "meshPlace"],
+                flatten_collections=True,
             )
         )
     if query_type == "room_adjacency_count":
@@ -349,6 +447,7 @@ def rows_to_solution_value(
                 "nodeSymbol",
                 preferred_keys=["place", "nodeSymbol"],
                 node_keys=["p", "place"],
+                flatten_collections=True,
             )
         )
     return rows

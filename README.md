@@ -132,7 +132,8 @@ Create grouped splits:
 ```
 
 To optimize the student dataset by pruning failed repair attempts during
-split/render output:
+split/render output and adding rejected `invalid_answer_format` traces that can
+be repaired by replacing only the final answer text:
 
 ```bash
 .venv/bin/python scripts/prepare_dataset.py split \
@@ -141,19 +142,20 @@ split/render output:
   --optimize-student-traces
 ```
 
+Evaluate traces:
+
+```bash
+.venv/bin/python scripts/evaluate_traces.py \
+  --data-config configs/data.yaml \
+  --split test
+```
+
 Train the primary student:
 
 ```bash
 .venv/bin/python scripts/train_agent_lora.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3_4b.yaml
-```
-
-Evaluate traces:
-
-```bash
-.venv/bin/python scripts/evaluate_traces.py \
-  --data-config configs/data.yaml
 ```
 
 Generate Ollama export metadata:

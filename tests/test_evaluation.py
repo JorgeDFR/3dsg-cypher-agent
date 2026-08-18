@@ -1,10 +1,19 @@
 from cypher_3dsg_agent_distillation.evaluation import (
+    ResultShapeError,
     answer_matches,
     build_summary,
     evaluate_records,
     normalize_answer,
+    point_to_solution,
     rows_to_solution_text,
 )
+
+
+class CartesianPoint:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
 
 
 def test_rows_to_solution_text_matches_simplified_set_solution():
@@ -62,6 +71,55 @@ def test_rows_to_solution_text_accepts_unaliased_neo4j_expression_keys():
     assert rows_to_solution_text(center_record, [{"o.center": [1, 2, 3]}]) == (
         "POINT(1.000 2.000 3.000)"
     )
+
+
+def test_rows_to_solution_text_flattens_collected_point_values():
+    record = {
+        "query_type": "object_class_centers",
+        "solution": "<POINT(1.000 2.000 3.000), POINT(4.000 5.000 6.000)>",
+        "solution_formats": ["set[point]"],
+    }
+    rows = [
+        {
+            "center": [
+                CartesianPoint(1, 2, 3),
+                CartesianPoint(4, 5, 6),
+            ]
+        }
+    ]
+
+    actual = rows_to_solution_text(record, rows)
+
+    assert normalize_answer(actual) == normalize_answer(record["solution"])
+
+
+def test_rows_to_solution_text_flattens_collected_alias_values():
+    class_record = {
+        "query_type": "object_class_inventory",
+        "solution": "<chair, table>",
+        "solution_formats": ["set[str]"],
+    }
+    object_record = {
+        "query_type": "objects_in_place_symbol",
+        "solution": "<O1, O2>",
+        "solution_formats": ["set[str]"],
+    }
+
+    assert normalize_answer(rows_to_solution_text(class_record, [{"classes": ["table", "chair"]}])) == (
+        normalize_answer(class_record["solution"])
+    )
+    assert normalize_answer(rows_to_solution_text(object_record, [{"objects": ["O1", "O2"]}])) == (
+        normalize_answer(object_record["solution"])
+    )
+
+
+def test_point_to_solution_reports_non_point_collection_as_shape_error():
+    try:
+        point_to_solution([CartesianPoint(1, 2, 3), CartesianPoint(4, 5, 6)])
+    except ResultShapeError as exc:
+        assert "expected point value" in str(exc)
+    else:
+        raise AssertionError("Expected ResultShapeError")
 
 
 def test_rows_to_solution_text_infers_symbol_from_result_aliases():

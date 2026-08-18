@@ -91,6 +91,22 @@ def tool_assistant(
     }
 
 
+def malformed_tool_arguments_assistant():
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_bad",
+                "type": "function",
+                "function": {
+                    "name": DEFAULT_AGENT_TOOL,
+                    "arguments": '{\n  "cypher_string": "MATCH (o:Object) RETURN count(o) AS count',
+                },
+            }
+        ],
+    }
+
+
 def final_assistant(answer="3"):
     return {"role": "assistant", "content": f"<answer>{answer}</answer>"}
 
@@ -299,6 +315,20 @@ def test_teacher_interaction_rejects_missing_tool():
 
     assert not decision.accepted
     assert decision.reason == "missing_required_tool"
+
+
+def test_teacher_interaction_rejects_malformed_tool_arguments_without_crashing():
+    decision, _client = run_interaction(seed_record(), [malformed_tool_arguments_assistant()])
+
+    assert not decision.accepted
+    assert decision.reason == "invalid_tool_arguments"
+    assert "invalid tool arguments JSON" in decision.payload["error"]
+    tool_message = next(
+        message for message in decision.payload["messages"] if message.get("tool_calls")
+    )
+    assert tool_message["tool_calls"][0]["function"]["arguments"].startswith(
+        "{\n"
+    )
 
 
 def test_teacher_interaction_repairs_static_issue_within_tool_limit():

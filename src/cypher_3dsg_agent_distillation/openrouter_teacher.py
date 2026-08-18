@@ -197,10 +197,15 @@ def normalize_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
     normalized = {key: value for key, value in message.items() if value is not None}
     normalized["role"] = "assistant"
     if normalized.get("tool_calls"):
-        normalized["tool_calls"] = [
-            normalize_tool_call_arguments(tool_call)
-            for tool_call in normalized.get("tool_calls", [])
-        ]
+        tool_calls = []
+        for tool_call in normalized.get("tool_calls", []):
+            try:
+                tool_calls.append(normalize_tool_call_arguments(tool_call))
+            except ValueError:
+                raw_tool_call = dict(tool_call)
+                raw_tool_call.setdefault("type", "function")
+                tool_calls.append(raw_tool_call)
+        normalized["tool_calls"] = tool_calls
     return normalized
 
 
