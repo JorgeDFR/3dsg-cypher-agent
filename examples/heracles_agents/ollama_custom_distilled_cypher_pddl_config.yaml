@@ -2,7 +2,7 @@
 client:
   client_type: ollama
 model_info:
-  model: 3dsg-cypher-agent-qwen3-4b-distilled
+  model: qwen3.5-4b-3dsg-cypher-agent-lora
   temperature: 0.2
   seed: 123
 agent_info:

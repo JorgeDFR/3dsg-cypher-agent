@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from cypher_3dsg_agent_distillation.io import write_jsonl
 from cypher_3dsg_agent_distillation.train import (
+    ASSISTANT_ONLY_LOSS_MODE,
+    FULL_LOSS_MODE,
     align_model_token_ids,
     build_dataset,
+    build_training_example,
     gemma4_effective_target_modules,
     is_gemma4_effective_model,
     lora_target_modules,
+    pad_causal_lm_features,
     sft_config_kwargs,
     sft_trainer_kwargs,
     should_upcast_gemma4_effective_param,
@@ -16,6 +20,29 @@ from cypher_3dsg_agent_distillation.train import (
 
 class DummyTokenizer:
     chat_template = None
+
+
+class CharTokenizer(DummyTokenizer):
+    pad_token_id = 0
+    eos_token_id = 1
+    padding_side = "right"
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [ord(character) for character in text]}
+
+    def decode(self, input_ids, skip_special_tokens=False):
+        return "".join(chr(input_id) for input_id in input_ids)
+
+
+def active_label_text(example, tokenizer):
+    return tokenizer.decode(
+        [
+            input_id
+            for input_id, label in zip(example["input_ids"], example["labels"], strict=True)
+            if label != -100
+        ],
+        skip_special_tokens=False,
+    )
 
 
 def test_build_dataset_only_keeps_rendered_text_for_mixed_metadata(tmp_path):
@@ -49,6 +76,43 @@ def test_build_dataset_only_keeps_rendered_text_for_mixed_metadata(tmp_path):
     assert dataset[0]["text"] == "user: Question one\n\nassistant: MATCH (n) RETURN n"
 
 
+def test_build_training_example_masks_context_and_supervises_assistant_turns():
+    tokenizer = CharTokenizer()
+    record = {
+        "uid": "one",
+        "messages": [
+            {"role": "user", "content": "Question one"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "run_cypher_query",
+                            "arguments": {"cypher_string": "MATCH (n) RETURN n"},
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "tool_name": "run_cypher_query", "content": "[{'n': 1}]"},
+            {"role": "assistant", "content": "<answer>O1</answer>"},
+        ],
+    }
+
+    example = build_training_example(
+        record,
+        tokenizer,
+        loss_mode=ASSISTANT_ONLY_LOSS_MODE,
+        max_length=4096,
+    )
+    supervised_text = active_label_text(example, tokenizer)
+
+    assert "run_cypher_query" in supervised_text
+    assert "MATCH (n) RETURN n" in supervised_text
+    assert "<answer>O1</answer>" in supervised_text
+    assert "Question one" not in supervised_text
+    assert "[{'n': 1}]" not in supervised_text
+
+
 def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     kwargs = training_arguments_kwargs(
         {"output_dir": "out", "warmup_steps": 0.03},
@@ -63,7 +127,7 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
 
 def test_sft_config_kwargs_uses_current_sft_config_fields():
     kwargs = sft_config_kwargs(
-        {"output_dir": "out", "max_length": 2048},
+        {"output_dir": "out", "max_length": 2048, "loss_mode": FULL_LOSS_MODE},
         has_eval_dataset=True,
     )
 
@@ -71,6 +135,35 @@ def test_sft_config_kwargs_uses_current_sft_config_fields():
     assert kwargs["dataset_text_field"] == "text"
     assert kwargs["max_length"] == 2048
     assert "max_seq_length" not in kwargs
+
+
+def test_sft_config_kwargs_skips_trl_preparation_for_assistant_only_labels():
+    kwargs = sft_config_kwargs(
+        {"output_dir": "out", "max_length": 2048, "loss_mode": ASSISTANT_ONLY_LOSS_MODE},
+        has_eval_dataset=True,
+    )
+
+    assert kwargs["dataset_kwargs"] == {"skip_prepare_dataset": True}
+    assert kwargs["remove_unused_columns"] is False
+    assert "dataset_text_field" not in kwargs
+
+
+def test_pad_causal_lm_features_restores_missing_attention_mask():
+    tokenizer = CharTokenizer()
+
+    batch = pad_causal_lm_features(
+        [
+            {"input_ids": [2, 3], "labels": [2, 3]},
+            {"input_ids": [4], "labels": [4]},
+        ],
+        tokenizer,
+    )
+
+    assert batch == {
+        "input_ids": [[2, 3], [4, 0]],
+        "attention_mask": [[1, 1], [1, 0]],
+        "labels": [[2, 3], [4, -100]],
+    }
 
 
 def test_sft_trainer_kwargs_uses_current_processing_class_parameter():

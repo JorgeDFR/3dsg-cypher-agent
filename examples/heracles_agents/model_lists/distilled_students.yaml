@@ -1,12 +1,8 @@
 models:
-  - alias: qwen3-4b-distilled
-    model: 3dsg-cypher-agent-qwen3-4b-distilled
+  - alias: qwen3.5-4b-distilled
+    model: qwen3.5-4b-3dsg-cypher-agent-lora
     enabled: true
 
   - alias: granite-3b-distilled
-    model: 3dsg-cypher-agent-granite-3b-distilled
-    enabled: false
-
-  - alias: qwen3-1.7b-distilled
-    model: 3dsg-cypher-agent-qwen3-1.7b-distilled
+    model: granite-3b-3dsg-cypher-agent-lora
     enabled: false

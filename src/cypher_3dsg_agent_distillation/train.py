@@ -2,14 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from typing import Any
-
-from datasets import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
 
 from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.io import read_jsonl
@@ -23,6 +17,11 @@ DEFAULT_LORA_TARGETS = [
     "up_proj",
     "down_proj",
 ]
+FULL_LOSS_MODE = "full"
+ASSISTANT_ONLY_LOSS_MODE = "assistant-only"
+SUPPORTED_LOSS_MODES = (FULL_LOSS_MODE, ASSISTANT_ONLY_LOSS_MODE)
+DEFAULT_LOSS_MODE = ASSISTANT_ONLY_LOSS_MODE
+IGNORE_INDEX = -100
 
 
 def require_training_dependencies():
@@ -45,9 +44,11 @@ def dtype_from_name(name: str | None):
     return getattr(torch, name)
 
 
-def quantization_config(model_config: dict[str, Any]) -> BitsAndBytesConfig | None:
+def quantization_config(model_config: dict[str, Any]):
     if not model_config.get("load_in_4bit", False):
         return None
+    from transformers import BitsAndBytesConfig
+
     compute_dtype = dtype_from_name(model_config.get("bnb_4bit_compute_dtype", "bfloat16"))
     return BitsAndBytesConfig(
         load_in_4bit=True,
@@ -58,16 +59,11 @@ def quantization_config(model_config: dict[str, Any]) -> BitsAndBytesConfig | No
 
 
 def load_model_and_tokenizer(config: dict[str, Any]):
+    from transformers import AutoModelForCausalLM
+
     model_config = config["model"]
     model_id = model_config["base_model"]
-    tokenizer_id = model_config.get("tokenizer") or model_id
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_id,
-        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    tokenizer = load_tokenizer(config)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
@@ -78,6 +74,21 @@ def load_model_and_tokenizer(config: dict[str, Any]):
     )
     align_model_token_ids(model, tokenizer)
     return model, tokenizer
+
+
+def load_tokenizer(config: dict[str, Any], tokenizer_id: str | None = None):
+    from transformers import AutoTokenizer
+
+    model_config = config["model"]
+    tokenizer_id = tokenizer_id or model_config.get("tokenizer") or model_config["base_model"]
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_id,
+        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    return tokenizer
 
 
 def config_value(config: Any, name: str, default: Any = None) -> Any:
@@ -241,7 +252,122 @@ def to_chat_text(tokenizer, messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(message_to_plain_text(message) for message in messages)
 
 
-def build_dataset(path: str, tokenizer) -> Dataset:
+def tokenize_rendered_text(tokenizer, text: str) -> list[int]:
+    encoded = tokenizer(text, add_special_tokens=False)
+    return list(encoded["input_ids"])
+
+
+def common_prefix_length(left: Sequence[int], right: Sequence[int]) -> int:
+    length = min(len(left), len(right))
+    for index in range(length):
+        if left[index] != right[index]:
+            return index
+    return length
+
+
+def assistant_token_spans(
+    tokenizer,
+    messages: list[dict[str, Any]],
+    input_ids: list[int],
+) -> list[tuple[int, int]]:
+    spans = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        before_ids = tokenize_rendered_text(
+            tokenizer,
+            to_chat_text(tokenizer, messages[:index]),
+        )
+        after_ids = tokenize_rendered_text(
+            tokenizer,
+            to_chat_text(tokenizer, messages[: index + 1]),
+        )
+        start = common_prefix_length(input_ids, before_ids)
+        end = common_prefix_length(input_ids, after_ids)
+        if start != len(before_ids) or end != len(after_ids) or end <= start:
+            raise ValueError(
+                "Could not locate rendered assistant span. "
+                "Check that the tokenizer chat template renders partial transcripts "
+                "as prefixes of the full transcript."
+            )
+        spans.append((start, end))
+    return spans
+
+
+def labels_for_loss_mode(
+    *,
+    tokenizer,
+    messages: list[dict[str, Any]],
+    input_ids: list[int],
+    loss_mode: str,
+) -> list[int]:
+    loss_mode = normalize_loss_mode(loss_mode)
+    if loss_mode == FULL_LOSS_MODE:
+        return list(input_ids)
+
+    labels = [IGNORE_INDEX] * len(input_ids)
+    for start, end in assistant_token_spans(tokenizer, messages, input_ids):
+        labels[start:end] = input_ids[start:end]
+    return labels
+
+
+def truncate_training_example(
+    example: dict[str, Any],
+    *,
+    max_length: int | None,
+) -> dict[str, Any]:
+    if max_length is None:
+        return example
+    for key in ("input_ids", "attention_mask", "labels"):
+        example[key] = example[key][:max_length]
+    return example
+
+
+def active_label_count(labels: Sequence[int]) -> int:
+    return sum(1 for label in labels if label != IGNORE_INDEX)
+
+
+def build_training_example(
+    record: dict[str, Any],
+    tokenizer,
+    *,
+    loss_mode: str,
+    max_length: int | None,
+) -> dict[str, Any]:
+    loss_mode = normalize_loss_mode(loss_mode)
+    messages = normalize_chat_messages(record.get("messages", []))
+    if loss_mode == FULL_LOSS_MODE and record.get("text"):
+        text = str(record["text"])
+    else:
+        if not messages:
+            raise ValueError(
+                "Assistant-only training requires records with structured `messages`."
+            )
+        text = to_chat_text(tokenizer, messages)
+    input_ids = tokenize_rendered_text(tokenizer, text)
+    example = {
+        "input_ids": input_ids,
+        "attention_mask": [1] * len(input_ids),
+        "labels": labels_for_loss_mode(
+            tokenizer=tokenizer,
+            messages=messages,
+            input_ids=input_ids,
+            loss_mode=loss_mode,
+        ),
+        "uid": str(record.get("uid", "")),
+    }
+    example = truncate_training_example(example, max_length=max_length)
+    if active_label_count(example["labels"]) == 0:
+        raise ValueError(
+            f"Record {record.get('uid', '<unknown>')} has no supervised tokens after "
+            f"applying loss mode `{loss_mode}` and max_length={max_length}."
+        )
+    return example
+
+
+def build_dataset(path: str, tokenizer):
+    from datasets import Dataset
+
     records = read_jsonl(path)
     return Dataset.from_list(
         [
@@ -249,6 +375,97 @@ def build_dataset(path: str, tokenizer) -> Dataset:
             for record in records
         ]
     )
+
+
+def build_training_dataset(
+    path: str,
+    tokenizer,
+    *,
+    loss_mode: str,
+    max_length: int | None,
+):
+    from datasets import Dataset
+
+    records = read_jsonl(path)
+    return Dataset.from_list(
+        [
+            build_training_example(
+                record,
+                tokenizer,
+                loss_mode=loss_mode,
+                max_length=max_length,
+            )
+            for record in records
+        ]
+    )
+
+
+def pad_causal_lm_features(
+    features: list[dict[str, Any]],
+    tokenizer,
+) -> dict[str, list[list[int]]]:
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = tokenizer.eos_token_id or 0
+    padding_side = getattr(tokenizer, "padding_side", "right")
+    max_length = max(len(feature["input_ids"]) for feature in features)
+
+    batch = {"input_ids": [], "attention_mask": [], "labels": []}
+    for feature in features:
+        if "labels" not in feature:
+            raise KeyError(
+                "labels are required for assistant-only training. "
+                "Set `remove_unused_columns: false` or use the configured SFTConfig path."
+            )
+        input_ids = list(feature["input_ids"])
+        raw_attention_mask = feature.get("attention_mask")
+        attention_mask = (
+            [1] * len(input_ids) if raw_attention_mask is None else list(raw_attention_mask)
+        )
+        labels = list(feature["labels"])
+        if not len(input_ids) == len(attention_mask) == len(labels):
+            raise ValueError(
+                "input_ids, attention_mask, and labels must have the same length "
+                f"before padding; got {len(input_ids)}, {len(attention_mask)}, "
+                f"and {len(labels)}."
+            )
+
+        pad_length = max_length - len(input_ids)
+        if padding_side == "left":
+            batch["input_ids"].append([pad_token_id] * pad_length + input_ids)
+            batch["attention_mask"].append([0] * pad_length + attention_mask)
+            batch["labels"].append([IGNORE_INDEX] * pad_length + labels)
+        else:
+            batch["input_ids"].append(input_ids + [pad_token_id] * pad_length)
+            batch["attention_mask"].append(attention_mask + [0] * pad_length)
+            batch["labels"].append(labels + [IGNORE_INDEX] * pad_length)
+
+    return batch
+
+
+class CausalLmDataCollator:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        import torch
+
+        batch = pad_causal_lm_features(features, self.tokenizer)
+        return {key: torch.tensor(value, dtype=torch.long) for key, value in batch.items()}
+
+
+def normalize_loss_mode(value: str | None) -> str:
+    normalized = str(value or DEFAULT_LOSS_MODE).strip().lower().replace("_", "-")
+    if normalized not in SUPPORTED_LOSS_MODES:
+        raise ValueError(
+            f"Unsupported training loss mode `{value}`. "
+            f"Expected one of: {', '.join(SUPPORTED_LOSS_MODES)}."
+        )
+    return normalized
+
+
+def loss_mode_from_training_config(training_config: dict[str, Any]) -> str:
+    return normalize_loss_mode(training_config.get("loss_mode", DEFAULT_LOSS_MODE))
 
 
 def training_arguments_kwargs(
@@ -280,20 +497,28 @@ def sft_config_kwargs(
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
     kwargs = training_arguments_kwargs(training_config, has_eval_dataset)
-    kwargs["dataset_text_field"] = "text"
     kwargs["max_length"] = int(training_config.get("max_length", 4096))
+    loss_mode = loss_mode_from_training_config(training_config)
+    if loss_mode == FULL_LOSS_MODE:
+        kwargs["dataset_text_field"] = "text"
+    else:
+        dataset_kwargs = dict(training_config.get("dataset_kwargs") or {})
+        dataset_kwargs["skip_prepare_dataset"] = True
+        kwargs["dataset_kwargs"] = dataset_kwargs
+        kwargs["remove_unused_columns"] = False
     return kwargs
 
 
 def sft_trainer_kwargs(
     model,
     tokenizer,
-    train_dataset: Dataset,
-    eval_dataset: Dataset | None,
+    train_dataset,
+    eval_dataset,
     training_args,
     peft_config,
+    data_collator=None,
 ) -> dict[str, Any]:
-    return {
+    kwargs = {
         "model": model,
         "train_dataset": train_dataset,
         "eval_dataset": eval_dataset,
@@ -301,6 +526,9 @@ def sft_trainer_kwargs(
         "peft_config": peft_config,
         "processing_class": tokenizer,
     }
+    if data_collator is not None:
+        kwargs["data_collator"] = data_collator
+    return kwargs
 
 
 def command(args: argparse.Namespace) -> None:
@@ -332,9 +560,27 @@ def command(args: argparse.Namespace) -> None:
         ),
     )
 
-    train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
-    eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
     training_config = config["training"]
+    max_length = int(training_config.get("max_length", 4096))
+    loss_mode = loss_mode_from_training_config(training_config)
+    if loss_mode == FULL_LOSS_MODE:
+        train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
+        eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
+        data_collator = None
+    else:
+        train_dataset = build_training_dataset(
+            data_config["splits"]["train"],
+            tokenizer,
+            loss_mode=loss_mode,
+            max_length=max_length,
+        )
+        eval_dataset = build_training_dataset(
+            data_config["splits"]["eval"],
+            tokenizer,
+            loss_mode=loss_mode,
+            max_length=max_length,
+        )
+        data_collator = CausalLmDataCollator(tokenizer)
     training_args = SFTConfig(
         **sft_config_kwargs(
             training_config,
@@ -350,6 +596,7 @@ def command(args: argparse.Namespace) -> None:
             eval_dataset=eval_dataset,
             training_args=training_args,
             peft_config=peft_config,
+            data_collator=data_collator,
         )
     )
     trainer.train()
@@ -363,7 +610,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3_4b.yaml",
+        default="configs/student_qwen3.5_4b.yaml",
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     args = parser.parse_args()

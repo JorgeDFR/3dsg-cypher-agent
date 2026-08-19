@@ -14,6 +14,7 @@ from cypher_3dsg_agent_distillation.agent_dataset import (
     read_student_trace_records_with_counts,
     repair_rejected_invalid_answer_trace,
     split_report_lines,
+    split_report_payload,
 )
 from cypher_3dsg_agent_distillation.agent_records import AgentTraceRecord
 from cypher_3dsg_agent_distillation.io import write_jsonl
@@ -419,3 +420,73 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
     assert "dropped by max_per_task_type: count=1" in text
     assert "train: 1 questions (count=1) -> train.jsonl" in text
     assert "test: 0 questions (none) -> test.jsonl" in text
+
+
+def test_split_report_payload_lists_optimized_questions():
+    record = AgentTraceRecord.model_validate(
+        answerable_trace(
+            uid="optimized",
+            task_type="object_count",
+            metadata={
+                "student_optimized": True,
+                "raw_tool_call_count": 2,
+                "dropped_tool_call_count": 1,
+                "source_trace_uid": "teacher-one",
+            },
+        )
+    )
+
+    report = split_report_payload(
+        data_config={
+            "scene_id": "scene",
+            "teacher_traces_jsonl_path": "teacher.jsonl",
+            "rejected_traces_path": "rejected.json",
+            "max_per_task_type": None,
+            "split": {"seed": 1},
+        },
+        render_view="ollama_native",
+        source_counts=Counter({"accepted_teacher_traces": 1}),
+        optimization_counts=Counter({"pruned_failed_tool_attempts": 1}),
+        cap_dropped_counts=Counter(),
+        split_records={
+            "train": [record],
+            "eval": [],
+            "test": [],
+            "challenge": [],
+        },
+        split_paths={
+            "train": "train.jsonl",
+            "eval": "eval.jsonl",
+            "test": "test.jsonl",
+            "challenge": "challenge.jsonl",
+        },
+        optimize_enabled=True,
+    )
+
+    assert report["metadata"]["optimize_student_traces"] is True
+    assert report["splits"]["train"]["optimized_questions"] == 1
+    assert report["optimized_questions"] == [
+        {
+            "uid": "optimized",
+            "scene_id": "scene",
+            "split": "train",
+            "task_type": "object_count",
+            "question": "How many chairs?",
+            "split_group": record.split_group,
+            "gold_cypher": "MATCH (o:Object) RETURN count(o) AS count",
+            "expected_solution": 3,
+            "final_answer": None,
+            "optimization_kinds": ["pruned_failed_tool_attempts"],
+            "student_optimized": True,
+            "final_answer_repaired": False,
+            "raw_tool_call_count": 2,
+            "dropped_tool_call_count": 1,
+            "successful_tool_call_index": None,
+            "seed_uid": None,
+            "source_trace_uid": "teacher-one",
+            "source_trace_status": None,
+            "source_rejection_reason": None,
+            "repair_type": None,
+            "original_final_answer": None,
+        }
+    ]

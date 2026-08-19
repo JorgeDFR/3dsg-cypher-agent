@@ -13,6 +13,7 @@ lora:
 
 training:
   output_dir: outputs/granite-3b-3dsg-cypher-agent-lora
+  loss_mode: assistant-only
   max_length: 4096
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1

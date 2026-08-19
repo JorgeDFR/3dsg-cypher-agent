@@ -29,9 +29,8 @@
 
 ## Training
 
-- [ ] Train the primary Qwen3 4B student on Ollama-native traces.
+- [ ] Train the primary Qwen3.5 4B student on Ollama-native traces.
 - [ ] Train a Granite 3B student for comparison.
-- [ ] Add a Qwen3 1.7B efficiency baseline config.
 - [ ] Record training seed, dataset hash, adapter path, GPU, runtime, and peak memory.
 - [ ] Add early stopping based on grouped eval agent success.
 
@@ -54,3 +53,10 @@
 - [ ] Validate the exported model through the project-local Heracles Agents examples.
 - [ ] Benchmark on Jetson Orin NX 16GB: model size, peak memory, tokens/sec, median
       latency, p95 latency, and success under `max_iterations: 5`.
+
+
+challenge.student.raw-generation.report.json
+        "cypher_solution": "O0",
+        "expected_solution": "<O0>\n",
+        "cypher_solution_format_valid": true,
+        "cypher_solution_match": false,

@@ -6,6 +6,7 @@ import math
 import random
 from collections import Counter, defaultdict
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from cypher_3dsg_agent_distillation.agent_records import (
     split_group_for_record,
 )
 from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
-from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.cypher_seed_records import (
     load_raw_seed_records_from_config,
     prepare_seed_records,
@@ -534,6 +535,115 @@ def format_counter(counter: Counter[str]) -> str:
     return ", ".join(f"{key}={counter[key]}" for key in sorted(counter))
 
 
+def split_report_output_path(config: dict[str, Any], output: str | None = None) -> Path:
+    if output:
+        return Path(output)
+    return Path(config["test_report_path"]).with_name("split.report.json")
+
+
+def counter_to_sorted_dict(counter: Counter[str]) -> dict[str, int]:
+    return {key: counter[key] for key in sorted(counter)}
+
+
+def optimization_kinds(record: AgentTraceRecord) -> list[str]:
+    kinds = []
+    if record.metadata.get("student_optimized"):
+        kinds.append("pruned_failed_tool_attempts")
+    if record.metadata.get("final_answer_repaired"):
+        kinds.append("repaired_invalid_answer_format")
+    return kinds
+
+
+def optimized_question_payload(record: AgentTraceRecord, split_name: str) -> dict[str, Any]:
+    metadata = record.metadata
+    return {
+        "uid": record.uid,
+        "scene_id": record.scene_id,
+        "split": split_name,
+        "task_type": record.task_type,
+        "question": record.question,
+        "split_group": record.split_group,
+        "gold_cypher": record.gold_cypher,
+        "expected_solution": record.expected_solution,
+        "final_answer": record.final_answer,
+        "optimization_kinds": optimization_kinds(record),
+        "student_optimized": bool(metadata.get("student_optimized")),
+        "final_answer_repaired": bool(metadata.get("final_answer_repaired")),
+        "raw_tool_call_count": metadata.get("raw_tool_call_count")
+        or metadata.get("tool_call_count"),
+        "dropped_tool_call_count": int(metadata.get("dropped_tool_call_count") or 0),
+        "successful_tool_call_index": metadata.get("successful_tool_call_index"),
+        "seed_uid": metadata.get("seed_uid"),
+        "source_trace_uid": metadata.get("source_trace_uid"),
+        "source_trace_status": metadata.get("source_trace_status"),
+        "source_rejection_reason": metadata.get("source_rejection_reason"),
+        "repair_type": metadata.get("repair_type"),
+        "original_final_answer": metadata.get("original_final_answer"),
+    }
+
+
+def split_records_payload(
+    split_records: dict[str, list[AgentTraceRecord]],
+) -> dict[str, Any]:
+    payload = {}
+    for split_name, records in split_records.items():
+        payload[split_name] = {
+            "questions": len(records),
+            "task_type_counts": counter_to_sorted_dict(record_task_type_counts(records)),
+            "optimized_questions": sum(1 for record in records if optimization_kinds(record)),
+            "uids": [record.uid for record in records],
+        }
+    return payload
+
+
+def split_report_payload(
+    *,
+    data_config: dict[str, Any],
+    render_view: str,
+    source_counts: Counter[str],
+    optimization_counts: Counter[str],
+    cap_dropped_counts: Counter[str],
+    split_records: dict[str, list[AgentTraceRecord]],
+    split_paths: dict[str, str],
+    optimize_enabled: bool,
+) -> dict[str, Any]:
+    optimized_questions = []
+    for split_name in ("train", "eval", "test", "challenge"):
+        for record in split_records[split_name]:
+            if optimization_kinds(record):
+                optimized_questions.append(optimized_question_payload(record, split_name))
+
+    return {
+        "metadata": {
+            "created_at": datetime.now(UTC).isoformat(),
+            "scene_id": data_config.get("scene_id"),
+            "render_view": render_view,
+            "optimize_student_traces": optimize_enabled,
+            "max_per_task_type": data_config.get("max_per_task_type"),
+            "split_config": data_config.get("split", {}),
+        },
+        "paths": {
+            "teacher_traces_jsonl_path": data_config.get("teacher_traces_jsonl_path"),
+            "rejected_traces_path": data_config.get("rejected_traces_path"),
+            "splits": split_paths,
+        },
+        "source_counts": counter_to_sorted_dict(source_counts),
+        "optimization_counts": counter_to_sorted_dict(optimization_counts),
+        "cap_dropped_counts": counter_to_sorted_dict(cap_dropped_counts),
+        "splits": split_records_payload(split_records),
+        "optimized_questions": optimized_questions,
+    }
+
+
+def write_split_report(report: dict[str, Any], output: str | Path) -> Path:
+    output_path = ensure_parent(output)
+    output_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def split_report_lines(
     *,
     source_counts: Counter[str],
@@ -621,21 +731,36 @@ def split_command(args: argparse.Namespace) -> None:
     write_rendered_split(eval_records, paths["eval"], args.render_view)
     write_rendered_split(test, paths["test"], args.render_view)
     write_rendered_split(challenge, paths["challenge"], args.render_view)
+    split_records = {
+        "train": train,
+        "eval": eval_records,
+        "test": test,
+        "challenge": challenge,
+    }
+    report_path = write_split_report(
+        split_report_payload(
+            data_config=config,
+            render_view=args.render_view,
+            source_counts=source_counts,
+            optimization_counts=optimization_counts,
+            cap_dropped_counts=cap_dropped_counts,
+            split_records=split_records,
+            split_paths=paths,
+            optimize_enabled=optimize_enabled,
+        ),
+        split_report_output_path(config, args.report_output),
+    )
     print(
         "\n".join(
             split_report_lines(
                 source_counts=source_counts,
                 optimization_counts=optimization_counts,
                 cap_dropped_counts=cap_dropped_counts,
-                split_records={
-                    "train": train,
-                    "eval": eval_records,
-                    "test": test,
-                    "challenge": challenge,
-                },
+                split_records=split_records,
                 split_paths=paths,
                 optimize_enabled=optimize_enabled,
             )
+            + [f"  report: {report_path}"]
         )
     )
 
@@ -687,6 +812,14 @@ def main() -> None:
         default=RenderView.OLLAMA_NATIVE.value,
     )
     split_parser.add_argument("--optimize-student-traces", action="store_true")
+    split_parser.add_argument(
+        "--report-output",
+        default=None,
+        help=(
+            "Optional JSON split report path. Defaults to "
+            "data/3dsg/{scene_id}/reports/split.report.json."
+        ),
+    )
     split_parser.set_defaults(func=split_command)
 
     args = parser.parse_args()

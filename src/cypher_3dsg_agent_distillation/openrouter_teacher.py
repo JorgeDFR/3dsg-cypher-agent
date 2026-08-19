@@ -989,6 +989,7 @@ def debug_trace_record(
         "final_answer": final_answer,
         "validation": payload.get("validation") or record_json.get("validation"),
         "messages": messages,
+        "tags": seed.get("tags", []),
         "details": {
             key: value
             for key, value in payload.items()

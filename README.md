@@ -6,7 +6,7 @@ calling `run_cypher_query(cypher_string: str)` through either Ollama-native tool
 calls or a custom XML fallback interface.
 
 - Default teacher: `openai/gpt-oss-120b` through OpenRouter
-- Primary student: Qwen3 4B instruct, exported to Ollama for Jetson Orin NX 16GB
+- Primary student: `qwen-3.5-4b` through Hugging Face, and exported to Ollama
 
 ## Scope
 
@@ -147,7 +147,7 @@ Evaluate traces:
 ```bash
 .venv/bin/python scripts/evaluate_traces.py \
   --data-config configs/data.yaml \
-  --split test
+  --split train
 ```
 
 Train the primary student:
@@ -155,7 +155,47 @@ Train the primary student:
 ```bash
 .venv/bin/python scripts/train_agent_lora.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3_4b.yaml
+  --student-config configs/student_qwen3.5_4b.yaml
+```
+
+Student training defaults to `training.loss_mode: assistant-only`, which masks
+user/system/tool-response tokens from the loss and supervises only assistant
+turns, including generated tool calls and final answers. To inspect the exact
+rendered text and supervised token spans for a split record:
+
+```bash
+.venv/bin/python scripts/inspect_training_dataset.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split train \
+  --index 0
+```
+
+Evaluate the primary student:
+
+```bash
+.venv/bin/python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split all \
+  --mode eval-loss
+```
+
+```bash
+.venv/bin/python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split test \
+  --mode raw-generation \
+  --max-new-tokens 512
+```
+
+Generate a static HTML workflow report for the configured scene:
+
+```bash
+.venv/bin/python scripts/generate_workflow_report.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml
 ```
 
 Generate Ollama export metadata:
@@ -175,9 +215,8 @@ This repository does not modify
 `/home/coder/workspace/heracles_devel/heracles_agents`. Example YAML files live
 under `examples/heracles_agents/` and point at the expected Ollama model names:
 
-- `3dsg-cypher-agent-qwen3-4b-distilled`
-- `3dsg-cypher-agent-granite-3b-distilled`
-- `3dsg-cypher-agent-qwen3-1.7b-distilled`
+- `qwen3.5-4b-3dsg-cypher-agent-lora`
+- `granite-3b-3dsg-cypher-agent-lora`
 
 ## Validation Gates
 

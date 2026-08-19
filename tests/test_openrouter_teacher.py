@@ -465,7 +465,7 @@ def test_evaluate_candidate_trace_rejects_final_answer_not_matching_real_solutio
 
 
 def test_debug_trace_record_uses_shared_solution_fields_for_accepts_and_rejects():
-    seed = seed_record()
+    seed = seed_record(tags=["count"])
     accepted_decision, _client = run_interaction(seed, [tool_assistant(), final_assistant()])
     accepted = debug_trace_record(
         seed,
@@ -487,6 +487,7 @@ def test_debug_trace_record_uses_shared_solution_fields_for_accepts_and_rejects(
     assert accepted["cypher_solution"] == rejected["cypher_solution"] == "3"
     assert accepted["final_answer"] == "3"
     assert rejected["final_answer"] == "4"
+    assert accepted["tags"] == rejected["tags"] == ["count"]
 
 
 def test_teacher_interaction_rejects_invalid_sldp_final_answer():

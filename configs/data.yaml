@@ -18,8 +18,8 @@ split:
     - objects_in_place_symbol
 
 ollama_export:
-  model_name: 3dsg-cypher-agent-qwen3-4b-distilled
-  gguf_path: outputs/ollama/3dsg-cypher-agent-qwen3-4b-distilled.Q4_K_M.gguf
+  model_name: 3dsg-cypher-agent-qwen3.5-4b-distilled
+  gguf_path: outputs/ollama/3dsg-cypher-agent-qwen3.5-4b-distilled.Q4_K_M.gguf
   modelfile_path: outputs/ollama/Modelfile
   system_prompt: |
     You are a 3D scene graph agent. Use the run_cypher_query tool for read-only Cypher queries.
