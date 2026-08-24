@@ -889,6 +889,7 @@ def score_final_answer_generation(
             answer,
             str(expected_solution),
             record_output_type(record),
+            answer_validation=record.get("answer_validation"),
         )
 
     status = "pass"
@@ -1121,6 +1122,7 @@ def score_tool_call_generation(
             str(cypher_solution),
             str(expected_solution),
             record_output_type(record),
+            answer_validation=record.get("answer_validation"),
         )
     status = "pass"
     if expected_solution is None:

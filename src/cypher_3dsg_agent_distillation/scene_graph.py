@@ -251,6 +251,23 @@ def select_object_classes_by_solution_size(
     return [class_name for class_name, _ in selected]
 
 
+def ranked_class_names(counts: Counter[str], limit: int) -> list[str]:
+    """Match Cypher's `ORDER BY count DESC, class ASC` ranking."""
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [class_name for class_name, _ in ranked[:limit]]
+
+
+def top_k_with_ties_validation(
+    counts: Counter[str],
+    limit: int,
+) -> dict[str, Any]:
+    return {
+        "mode": "top_k_with_ties",
+        "limit": limit,
+        "scores": dict(sorted(counts.items())),
+    }
+
+
 def bbox_around_point(
     point: dict[str, float],
     half_extent: float,
@@ -350,7 +367,7 @@ def scene_values(
         "building_symbols": sorted_symbols(by_label["Building"], max_place_symbols),
         "top_class_limits": list(range(1, len(object_class_counts) + 1)),
         "radii": [2, 5, 10],
-        "hop_counts": [2, 5, 6],
+        "hop_counts": [2, 3, 4, 5],
         "points": sample_points(object_points or all_points, max_points),
         "bboxes": build_bounding_box_cases(
             index=index,
@@ -380,13 +397,13 @@ def scene_values(
         ),
         "mesh_place_hop_cases": build_hop_cases(
             symbols=mesh_place_symbols,
-            hop_counts=[2, 5, 6],
+            hop_counts=[2, 3, 4, 5],
             symbol_key="mesh_place",
             limit=max_mesh_place_hop_cases,
         ),
         "place_hop_cases": build_hop_cases(
             symbols=sorted_symbols(by_label["Place"], max_place_symbols),
-            hop_counts=[2, 5, 6],
+            hop_counts=[2, 3, 4, 5],
             symbol_key="place",
             limit=max_place_hop_cases,
         ),
@@ -556,10 +573,7 @@ class SceneIndex:
             return scalar_or_set(class_names)
         if query_type == "top_object_classes_by_count":
             limit = int(variables.get("limit", variables.get("case", {}).get("limit", 2)))
-            return [
-                class_name
-                for class_name, _ in self.object_class_counts().most_common(limit)
-            ]
+            return ranked_class_names(self.object_class_counts(), limit)
         if query_type == "object_class_centers":
             centers = [
                 point_string(self.points_by_symbol[node_symbol(node.id)])
@@ -682,6 +696,16 @@ class SceneIndex:
         if query_type == "write_refusal":
             return "WRITE_QUERY_NOT_ALLOWED"
         return None
+
+    def answer_validation_for(
+        self,
+        query_type: str,
+        variables: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if query_type != "top_object_classes_by_count":
+            return None
+        limit = int(variables.get("limit", variables.get("case", {}).get("limit", 2)))
+        return top_k_with_ties_validation(self.object_class_counts(), limit)
 
 
 def build_place_object_cases(

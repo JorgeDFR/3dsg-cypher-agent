@@ -1,6 +1,7 @@
 import pytest
 
 import cypher_3dsg_agent_distillation.templates as templates_module
+from cypher_3dsg_agent_distillation.config import load_yaml
 from cypher_3dsg_agent_distillation.templates import (
     SolutionBlock,
     format_solution_field,
@@ -192,3 +193,18 @@ def test_no_variable_template_keeps_each_wording_variant():
     )
 
     assert [record["question"] for record in records] == ["What exists?", "List everything."]
+
+
+def test_write_refusal_template_has_ten_unique_question_variants():
+    templates_config = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")
+    write_refusal = next(
+        template
+        for template in templates_config["templates"]
+        if template["query_type"] == "write_refusal"
+    )
+
+    records = generate_records({"values": {}, "templates": [write_refusal]})
+
+    assert len(records) == 10
+    assert len({record["question"] for record in records}) == 10
+    assert {record["query_type"] for record in records} == {"write_refusal"}

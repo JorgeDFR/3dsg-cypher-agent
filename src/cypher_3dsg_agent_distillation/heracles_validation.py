@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
-import re
 from typing import Any, Literal
 
 
@@ -41,21 +41,70 @@ def answer_matches_with_heracles(
     answer: str,
     solution: str,
     output_type: OutputType,
+    *,
+    answer_validation: dict[str, Any] | None = None,
 ) -> tuple[bool, bool]:
     """Return (valid_format, correct) using Heracles answer comparators."""
     comparator = comparator_for_output_type(output_type)
     if comparator == "SLDP":
         try:
-            lark_parse_sldp(str(answer))
+            parsed_answer = lark_parse_sldp(str(answer))
         except Exception:
             return False, False
-        return True, sldp_equals(str(solution), str(answer))
+        exact_match = sldp_equals(str(solution), str(answer))
+        if exact_match or not answer_validation:
+            return True, exact_match
+        if answer_validation.get("mode") == "top_k_with_ties":
+            return True, top_k_with_ties_matches(parsed_answer, answer_validation)
+        return True, False
 
     try:
         parsed_answer = lark_parse_pddl_goal(str(answer))
     except Exception:
         return False, False
     return True, pddl_goal_equals(parsed_answer, lark_parse_pddl_goal(str(solution)))
+
+
+def top_k_with_ties_matches(
+    parsed_answer: Any,
+    answer_validation: dict[str, Any],
+) -> bool:
+    """Validate a top-k set while allowing any members tied at the cutoff score."""
+    if not isinstance(parsed_answer, tuple) or not parsed_answer or parsed_answer[0] != "set":
+        return False
+
+    values = parsed_answer[1:]
+    if not all(isinstance(value, str) for value in values):
+        return False
+    normalized_values = [str(value).strip().lower() for value in values]
+    if len(normalized_values) != len(set(normalized_values)):
+        return False
+
+    raw_scores = answer_validation.get("scores")
+    if not isinstance(raw_scores, dict) or not raw_scores:
+        return False
+    try:
+        scores = {
+            str(value).strip().lower(): float(score)
+            for value, score in raw_scores.items()
+        }
+        requested_limit = int(answer_validation["limit"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    target_size = min(max(requested_limit, 0), len(scores))
+    if len(normalized_values) != target_size or any(
+        value not in scores for value in normalized_values
+    ):
+        return False
+    if target_size == 0:
+        return True
+
+    cutoff_score = sorted(scores.values(), reverse=True)[target_size - 1]
+    required = {value for value, score in scores.items() if score > cutoff_score}
+    cutoff_ties = {value for value, score in scores.items() if score == cutoff_score}
+    actual = set(normalized_values)
+    return required.issubset(actual) and actual.issubset(required | cutoff_ties)
 
 
 def answer_type_hint(solution: str, output_type: OutputType) -> str | None:

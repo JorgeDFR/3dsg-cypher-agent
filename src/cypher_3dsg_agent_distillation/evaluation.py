@@ -150,17 +150,45 @@ def _flat_set_items(value: Any, *, expected_set: bool = False) -> set[str] | Non
     return {normalize_answer(item) for item in items}
 
 
-def answer_matches(actual: Any, expected: Any, output_type: str = "SLDP") -> bool:
+def answer_matches(
+    actual: Any,
+    expected: Any,
+    output_type: str = "SLDP",
+    *,
+    answer_validation: dict[str, Any] | None = None,
+) -> bool:
     valid_format, correct = answer_matches_with_heracles(
         str(actual),
         str(expected),
         output_type,
+        answer_validation=answer_validation,
     )
     return valid_format and correct
 
 
 def rendered_solution(value: Any, solution_formats: Any = None) -> str:
     return str(format_solution_field(value, solution_formats=solution_formats)).strip()
+
+
+def solution_formats_for_record(record: dict[str, Any]) -> Any:
+    declared = record.get("solution_formats") or record.get("solution_format")
+    if declared:
+        return declared
+
+    expected = next(
+        (
+            record[key]
+            for key in ("expected_solution", "real_solution", "solution")
+            if record.get(key) is not None
+        ),
+        None,
+    )
+    text = str(expected).strip() if expected is not None else ""
+    if text.startswith("<") and text.endswith(">"):
+        return ["set[str]"]
+    if text.startswith("[") and text.endswith("]"):
+        return ["list[str]"]
+    return None
 
 
 def scalar_or_set(values: list[Any]) -> Any:
@@ -455,7 +483,7 @@ def rows_to_solution_value(
 
 def rows_to_solution_text(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     value = rows_to_solution_value(record.get("query_type", ""), rows)
-    solution_formats = record.get("solution_formats") or record.get("solution_format")
+    solution_formats = solution_formats_for_record(record)
     return rendered_solution(value, solution_formats=solution_formats)
 
 
@@ -515,6 +543,7 @@ def evaluate_records(
                 actual_solution,
                 expected_solution,
                 str(record.get("output_type") or "SLDP"),
+                answer_validation=record.get("answer_validation"),
             )
             if actual_solution is not None and expected_solution is not None
             else False

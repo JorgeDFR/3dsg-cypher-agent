@@ -11,16 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from cypher_3dsg_agent_distillation.agent_prompts import build_trace_messages
 from cypher_3dsg_agent_distillation.agent_records import (
     DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
-    WRITE_REFUSAL_ANSWER,
     AgentTraceRecord,
-    split_group_for_record,
 )
 from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
-from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 from cypher_3dsg_agent_distillation.cypher_seed_records import (
     load_raw_seed_records_from_config,
     prepare_seed_records,
@@ -31,75 +28,10 @@ from cypher_3dsg_agent_distillation.experiment_profiles import (
 )
 from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.io import read_jsonl, write_jsonl
-from cypher_3dsg_agent_distillation.neo4j_validation import is_safe_refusal
 
 
 def read_agent_jsonl(path: str | Path) -> list[AgentTraceRecord]:
     return [AgentTraceRecord.model_validate(record) for record in read_jsonl(path)]
-
-
-def write_agent_jsonl(records: list[AgentTraceRecord], path: str | Path) -> None:
-    write_jsonl([record.model_dump(by_alias=True, exclude_none=True) for record in records], path)
-
-
-def trace_from_prepared_record(
-    record: dict[str, Any],
-    *,
-    teacher_model: str = DEFAULT_TEACHER_MODEL,
-) -> AgentTraceRecord:
-    cypher = str(record.get("cypher") or record.get("gold_cypher") or "").strip()
-    solution = record.get("solution")
-    refusal = is_safe_refusal(cypher)
-    final_answer = WRITE_REFUSAL_ANSWER if refusal else solution
-    messages = build_trace_messages(
-        schema=record.get("schema", ""),
-        question=record["question"],
-        cypher=cypher,
-        tool_result=str(solution),
-        final_answer=final_answer,
-        refusal=refusal,
-    )
-    return AgentTraceRecord(
-        uid=record["uid"],
-        scene_id=record.get("scene_id"),
-        question=record["question"],
-        query_type=record.get("query_type", "unknown"),
-        messages=messages,
-        gold_cypher=cypher,
-        expected_solution=final_answer,
-        real_solution=final_answer,
-        cypher_solution=final_answer,
-        final_answer=str(final_answer),
-        split_group=record.get("split_group")
-        or split_group_for_record(
-            record.get("scene_id"),
-            record.get("query_type", "unknown"),
-            cypher,
-        ),
-        teacher_model=teacher_model,
-        validation={
-            "static_valid": True,
-            "executable": True,
-            "solution_match": True,
-        },
-        read_only=bool(record.get("read_only", True)),
-        tags=record.get("tags", []),
-        metadata=record.get("metadata", {}),
-    )
-
-
-def bootstrap_traces_from_prepared(
-    input_path: str | Path,
-    output_path: str | Path,
-    *,
-    teacher_model: str = DEFAULT_TEACHER_MODEL,
-) -> list[AgentTraceRecord]:
-    traces = [
-        trace_from_prepared_record(record, teacher_model=teacher_model)
-        for record in read_jsonl(input_path)
-    ]
-    write_agent_jsonl(traces, output_path)
-    return traces
 
 
 def cap_by_task_type(
@@ -223,6 +155,7 @@ def repair_rejected_invalid_answer_trace(
         str(cypher_solution),
         str(real_solution),
         output_type,
+        answer_validation=trace.get("answer_validation"),
     )
     if not valid_cypher_format or not cypher_matches_real:
         return None
@@ -274,6 +207,8 @@ def repair_rejected_invalid_answer_trace(
             "gold_cypher": cypher,
             "expected_solution": real_solution,
             "real_solution": real_solution,
+            "solution_formats": trace.get("solution_formats", []),
+            "answer_validation": trace.get("answer_validation"),
             "cypher_solution": cypher_solution,
             "final_answer": str(cypher_solution),
             "split_group": trace.get("split_group"),
@@ -934,25 +869,17 @@ def split_command(args: argparse.Namespace) -> None:
     )
 
 
-def bootstrap_command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
-    bootstrap_traces_from_prepared(
-        input_path=data_config["seed_records_jsonl_path"],
-        output_path=data_config["bootstrap_traces_jsonl_path"],
-        teacher_model=args.teacher_model,
-    )
-
-
 def prepare_seeds_command(args: argparse.Namespace) -> None:
     data_config = load_data_config(args.data_config)
-    schema_config = load_yaml(data_config["schema_path"])
     profile = load_experiment_profile_from_config(data_config)
+    if profile is None:
+        raise ValueError(
+            "Seed preparation requires a valid `experiment_profile_path` in the data config."
+        )
     seed_defaults = profile_seed_defaults(profile)
     raw_records = load_raw_seed_records_from_config(data_config)
     prepared = prepare_seed_records(
         raw_records=raw_records,
-        schema_name=schema_config.get("name", "3dsg"),
-        schema_text=schema_config["interface_description"],
         task_family=seed_defaults.get("task_family", "cypher_qa"),
         output_type=seed_defaults.get("output_type", "SLDP"),
         metadata_defaults=seed_defaults.get("metadata", {}),
@@ -967,11 +894,6 @@ def main() -> None:
     seeds_parser = subparsers.add_parser("prepare-seeds")
     seeds_parser.add_argument("--data-config", default="configs/data.yaml")
     seeds_parser.set_defaults(func=prepare_seeds_command)
-
-    bootstrap_parser = subparsers.add_parser("bootstrap")
-    bootstrap_parser.add_argument("--data-config", default="configs/data.yaml")
-    bootstrap_parser.add_argument("--teacher-model", default=DEFAULT_TEACHER_MODEL)
-    bootstrap_parser.set_defaults(func=bootstrap_command)
 
     split_parser = subparsers.add_parser("split")
     split_parser.add_argument("--data-config", default="configs/data.yaml")

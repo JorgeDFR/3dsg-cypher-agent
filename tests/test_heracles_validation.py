@@ -26,6 +26,45 @@ def test_sldp_invalid_format_is_reported():
     assert not correct
 
 
+def test_top_k_with_ties_accepts_any_cutoff_tie_member():
+    validation = {
+        "mode": "top_k_with_ties",
+        "limit": 3,
+        "scores": {"light": 10, "chair": 8, "flag": 7, "plant": 7},
+    }
+
+    valid_format, correct = answer_matches_with_heracles(
+        "<light, chair, plant>",
+        "<light, chair, flag>",
+        "SLDP",
+        answer_validation=validation,
+    )
+
+    assert valid_format
+    assert correct
+
+
+def test_top_k_with_ties_rejects_missing_higher_ranked_or_wrong_size_answers():
+    validation = {
+        "mode": "top_k_with_ties",
+        "limit": 3,
+        "scores": {"light": 10, "chair": 8, "flag": 7, "plant": 7},
+    }
+
+    assert answer_matches_with_heracles(
+        "<light, flag, plant>",
+        "<light, chair, flag>",
+        "SLDP",
+        answer_validation=validation,
+    ) == (True, False)
+    assert answer_matches_with_heracles(
+        "<light, chair>",
+        "<light, chair, flag>",
+        "SLDP",
+        answer_validation=validation,
+    ) == (True, False)
+
+
 def test_pddl_equality_uses_heracles_goal_semantics():
     valid_format, correct = answer_matches_with_heracles(
         "(and (visited-object O1) (visited-room R2))",

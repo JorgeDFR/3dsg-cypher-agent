@@ -59,6 +59,31 @@ def test_rows_to_solution_text_uses_declared_set_format():
     assert actual == "<light, cabinet>"
 
 
+def test_rows_to_solution_text_infers_set_format_from_existing_trace_solution():
+    top_classes = {
+        "query_type": "top_object_classes_by_count",
+        "expected_solution": "<light, cabinet>",
+    }
+    singleton_objects = {
+        "query_type": "objects_in_place_symbol",
+        "expected_solution": "<O14>",
+    }
+    singleton_points = {
+        "query_type": "object_class_centers",
+        "expected_solution": "<POINT(11.832 26.993 1.432)>",
+    }
+
+    assert rows_to_solution_text(
+        top_classes,
+        [{"class": "light", "count": 57}, {"class": "cabinet", "count": 28}],
+    ) == "<light, cabinet>"
+    assert rows_to_solution_text(singleton_objects, [{"object": "O14"}]) == "<O14>"
+    assert rows_to_solution_text(
+        singleton_points,
+        [{"center": [11.832, 26.993, 1.432]}],
+    ) == "<POINT(11.832 26.993 1.432)>"
+
+
 def test_rows_to_solution_text_accepts_unaliased_neo4j_expression_keys():
     count_record = {"query_type": "object_class_count", "solution": 17}
     center_record = {
@@ -105,9 +130,11 @@ def test_rows_to_solution_text_flattens_collected_alias_values():
         "solution_formats": ["set[str]"],
     }
 
-    assert normalize_answer(rows_to_solution_text(class_record, [{"classes": ["table", "chair"]}])) == (
-        normalize_answer(class_record["solution"])
+    class_solution = rows_to_solution_text(
+        class_record,
+        [{"classes": ["table", "chair"]}],
     )
+    assert normalize_answer(class_solution) == normalize_answer(class_record["solution"])
     assert normalize_answer(rows_to_solution_text(object_record, [{"objects": ["O1", "O2"]}])) == (
         normalize_answer(object_record["solution"])
     )

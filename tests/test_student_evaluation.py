@@ -450,6 +450,55 @@ def test_score_tool_call_generation_executes_and_matches_expected_solution():
     assert result["cypher_solution_match"] is True
 
 
+def test_score_tool_call_generation_preserves_expected_set_syntax_without_format_field():
+    record = raw_generation_record()
+    record.update(
+        {
+            "task_type": "top_object_classes_by_count",
+            "gold_cypher": (
+                "MATCH (o:Object) RETURN o.class AS class, count(o) AS count "
+                "ORDER BY count DESC, class ASC LIMIT 2"
+            ),
+            "expected_solution": "<light, cabinet>",
+        }
+    )
+    record.pop("solution_formats")
+
+    class TopClassesValidator:
+        def validate(self, cypher, execute):
+            return {
+                "syntax_error": False,
+                "timeout": False,
+                "executable": True,
+                "elapsed_ms": 1.0,
+                "rows": [
+                    {"class": "light", "count": 57},
+                    {"class": "cabinet", "count": 28},
+                ],
+                "error": None,
+            }
+
+    result = score_tool_call_generation(
+        record,
+        (
+            "<tool_call>\n"
+            "<function=run_cypher_query>\n"
+            "<parameter=cypher_string>\n"
+            f"{record['gold_cypher']}\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        ),
+        validator=TopClassesValidator(),
+        policy=None,
+    )
+
+    assert result["status"] == "pass"
+    assert result["cypher_solution"] == "<light, cabinet>"
+    assert result["cypher_solution_format_valid"] is True
+    assert result["cypher_solution_match"] is True
+
+
 def test_summarize_raw_generation_records_counts_both_checks():
     record = {
         FINAL_ANSWER_CHECK: {

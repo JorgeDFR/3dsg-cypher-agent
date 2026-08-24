@@ -4,8 +4,9 @@ import argparse
 import json
 import os
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from openrouter import OpenRouter
 from openrouter import errors as openrouter_errors
@@ -18,10 +19,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from cypher_3dsg_agent_distillation.agent_prompts import (
-    build_teacher_interaction_messages,
-    run_cypher_tool_schema,
-)
+from cypher_3dsg_agent_distillation.agent_prompts import run_cypher_tool_schema
 from cypher_3dsg_agent_distillation.agent_records import (
     DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
@@ -56,6 +54,8 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
 )
 
 DEFAULT_MAX_TOOL_CALLS = 3
+TeacherProvider = Literal["openrouter", "synthetic"]
+SUPPORTED_TEACHER_PROVIDERS: tuple[str, ...] = ("openrouter", "synthetic")
 TOOL_REPAIR_MESSAGE = "The query could not be executed safely. Revise the Cypher query."
 
 
@@ -343,6 +343,8 @@ def build_candidate_trace(
         gold_cypher=cypher,
         expected_solution=real_solution,
         real_solution=real_solution,
+        solution_formats=seed.get("solution_formats", []),
+        answer_validation=seed.get("answer_validation"),
         final_answer=final_answer_from_messages(candidate["messages"]),
         split_group=split_group_for_record(
             seed.get("scene_id"),
@@ -401,6 +403,8 @@ def build_interaction_trace(
         gold_cypher=cypher,
         expected_solution=real_solution,
         real_solution=real_solution,
+        solution_formats=seed.get("solution_formats", []),
+        answer_validation=seed.get("answer_validation"),
         cypher_solution=cypher_solution,
         final_answer=final_answer_from_messages(messages),
         split_group=split_group_for_record(
@@ -516,6 +520,7 @@ def evaluate_candidate_trace(
         cypher_solution,
         str(real_solution),
         output_type,
+        answer_validation=seed.get("answer_validation"),
     )
     record.validation.cypher_solution_match = cypher_matches_real
     cypher_checked_validation = validation_with_solution_checks(
@@ -558,6 +563,7 @@ def evaluate_candidate_trace(
         inner_answer,
         str(real_solution),
         output_type,
+        answer_validation=seed.get("answer_validation"),
     )
     valid_consistency_format, final_matches_cypher = answer_matches_with_heracles(
         inner_answer,
@@ -614,8 +620,7 @@ def evaluate_candidate_trace(
 def run_teacher_interaction(
     seed: dict[str, Any],
     *,
-    schema: str | None = None,
-    profile: ExperimentProfile | None = None,
+    profile: ExperimentProfile,
     tool_interface: ToolInterface = "openrouter",
     client: OpenRouterTeacherClient,
     teacher_model: str,
@@ -627,15 +632,10 @@ def run_teacher_interaction(
     if max_tool_calls < 1:
         raise ValueError("max_tool_calls must be >= 1.")
 
-    if profile is not None:
-        messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
-    elif schema is not None:
-        messages = build_teacher_interaction_messages(schema, seed["question"])
-    else:
-        raise ValueError("Either schema or profile must be provided.")
+    messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
 
-    task_family = str(seed.get("task_family") or (profile.task_family if profile else "cypher_qa"))
-    output_type = str(seed.get("output_type") or (profile.output_type if profile else "SLDP"))
+    task_family = str(seed.get("task_family") or profile.task_family)
+    output_type = str(seed.get("output_type") or profile.output_type)
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     real_solution = seed_real_solution(seed)
     expected_refusal = is_safe_refusal(seed_cypher)
@@ -819,6 +819,7 @@ def run_teacher_interaction(
                 str(cypher_solution),
                 str(real_solution),
                 output_type,
+                answer_validation=seed.get("answer_validation"),
             )
             cypher_checked_validation = validation_with_solution_checks(
                 final_validation or {},
@@ -864,6 +865,7 @@ def run_teacher_interaction(
             inner_answer,
             str(real_solution),
             output_type,
+            answer_validation=seed.get("answer_validation"),
         )
         checked_validation = validation_with_solution_checks(
             final_validation or {},
@@ -922,17 +924,204 @@ def run_teacher_interaction(
         return TraceDecision(True, record, "accepted", {"messages": messages})
 
 
+def configured_teacher_provider(config: dict[str, Any]) -> TeacherProvider:
+    provider = str(config.get("provider") or "").strip().lower()
+    if provider not in SUPPORTED_TEACHER_PROVIDERS:
+        raise ValueError(
+            f"Unsupported teacher provider `{provider or '<missing>'}`. "
+            f"Expected one of {SUPPORTED_TEACHER_PROVIDERS}."
+        )
+    return "synthetic" if provider == "synthetic" else "openrouter"
+
+
+def run_synthetic_teacher_interaction(
+    seed: dict[str, Any],
+    *,
+    profile: ExperimentProfile,
+    tool_interface: ToolInterface = "openrouter",
+    validator: Neo4jValidator,
+    policy: dict[str, Any] | None,
+    max_tool_calls: int = 1,
+) -> TraceDecision:
+    """Construct a validated trace from gold Cypher, gold solution, and Neo4j rows."""
+    messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
+    cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
+    if not cypher:
+        return rejected("missing_gold_cypher", messages=messages)
+
+    real_solution = seed_real_solution(seed)
+    if real_solution is None:
+        return rejected("missing_gold_solution", messages=messages, cypher=cypher)
+
+    if is_safe_refusal(cypher):
+        messages.append(
+            {"role": "assistant", "content": f"<answer>{WRITE_REFUSAL_ANSWER}</answer>"}
+        )
+        record = build_interaction_trace(
+            seed,
+            messages=messages,
+            teacher_model=None,
+            cypher=cypher,
+            validation=validation_with_solution_checks(
+                {"static_valid": True, "executable": True, "error": None},
+                cypher_solution_match=True,
+                final_answer_match=True,
+                final_answer_cypher_match=True,
+            ),
+            max_tool_calls=max_tool_calls,
+            tool_call_count=0,
+            successful_tool_call_index=None,
+            cypher_solution=WRITE_REFUSAL_ANSWER,
+        )
+        record.metadata["teacher_provider"] = "synthetic"
+        record.metadata["generation_mode"] = "synthetic_gold_cypher"
+        return TraceDecision(True, record, "accepted_refusal", {"messages": messages})
+
+    static_issues = static_checks(
+        cypher,
+        allow_writes=not bool(seed.get("read_only", True)),
+        policy=policy,
+    )
+    if static_issues:
+        return rejected(
+            "static_issues",
+            messages=messages,
+            cypher=cypher,
+            validation={"static_valid": False, "static_issues": static_issues},
+        )
+
+    tool_call_id = f"synthetic_{seed.get('uid', 'seed')}"
+    messages.append(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": DEFAULT_AGENT_TOOL,
+                        "arguments": {"cypher_string": cypher},
+                    },
+                }
+            ],
+        }
+    )
+    validation = validator.validate(cypher, execute=True)
+    validation = {**validation, "static_valid": True}
+    if not validation.get("executable"):
+        messages.append(
+            build_tool_result_message(
+                tool_call_id,
+                tool_error_content(
+                    "execution_failed",
+                    [str(validation.get("error") or "execution failed")],
+                ),
+            )
+        )
+        return rejected(
+            "execution_failed",
+            messages=messages,
+            cypher=cypher,
+            validation=validation,
+        )
+    messages.append(
+        build_tool_result_message(
+            tool_call_id,
+            tool_success_content(validation.get("rows", [])),
+        )
+    )
+
+    task_family = str(seed.get("task_family") or profile.task_family)
+    output_type = str(seed.get("output_type") or profile.output_type)
+    cypher_solution: str | None = None
+    cypher_solution_match: bool | None = None
+    final_answer_cypher_match: bool | None = None
+    if task_family == "cypher_qa":
+        try:
+            cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
+        except ResultShapeError as exc:
+            return rejected(
+                "result_shape_error",
+                messages=messages,
+                cypher=cypher,
+                validation={**validation, "result_shape_error": str(exc)},
+            )
+        valid_cypher_format, cypher_solution_match = answer_matches_with_heracles(
+            cypher_solution,
+            str(real_solution),
+            output_type,
+        )
+        if not valid_cypher_format:
+            return rejected(
+                "invalid_answer_format",
+                messages=messages,
+                cypher=cypher,
+                validation=validation,
+                cypher_solution=cypher_solution,
+            )
+        if not cypher_solution_match:
+            return rejected(
+                "gold_solution_mismatch",
+                messages=messages,
+                cypher=cypher,
+                validation=validation_with_solution_checks(
+                    validation,
+                    cypher_solution_match=False,
+                ),
+                cypher_solution=cypher_solution,
+            )
+        final_answer_cypher_match = True
+
+    final_answer = str(real_solution).strip()
+    valid_final_format, final_answer_match = answer_matches_with_heracles(
+        final_answer,
+        str(real_solution),
+        output_type,
+    )
+    if not valid_final_format or not final_answer_match:
+        return rejected(
+            "invalid_gold_solution",
+            messages=messages,
+            cypher=cypher,
+            validation=validation,
+            cypher_solution=cypher_solution,
+            final_answer=final_answer,
+        )
+
+    messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
+    checked_validation = validation_with_solution_checks(
+        validation,
+        cypher_solution_match=cypher_solution_match,
+        final_answer_match=final_answer_match,
+        final_answer_cypher_match=final_answer_cypher_match,
+    )
+    record = build_interaction_trace(
+        seed,
+        messages=messages,
+        teacher_model=None,
+        cypher=cypher,
+        validation=checked_validation,
+        max_tool_calls=max_tool_calls,
+        tool_call_count=1,
+        successful_tool_call_index=1,
+        cypher_solution=cypher_solution,
+    )
+    record.metadata["teacher_provider"] = "synthetic"
+    record.metadata["generation_mode"] = "synthetic_gold_cypher"
+    return TraceDecision(True, record, "accepted", {"messages": messages})
+
+
 def configured_max_tool_calls(
     args: argparse.Namespace,
     teacher_config: dict[str, Any],
-    profile: ExperimentProfile | None = None,
+    profile: ExperimentProfile,
 ) -> int:
     value = (
         args.max_tool_calls
         if args.max_tool_calls is not None
         else teacher_config.get(
             "max_tool_calls",
-            profile.max_tool_calls if profile is not None else DEFAULT_MAX_TOOL_CALLS,
+            profile.max_tool_calls,
         )
     )
     max_tool_calls = int(value)
@@ -985,6 +1174,8 @@ def debug_trace_record(
         "question": record_json.get("question") or seed.get("question"),
         "cypher": payload.get("cypher") or record_json.get("gold_cypher"),
         "real_solution": seed_real_solution(seed),
+        "solution_formats": seed.get("solution_formats", []),
+        "answer_validation": seed.get("answer_validation"),
         "cypher_solution": cypher_solution,
         "final_answer": final_answer,
         "validation": payload.get("validation") or record_json.get("validation"),
@@ -1003,9 +1194,19 @@ def debug_trace_record(
 
 def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
+    provider = configured_teacher_provider(teacher_config)
     data_config = load_data_config(args.data_config)
     profile = load_experiment_profile_from_config(data_config)
-    model = args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
+    if profile is None:
+        raise ValueError(
+            "Teacher trace generation requires a valid `experiment_profile_path` "
+            "in the data config. Schema-only generation is no longer supported."
+        )
+    model = (
+        args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
+        if provider == "openrouter"
+        else None
+    )
     max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
     traces_per_seed = int(
         args.traces_per_seed
@@ -1014,18 +1215,28 @@ def generate_command(args: argparse.Namespace) -> None:
     )
     if traces_per_seed < 1:
         raise ValueError("traces_per_seed must be >= 1.")
+    if provider == "synthetic" and traces_per_seed != 1:
+        raise ValueError("The synthetic teacher requires traces_per_seed=1.")
+    if provider == "synthetic" and args.static_only:
+        raise ValueError("The synthetic teacher requires Neo4j execution; disable --static-only.")
 
-    with OpenRouterTeacherClient(
-        model=model,
-        timeout=int(teacher_config.get("timeout", 120)),
-        temperature=float(teacher_config.get("temperature", 0.2)),
-        max_tokens=int(teacher_config.get("max_tokens", 2048)),
-    ) as client:
-        if args.preflight:
+    client_context = (
+        OpenRouterTeacherClient(
+            # The model is always resolved for the OpenRouter provider above.
+            model=str(model),
+            timeout=int(teacher_config.get("timeout", 120)),
+            temperature=float(teacher_config.get("temperature", 0.2)),
+            max_tokens=int(teacher_config.get("max_tokens", 2048)),
+        )
+        if provider == "openrouter"
+        else nullcontext(None)
+    )
+    with client_context as client:
+        if args.preflight and provider == "openrouter":
+            assert client is not None
             client.preflight()
 
         schema_config = load_yaml(data_config["schema_path"])
-        schema = schema_config["interface_description"]
         policy = schema_policy(schema_config)
         validator = None
         if not args.static_only:
@@ -1065,18 +1276,31 @@ def generate_command(args: argparse.Namespace) -> None:
                                 len(rejected_debug_records),
                             ),
                         )
-                        decision = run_teacher_interaction(
-                            seed,
-                            schema=schema,
-                            profile=profile,
-                            tool_interface="openrouter",
-                            client=client,
-                            teacher_model=model,
-                            validator=validator,
-                            policy=policy,
-                            max_tool_calls=max_tool_calls,
-                            static_only=args.static_only,
-                        )
+                        if provider == "openrouter":
+                            assert client is not None
+                            assert model is not None
+                            decision = run_teacher_interaction(
+                                seed,
+                                profile=profile,
+                                tool_interface="openrouter",
+                                client=client,
+                                teacher_model=model,
+                                validator=validator,
+                                policy=policy,
+                                max_tool_calls=max_tool_calls,
+                                static_only=args.static_only,
+                            )
+                        else:
+                            if validator is None:
+                                raise RuntimeError("Synthetic teacher requires Neo4j validation.")
+                            decision = run_synthetic_teacher_interaction(
+                                seed,
+                                profile=profile,
+                                tool_interface="openrouter",
+                                validator=validator,
+                                policy=policy,
+                                max_tool_calls=max_tool_calls,
+                            )
                         if decision.accepted and decision.record is not None:
                             record_json = decision.record.model_dump(
                                 by_alias=True,
@@ -1119,6 +1343,10 @@ def generate_command(args: argparse.Namespace) -> None:
 
 def preflight_command(args: argparse.Namespace) -> None:
     config = load_yaml(args.teacher_config)
+    provider = configured_teacher_provider(config)
+    if provider == "synthetic":
+        print("Synthetic teacher requires no model preflight.")
+        return
     with OpenRouterTeacherClient(
         model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL)
     ) as client:
@@ -1127,7 +1355,7 @@ def preflight_command(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate OpenRouter teacher agent traces.")
+    parser = argparse.ArgumentParser(description="Generate profile-based teacher agent traces.")
     subparsers = parser.add_subparsers(required=True)
 
     preflight_parser = subparsers.add_parser("preflight")

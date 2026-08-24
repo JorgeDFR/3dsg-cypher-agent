@@ -15,3 +15,5 @@ outputs/*
 !outputs/ollama/
 outputs/ollama/*
 !outputs/ollama/.gitkeep
+
+TODO.md

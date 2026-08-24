@@ -532,6 +532,12 @@ def generate_records(
         for variables in variable_combinations:
             cypher = format_nested(template["cypher"], variables).strip()
             solution = scene_index.solution_for(query_type, variables) if scene_index else None
+            answer_validation_for = getattr(scene_index, "answer_validation_for", None)
+            answer_validation = (
+                answer_validation_for(query_type, variables)
+                if callable(answer_validation_for)
+                else None
+            )
             variable_key = json.dumps(
                 variables,
                 ensure_ascii=False,
@@ -558,6 +564,8 @@ def generate_records(
                     "read_only": bool(template.get("read_only", True)),
                     "tags": deepcopy(template.get("tags", [])),
                 }
+                if answer_validation is not None:
+                    record["answer_validation"] = deepcopy(answer_validation)
                 candidates.append(
                     QuestionCandidate(
                         record=record,

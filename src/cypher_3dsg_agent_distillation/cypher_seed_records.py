@@ -22,6 +22,7 @@ class CypherSeedRecord(BaseModel):
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
+    answer_validation: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -40,10 +41,9 @@ class PreparedCypherSeedRecord(BaseModel):
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
+    answer_validation: dict[str, Any] | None = None
     tags: list[str]
     scene_id: str | None = None
-    schema_name: str
-    schema_text: str = Field(alias="schema")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,8 +69,6 @@ def load_raw_seed_records_from_config(data_config: dict[str, Any]) -> list[Cyphe
 
 def prepare_seed_records(
     raw_records: Iterable[CypherSeedRecord],
-    schema_name: str,
-    schema_text: str,
     *,
     task_family: str = "cypher_qa",
     output_type: str = "SLDP",
@@ -92,10 +90,9 @@ def prepare_seed_records(
                 expected_result_hash=record.expected_result_hash,
                 solution=record.solution,
                 solution_formats=record.solution_formats,
+                answer_validation=record.answer_validation,
                 tags=record.tags,
                 scene_id=record.scene_id,
-                schema_name=schema_name,
-                schema=schema_text.strip(),
                 metadata=metadata,
             )
         )

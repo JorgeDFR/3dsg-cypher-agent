@@ -4,11 +4,6 @@ from typing import Any
 
 from cypher_3dsg_agent_distillation.agent_records import DEFAULT_AGENT_TOOL
 
-AGENT_SYSTEM_PROMPT = """You are a 3D scene graph agent.
-Use the run_cypher_query tool when a read-only Cypher query is needed.
-Return the final answer as compact answer notation wrapped in <answer>...</answer>.
-Do not call tools for write requests; answer WRITE_QUERY_NOT_ALLOWED instead."""
-
 
 def run_cypher_tool_schema() -> dict[str, Any]:
     return {
@@ -32,55 +27,3 @@ def run_cypher_tool_schema() -> dict[str, Any]:
             },
         },
     }
-
-
-def build_agent_user_prompt(schema: str, question: str) -> str:
-    return (
-        "Use the available tools to answer this 3D Scene Graph question.\n\n"
-        f"{schema.strip()}\n\n"
-        f"Question: {question.strip()}"
-    )
-
-
-def build_teacher_interaction_messages(schema: str, question: str) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        {"role": "user", "content": build_agent_user_prompt(schema, question)},
-    ]
-
-
-def build_trace_messages(
-    schema: str,
-    question: str,
-    cypher: str,
-    tool_result: str,
-    final_answer: Any,
-    *,
-    refusal: bool = False,
-) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-        {"role": "user", "content": build_agent_user_prompt(schema, question)},
-    ]
-    if refusal:
-        messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
-        return messages
-    messages.extend(
-        [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": DEFAULT_AGENT_TOOL,
-                            "arguments": {"cypher_string": cypher.strip()},
-                        },
-                    }
-                ],
-            },
-            {"role": "tool", "tool_name": DEFAULT_AGENT_TOOL, "content": str(tool_result)},
-            {"role": "assistant", "content": f"<answer>{final_answer}</answer>"},
-        ]
-    )
-    return messages

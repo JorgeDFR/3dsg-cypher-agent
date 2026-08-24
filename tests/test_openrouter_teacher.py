@@ -6,12 +6,16 @@ from cypher_3dsg_agent_distillation.agent_records import (
     DEFAULT_AGENT_TOOL,
     WRITE_REFUSAL_ANSWER,
 )
+from cypher_3dsg_agent_distillation.config import load_yaml
+from cypher_3dsg_agent_distillation.experiment_profiles import load_experiment_profile
 from cypher_3dsg_agent_distillation.openrouter_teacher import (
     OpenRouterTeacherClient,
+    configured_teacher_provider,
     debug_trace_record,
     evaluate_candidate_trace,
     normalize_assistant_message,
     progress_description,
+    run_synthetic_teacher_interaction,
     run_teacher_interaction,
     seed_expected_solution,
 )
@@ -135,9 +139,16 @@ def candidate_trace(cypher="MATCH (o:Object) RETURN count(o) AS count"):
 
 def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static_only=False):
     client = FakeConversationClient(responses)
+    profile_name = (
+        "cypher_pddl_template.yaml"
+        if seed.get("task_family") == "cypher_pddl"
+        else "cypher_qa_template.yaml"
+    )
     decision = run_teacher_interaction(
         seed,
-        schema="Labels in Database: Object",
+        profile=load_experiment_profile(
+            f"configs/experiment_profiles/{profile_name}"
+        ),
         client=client,
         teacher_model="openai/gpt-oss-120b",
         validator=validator if validator is not None else FakeValidator(),
@@ -146,6 +157,108 @@ def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static
         static_only=static_only,
     )
     return decision, client
+
+
+def test_teacher_provider_requires_supported_explicit_type():
+    assert configured_teacher_provider({"provider": "openrouter"}) == "openrouter"
+    assert configured_teacher_provider({"provider": "synthetic"}) == "synthetic"
+
+    try:
+        configured_teacher_provider({"provider": "local"})
+    except ValueError as exc:
+        assert "Unsupported teacher provider" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported provider error")
+
+
+def test_synthetic_teacher_config_does_not_define_a_model():
+    config = load_yaml("configs/teacher_synthetic.yaml")
+
+    assert configured_teacher_provider(config) == "synthetic"
+    assert "model" not in config
+
+
+def test_synthetic_teacher_constructs_trace_from_gold_and_database_rows():
+    validator = FakeValidator()
+    decision = run_synthetic_teacher_interaction(
+        seed_record(task_family="cypher_qa", output_type="SLDP"),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert decision.accepted
+    assert decision.reason == "accepted"
+    assert validator.cyphers == ["MATCH (o:Object) RETURN count(o) AS count"]
+    assert decision.record.first_cypher_argument == (
+        "MATCH (o:Object) RETURN count(o) AS count"
+    )
+    assert decision.record.messages[-2].content == (
+        '{"ok": true, "rows": [{"count": 3}]}'
+    )
+    assert decision.record.messages[-1].content == "<answer>3</answer>"
+    assert decision.record.cypher_solution == "3"
+    assert decision.record.validation.solution_match is True
+    assert decision.record.teacher_model is None
+    assert "teacher_model" not in decision.record.model_dump(exclude_none=True)
+    assert decision.record.metadata["teacher_provider"] == "synthetic"
+    assert decision.record.metadata["generation_mode"] == "synthetic_gold_cypher"
+
+
+def test_synthetic_teacher_rejects_database_result_that_disagrees_with_gold():
+    validator = FakeValidator(
+        [{"executable": True, "rows": [{"count": 4}], "error": None}]
+    )
+
+    decision = run_synthetic_teacher_interaction(
+        seed_record(task_family="cypher_qa", output_type="SLDP"),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "gold_solution_mismatch"
+    assert decision.payload["cypher_solution"] == "4"
+    assert [message["role"] for message in decision.payload["messages"][-2:]] == [
+        "assistant",
+        "tool",
+    ]
+    assert decision.payload["messages"][-2]["tool_calls"][0]["function"][
+        "arguments"
+    ] == {"cypher_string": "MATCH (o:Object) RETURN count(o) AS count"}
+    assert decision.payload["messages"][-1]["content"] == (
+        '{"ok": true, "rows": [{"count": 4}]}'
+    )
+
+
+def test_synthetic_teacher_constructs_refusal_without_database_call():
+    validator = FakeValidator()
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            cypher=WRITE_REFUSAL_ANSWER,
+            solution=WRITE_REFUSAL_ANSWER,
+            task_family="cypher_qa",
+            output_type="SLDP",
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert decision.accepted
+    assert decision.reason == "accepted_refusal"
+    assert validator.cyphers == []
+    assert not decision.record.tool_calls
+    assert decision.record.messages[-1].content == (
+        f"<answer>{WRITE_REFUSAL_ANSWER}</answer>"
+    )
 
 
 def test_progress_description_reports_generation_counts():
@@ -255,7 +368,12 @@ def test_teacher_interaction_accepts_one_tool_conversation_without_synthetic_pro
 
     assert decision.accepted
     assert decision.reason == "accepted"
-    assert len(decision.record.messages) == 5
+    assert len(decision.record.messages) > 5
+    assert [message.role for message in decision.record.messages[-3:]] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
     assert decision.record.gold_cypher == "MATCH (o:Object) RETURN count(o) AS count"
     assert decision.record.real_solution == 3
     assert decision.record.cypher_solution == "3"
@@ -270,6 +388,54 @@ def test_teacher_interaction_accepts_one_tool_conversation_without_synthetic_pro
     assert "Expected answer notation" not in rendered_first_call
     assert "MATCH (o:Object) RETURN count(o) AS count" not in rendered_first_call
     assert "solution" not in rendered_first_call.lower()
+
+
+def test_teacher_interaction_accepts_alternative_class_at_top_k_tie_boundary():
+    teacher_cypher = (
+        "MATCH (o:Object) RETURN o.class AS class, count(o) AS count "
+        "ORDER BY count DESC, class DESC LIMIT 2"
+    )
+    validator = FakeValidator(
+        [
+            {
+                "executable": True,
+                "rows": [
+                    {"class": "light", "count": 10},
+                    {"class": "plant", "count": 7},
+                ],
+                "error": None,
+            }
+        ]
+    )
+    seed = seed_record(
+        question="Which two object classes are most common?",
+        query_type="top_object_classes_by_count",
+        cypher=(
+            "MATCH (o:Object) RETURN o.class AS class, count(o) AS count "
+            "ORDER BY count DESC, class ASC LIMIT 2"
+        ),
+        solution="<light, flag>",
+        solution_formats=["set[str]"],
+        answer_validation={
+            "mode": "top_k_with_ties",
+            "limit": 2,
+            "scores": {"light": 10, "flag": 7, "plant": 7},
+        },
+    )
+
+    decision, _client = run_interaction(
+        seed,
+        [tool_assistant(teacher_cypher), final_assistant("<light, plant>")],
+        validator=validator,
+    )
+
+    assert decision.accepted
+    assert decision.record.cypher_solution == "<light, plant>"
+    assert decision.record.final_answer == "<light, plant>"
+    assert decision.record.solution_formats == ["set[str]"]
+    assert decision.record.validation.cypher_solution_match is True
+    assert decision.record.validation.final_answer_match is True
+    assert decision.record.validation.final_answer_cypher_match is True
 
 
 def test_seed_expected_solution_preserves_falsy_solution_values():
@@ -344,8 +510,11 @@ def test_teacher_interaction_repairs_static_issue_within_tool_limit():
     assert decision.accepted
     assert decision.record.metadata["tool_call_count"] == 2
     assert decision.record.metadata["repair_attempted"]
-    assert len(decision.record.messages) == 7
-    assert '"error_type": "static_issues"' in decision.record.messages[3].content
+    assert any(
+        '"error_type": "static_issues"' in str(message.content)
+        for message in decision.record.messages
+        if message.role == "tool"
+    )
 
 
 def test_teacher_interaction_repairs_execution_failure_within_tool_limit():
@@ -368,7 +537,11 @@ def test_teacher_interaction_repairs_execution_failure_within_tool_limit():
 
     assert decision.accepted
     assert validator.cyphers == ["MATCH broken", "MATCH (o:Object) RETURN count(o) AS count"]
-    assert '"error_type": "execution_failed"' in decision.record.messages[3].content
+    assert any(
+        '"error_type": "execution_failed"' in str(message.content)
+        for message in decision.record.messages
+        if message.role == "tool"
+    )
 
 
 def test_teacher_interaction_accepts_result_alias_within_tool_limit():
@@ -397,7 +570,9 @@ def test_teacher_interaction_accepts_result_alias_within_tool_limit():
     assert validator.cyphers == [
         "MATCH (o:Object) RETURN o.class AS category",
     ]
-    assert decision.record.messages[3].content == '{"ok": true, "rows": [{"category": "chair"}]}'
+    assert decision.record.messages[-2].content == (
+        '{"ok": true, "rows": [{"category": "chair"}]}'
+    )
 
 
 def test_teacher_interaction_rejects_when_max_tool_calls_exceeded():

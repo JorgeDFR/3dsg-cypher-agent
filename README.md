@@ -5,7 +5,8 @@ Neo4j-backed 3D Scene Graphs. The active target is an agent that answers by
 calling `run_cypher_query(cypher_string: str)` through either Ollama-native tool
 calls or a custom XML fallback interface.
 
-- Default teacher: `openai/gpt-oss-120b` through OpenRouter
+- Teacher options: `openai/gpt-oss-120b` through OpenRouter, or a deterministic
+  `synthetic` teacher using gold Cypher and live Neo4j results
 - Primary student: `qwen-3.5-4b` through Hugging Face, and exported to Ollama
 
 ## Scope
@@ -13,7 +14,8 @@ calls or a custom XML fallback interface.
 The active workflow is:
 
 1. Generate or load validated 3DSG Cypher seed records.
-2. Run an OpenRouter teacher as a normal tool-using agent conversation.
+2. Generate tool-using traces with either an OpenRouter teacher or the deterministic
+   synthetic teacher.
 3. Execute teacher Cypher tool calls locally through Neo4j validation.
 4. Allow bounded repair attempts, then keep only interactions that pass static
    safety, execution, and expected-answer checks.
@@ -47,9 +49,16 @@ docker/stack.sh setup
 Load the configured scene and inspect service status:
 
 ```bash
-docker/stack.sh load-neo4j
+docker/stack.sh load-neo4j data/scenes/3dsg_uhumans2.json
 docker/stack.sh status
 ```
+
+The Docker stack provides `main`, `neo4j`, and `ollama` services. Neo4j is
+available inside Docker at `neo4j://neo4j:7683` and from the host at
+`neo4j://127.0.0.1:7683`; HTTP is exposed at `http://127.0.0.1:7469`. The
+username is `neo4j` and the password is `neo4j_pw`. The trace generator
+validates teacher Cypher tool calls against this database, so reload the
+database whenever `scene_path` changes.
 
 Run `docker/stack.sh help` for the ordered first-run guide and command groups.
 See [docs/docker.md](docs/docker.md) for the complete command reference and
@@ -102,20 +111,7 @@ docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
   --data-config configs/data.yaml
 ```
 
-Reload Neo4j whenever `scene_path` changes:
-
-```bash
-docker/stack.sh load-neo4j data/scenes/3dsg_uhumans2.json
-```
-
-The Docker stack provides `main`, `neo4j`, and `ollama` services. Neo4j is
-available inside Docker at `neo4j://neo4j:7683` and from the host at
-`neo4j://127.0.0.1:7683`; HTTP is exposed at `http://127.0.0.1:7469`. The
-username is `neo4j` and the password is `neo4j_pw`. The trace generator
-validates teacher Cypher tool calls against this database, so reload the
-database whenever `scene_path` changes.
-
-Check OpenRouter model availability:
+Check OpenRouter model availability (OpenRouter teacher only):
 
 ```bash
 docker/stack.sh main python scripts/generate_traces.py preflight \
@@ -130,10 +126,22 @@ docker/stack.sh main python scripts/generate_traces.py generate \
   --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
-The teacher receives the normal agent prompt, the schema context, and the
+The OpenRouter teacher receives the profile-rendered agent prompt and the
 `run_cypher_query` tool schema. It does not receive seed gold Cypher or expected
-answers. `max_tool_calls` defaults to `3` in the teacher config and can be
-overridden with `--max-tool-calls`.
+answers. `max_tool_calls` defaults to `3` in the teacher config and can be overridden
+with `--max-tool-calls`.
+
+To generate traces without an LLM teacher:
+
+```bash
+docker/stack.sh main python scripts/generate_traces.py generate \
+  --data-config configs/data.yaml \
+  --teacher-config configs/teacher_synthetic.yaml
+```
+
+The `synthetic` provider renders the same experiment profile, inserts the seed's gold
+Cypher as the tool call, executes it against Neo4j, stores the real returned rows as
+the tool output, and uses the gold solution as the final answer.
 
 Create grouped splits:
 
@@ -199,7 +207,7 @@ docker/stack.sh main python scripts/evaluate_student.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split test \
   --mode raw-generation \
-  --max-new-tokens 512
+  --max-new-tokens 1024
 ```
 
 Generate a static HTML workflow report for the configured scene:

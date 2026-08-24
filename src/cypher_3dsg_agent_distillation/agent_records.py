@@ -82,10 +82,12 @@ class AgentTraceRecord(BaseModel):
     gold_cypher: str
     expected_solution: Any | None = None
     real_solution: Any | None = None
+    solution_formats: list[str] = Field(default_factory=list)
+    answer_validation: dict[str, Any] | None = None
     cypher_solution: Any | None = None
     final_answer: str | None = None
     split_group: str | None = None
-    teacher_model: str = DEFAULT_TEACHER_MODEL
+    teacher_model: str | None = None
     validation: TraceValidation = Field(default_factory=TraceValidation)
     read_only: bool = True
     tags: list[str] = Field(default_factory=list)

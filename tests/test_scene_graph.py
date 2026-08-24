@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import spark_dsg
@@ -11,7 +12,9 @@ from cypher_3dsg_agent_distillation.scene_graph import (
     SceneIndex,
     node_symbol,
     objects_in_bbox,
+    ranked_class_names,
     scene_values,
+    top_k_with_ties_validation,
 )
 
 SCENE_PATH = Path("data/scenes/3dsg_uhumans2.json")
@@ -21,6 +24,17 @@ def test_node_symbol_matches_spark_dsg_encoding():
     assert node_symbol(0x4F0000000000002A) == "O42"
     assert node_symbol(0x7000000000000007) == "p7"
     assert node_symbol(0x5000000000001626) == "P5670"
+
+
+def test_top_class_gold_ranking_breaks_count_ties_alphabetically():
+    counts = Counter({"plant": 7, "flag": 7, "painting": 7, "light": 10})
+
+    assert ranked_class_names(counts, 3) == ["light", "flag", "painting"]
+    assert top_k_with_ties_validation(counts, 3) == {
+        "mode": "top_k_with_ties",
+        "limit": 3,
+        "scores": {"flag": 7, "light": 10, "painting": 7, "plant": 7},
+    }
 
 
 def test_extract_scene_values_from_spark_dsg():
