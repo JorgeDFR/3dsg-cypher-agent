@@ -8,9 +8,9 @@ max_per_task_type: null
 optimize_student_traces: false
 
 split:
-  train_size: 0.7
-  eval_size: 0.15
-  test_size: 0.15
+  train_size: 0.8
+  eval_size: 0.1
+  test_size: 0.1
   seed: 42
   challenge_task_types:
     - nearest_object_to_object

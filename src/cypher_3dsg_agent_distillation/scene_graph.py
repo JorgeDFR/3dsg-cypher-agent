@@ -293,14 +293,14 @@ def scene_values(
     max_place_symbols: int,
     max_mesh_place_symbols: int,
     max_points: int,
-    max_bboxes: int = 3,
-    max_place_object_cases: int = 20,
-    max_radius_cases: int = 40,
+    max_bboxes: int = 50,
+    max_place_object_cases: int = 50,
+    max_radius_cases: int = 50,
     max_nearest_mesh_cases: int = 60,
-    max_nearest_object_cases: int = 40,
-    max_mesh_place_hop_cases: int = 25,
-    max_place_hop_cases: int = 25,
-    non_empty_ratio: float = 0.7,
+    max_nearest_object_cases: int = 50,
+    max_mesh_place_hop_cases: int = 50,
+    max_place_hop_cases: int = 50,
+    non_empty_ratio: float = 0.9,
     max_object_class_solution_size: int = 10,
     max_bbox_solution_size: int = 20,
 ) -> dict[str, Any]:
@@ -348,7 +348,7 @@ def scene_values(
         "place_symbols": sorted_symbols(by_label["Place"], max_place_symbols),
         "mesh_place_symbols": mesh_place_symbols,
         "building_symbols": sorted_symbols(by_label["Building"], max_place_symbols),
-        "top_class_limits": [2, 3],
+        "top_class_limits": list(range(1, len(object_class_counts) + 1)),
         "radii": [2, 5, 10],
         "hop_counts": [2, 5, 6],
         "points": sample_points(object_points or all_points, max_points),
@@ -771,9 +771,10 @@ def build_object_radius_cases(
             point = index.points_by_symbol[symbol]
             if point is not None:
                 non_empty.append({"class": class_name, "radius": 2, "point": point})
-                break
 
+    used_empty_points: set[tuple[float, float, float]] = set()
     for class_name in object_classes:
+        fallback_case = None
         for node in point_objects:
             point = index.points_by_symbol[node_symbol(node.id)]
             if point is None:
@@ -788,8 +789,17 @@ def build_object_radius_cases(
                     has_match = True
                     break
             if not has_match:
-                empty.append({"class": class_name, "radius": 2, "point": point})
-                break
+                case = {"class": class_name, "radius": 2, "point": point}
+                point_key = (point["x"], point["y"], point["z"])
+                if point_key not in used_empty_points:
+                    empty.append(case)
+                    used_empty_points.add(point_key)
+                    break
+                if fallback_case is None:
+                    fallback_case = case
+        else:
+            if fallback_case is not None:
+                empty.append(fallback_case)
 
     deduped_empty = []
     seen_empty = set()
@@ -833,9 +843,12 @@ def build_nearest_object_cases(
     limit: int,
 ) -> list[dict[str, Any]]:
     cases = []
+    if not object_classes:
+        return cases
     object_symbols = [node_symbol(node.id) for node in index.objects_with_class()]
-    for object_symbol in object_symbols:
-        for class_name in object_classes:
+    for offset in range(len(object_classes)):
+        for object_index, object_symbol in enumerate(object_symbols):
+            class_name = object_classes[(object_index + offset) % len(object_classes)]
             candidates = [
                 node_symbol(node.id)
                 for node in index.objects_with_class(class_name)
@@ -923,15 +936,15 @@ def main() -> None:
     parser.add_argument("--max-object-symbols", type=int, default=50)
     parser.add_argument("--max-place-symbols", type=int, default=50)
     parser.add_argument("--max-mesh-place-symbols", type=int, default=50)
-    parser.add_argument("--max-points", type=int, default=5)
-    parser.add_argument("--max-bboxes", type=int, default=3)
-    parser.add_argument("--max-place-object-cases", type=int, default=20)
-    parser.add_argument("--max-radius-cases", type=int, default=40)
+    parser.add_argument("--max-points", type=int, default=50)
+    parser.add_argument("--max-bboxes", type=int, default=50)
+    parser.add_argument("--max-place-object-cases", type=int, default=50)
+    parser.add_argument("--max-radius-cases", type=int, default=50)
     parser.add_argument("--max-nearest-mesh-cases", type=int, default=60)
-    parser.add_argument("--max-nearest-object-cases", type=int, default=40)
-    parser.add_argument("--max-mesh-place-hop-cases", type=int, default=25)
-    parser.add_argument("--max-place-hop-cases", type=int, default=25)
-    parser.add_argument("--non-empty-ratio", type=float, default=0.7)
+    parser.add_argument("--max-nearest-object-cases", type=int, default=50)
+    parser.add_argument("--max-mesh-place-hop-cases", type=int, default=50)
+    parser.add_argument("--max-place-hop-cases", type=int, default=50)
+    parser.add_argument("--non-empty-ratio", type=float, default=0.9)
     parser.add_argument("--max-object-class-solution-size", type=int, default=10)
     parser.add_argument("--max-bbox-solution-size", type=int, default=20)
     args = parser.parse_args()

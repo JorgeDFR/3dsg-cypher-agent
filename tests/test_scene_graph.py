@@ -31,14 +31,14 @@ def test_extract_scene_values_from_spark_dsg():
     assert values["place_symbols"][:3] == ["p0", "p1", "p4"]
     assert values["mesh_place_symbols"][:3] == ["P5670", "P5671", "P5672"]
     index = SceneIndex(SCENE_PATH)
-    assert len(values["bboxes"]) == 3
+    assert len(values["bboxes"]) == 50
     assert all(len(objects_in_bbox(index, bbox)) <= 20 for bbox in values["bboxes"])
-    assert len(values["place_object_cases"]) == 20
-    assert len(values["object_radius_cases"]) == 40
+    assert len(values["place_object_cases"]) == 50
+    assert len(values["object_radius_cases"]) == 50
     assert len(values["nearest_object_mesh_cases"]) == 60
-    assert len(values["nearest_object_cases"]) == 40
-    assert len(values["mesh_place_hop_cases"]) == 25
-    assert len(values["place_hop_cases"]) == 25
+    assert len(values["nearest_object_cases"]) == 50
+    assert len(values["mesh_place_hop_cases"]) == 50
+    assert len(values["place_hop_cases"]) == 50
 
 
 def test_extract_graph_records_from_spark_dsg():
@@ -123,7 +123,7 @@ def test_curated_cases_include_empty_and_non_empty_solutions():
         for case in values["object_radius_cases"]
     ]
 
-    assert sum(solution == set() for solution in place_solutions) == 6
-    assert sum(solution != set() for solution in place_solutions) == 14
-    assert sum(solution == set() for solution in radius_solutions) >= 10
-    assert sum(solution != set() for solution in radius_solutions) >= 20
+    assert sum(solution == set() for solution in place_solutions) == 5
+    assert sum(solution != set() for solution in place_solutions) == 45
+    assert sum(solution == set() for solution in radius_solutions) == 5
+    assert sum(solution != set() for solution in radius_solutions) == 45

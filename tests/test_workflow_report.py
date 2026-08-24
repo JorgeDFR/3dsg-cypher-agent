@@ -4,6 +4,7 @@ from cypher_3dsg_agent_distillation.io import write_jsonl
 from cypher_3dsg_agent_distillation.workflow_report import (
     collect_workflow_report_data,
     render_workflow_report,
+    scene_template_sample_text,
     workflow_report_output_path,
 )
 
@@ -103,6 +104,20 @@ def write_minimal_artifacts(config):
                     "values:",
                     "  object_classes:",
                     "    - chair",
+                    "    - table",
+                    "  object_radius_cases:",
+                    "    - class: chair",
+                    "      radius: 2",
+                    "      point:",
+                    "        x: 1",
+                    "        y: 2",
+                    "        z: 3",
+                    "    - class: table",
+                    "      radius: 5",
+                    "      point:",
+                    "        x: 4",
+                    "        y: 5",
+                    "        z: 6",
                 ]
             )
         )
@@ -255,6 +270,13 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Rooms</div>" in html
     assert html.index("Object Classes") < html.index("Template Values")
     assert "0 classes" in html
+    scene_section = html[html.index('<section id="scene"') : html.index('<section id="questions"')]
+    assert "<pre>chair, table</pre>" in scene_section
+    assert (
+        "{class: chair, radius: 2, point: {x: 1, y: 2, z: 3}}, "
+        "{class: table, radius: 5, point: {x: 4, y: 5, z: 6}}"
+        in scene_section
+    )
     generated_summary = html[
         html.index("<h2>Generated Questions</h2>") : html.index("<h3>Questions</h3>")
     ]
@@ -381,3 +403,17 @@ def test_workflow_report_default_output_lives_in_reports_dir(tmp_path):
 
     assert workflow_report_output_path(config).name == "workflow_report.html"
     assert workflow_report_output_path(config).parent.name == "reports"
+
+
+def test_scene_template_sample_renders_comma_separated_dictionaries():
+    cases = [
+        {"class": "chair", "point": {"x": 1, "y": 2, "z": 3}},
+        {"class": "table", "point": {"x": 4, "y": 5, "z": 6}},
+    ]
+
+    rendered = scene_template_sample_text("object_radius_cases", cases)
+
+    assert rendered == (
+        "{class: chair, point: {x: 1, y: 2, z: 3}}, "
+        "{class: table, point: {x: 4, y: 5, z: 6}}"
+    )

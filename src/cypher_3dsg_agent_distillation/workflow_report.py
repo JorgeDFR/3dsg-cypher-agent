@@ -40,7 +40,7 @@ LABEL_OVERRIDES = {
 }
 NEGATIVE_BOOLEAN_KEYS = {"rejected"}
 CLEAN_DETAIL_FIELD_TOKENS = ("answer", "cypher", "solution")
-PRE_TABLE_KEYS = {"gold_cypher", "model_cypher", "solution"}
+PRE_TABLE_KEYS = {"gold_cypher", "model_cypher", "sample", "solution"}
 
 
 def workflow_report_output_path(data_config: dict[str, Any], output: str | None = None) -> Path:
@@ -858,6 +858,8 @@ def render_cell(value: Any, key: str | None = None) -> str:
 def sort_value(value: Any, key: str | None = None) -> str:
     if value is None:
         return ""
+    if key == "sample":
+        return ""
     if isinstance(value, bool):
         return "1" if value else "0"
     if isinstance(value, int | float):
@@ -1203,6 +1205,30 @@ def scene_graph_metrics(summary: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
+def scene_template_sample_text(_name: str, value: Any) -> str:
+    """Render template values as comma-separated scalar or dictionary samples."""
+    def format_value(item: Any) -> str:
+        if isinstance(item, dict):
+            fields = ", ".join(
+                f"{key}: {format_value(child)}" for key, child in item.items()
+            )
+            return "{" + fields + "}"
+        if isinstance(item, list | tuple):
+            return "[" + ", ".join(format_value(child) for child in item) + "]"
+        if isinstance(item, set):
+            ordered = sorted(item, key=str)
+            return "{" + ", ".join(format_value(child) for child in ordered) + "}"
+        if isinstance(item, bool):
+            return str(item).lower()
+        if item is None:
+            return "null"
+        return str(item)
+
+    if isinstance(value, list | tuple):
+        return ", ".join(format_value(item) for item in value)
+    return format_value(value)
+
+
 def render_scene_graph_tab(data: dict[str, Any]) -> str:
     scene = data["scene_graph"]
     summary = scene["summary"]
@@ -1212,7 +1238,7 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
         {
             "name": key,
             "count": len(value) if isinstance(value, list | dict) else "",
-            "sample": list(value)[:12] if isinstance(value, list) else value,
+            "sample": scene_template_sample_text(str(key), value),
         }
         for key, value in values.items()
     ]

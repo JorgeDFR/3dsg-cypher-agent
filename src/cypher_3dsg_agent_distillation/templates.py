@@ -3,10 +3,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import itertools
+import json
 import math
+import random
 import re
+import warnings
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
@@ -36,6 +41,14 @@ class SolutionBlock(str):
 
 class SolutionSet(list):
     pass
+
+
+@dataclass
+class QuestionCandidate:
+    record: dict[str, Any]
+    has_solution: bool
+    variable_key: str
+    variant_index: int
 
 
 def _represent_solution_block(dumper: DatasetDumper, data: SolutionBlock) -> yaml.ScalarNode:
@@ -92,6 +105,144 @@ def variable_product(
 
     for combination in itertools.product(*value_lists):
         yield dict(zip(names, combination, strict=True))
+
+
+def solution_is_empty(value: Any) -> bool:
+    """Return whether a solved template has no result rows/items."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, dict | set | list | tuple):
+        return len(value) == 0
+    return False
+
+
+def requested_question_count(template: dict[str, Any]) -> int | None:
+    value = template.get("target_questions")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("target_questions must be an integer.")
+    if value < 0:
+        raise ValueError("target_questions must be greater than or equal to zero.")
+    return value
+
+
+def sampling_ratio(
+    template: dict[str, Any],
+    sampling_config: dict[str, Any],
+    override: float | None,
+) -> float:
+    ratio = (
+        override
+        if override is not None
+        else template.get("non_empty_ratio", sampling_config.get("non_empty_ratio", 0.9))
+    )
+    ratio = float(ratio)
+    if ratio < 0 or ratio > 1:
+        raise ValueError(f"non_empty_ratio must be between 0 and 1, got {ratio}.")
+    return ratio
+
+
+def sampled_candidates(
+    candidates: list[QuestionCandidate],
+    *,
+    target: int,
+    non_empty_ratio: float,
+    query_type: str,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    """Sample unique records while enforcing a per-query-type answer ratio."""
+    if target <= 0 or not candidates:
+        return []
+
+    actual_target = min(target, len(candidates))
+    non_empty = [candidate for candidate in candidates if candidate.has_solution]
+    empty = [candidate for candidate in candidates if not candidate.has_solution]
+
+    required_non_empty = math.ceil(actual_target * non_empty_ratio)
+    if len(non_empty) < required_non_empty:
+        warnings.warn(
+            f"Template `{query_type}` cannot meet non_empty_ratio={non_empty_ratio:.3g}: "
+            f"it needs {required_non_empty} non-empty questions but only "
+            f"{len(non_empty)} unique candidates are available. Sampling the highest "
+            "achievable non-empty ratio.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    selected_non_empty = min(
+        len(non_empty),
+        max(required_non_empty, actual_target - len(empty)),
+    )
+    selected_empty = min(len(empty), actual_target - selected_non_empty)
+    remaining = actual_target - selected_non_empty - selected_empty
+    if remaining:
+        additional_non_empty = min(len(non_empty) - selected_non_empty, remaining)
+        selected_non_empty += additional_non_empty
+        remaining -= additional_non_empty
+        selected_empty += min(len(empty) - selected_empty, remaining)
+
+    variant_usage: Counter[int] = Counter()
+    selected = diverse_candidate_sample(
+        non_empty,
+        selected_non_empty,
+        rng=rng,
+        variant_usage=variant_usage,
+    )
+    selected.extend(
+        diverse_candidate_sample(
+            empty,
+            selected_empty,
+            rng=rng,
+            variant_usage=variant_usage,
+        )
+    )
+    rng.shuffle(selected)
+    return [candidate.record for candidate in selected]
+
+
+def diverse_candidate_sample(
+    candidates: list[QuestionCandidate],
+    count: int,
+    *,
+    rng: random.Random,
+    variant_usage: Counter[int],
+) -> list[QuestionCandidate]:
+    """Maximize distinct variables before reusing one with another wording."""
+    if count <= 0:
+        return []
+
+    by_variable: dict[str, list[QuestionCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        by_variable[candidate.variable_key].append(candidate)
+    variable_keys = list(by_variable)
+    rng.shuffle(variable_keys)
+    for variable_candidates in by_variable.values():
+        rng.shuffle(variable_candidates)
+
+    selected: list[QuestionCandidate] = []
+    while len(selected) < count:
+        available_keys = [key for key in variable_keys if by_variable[key]]
+        if not available_keys:
+            break
+        rng.shuffle(available_keys)
+        for key in available_keys:
+            choices = by_variable[key]
+            minimum_usage = min(variant_usage[candidate.variant_index] for candidate in choices)
+            least_used = [
+                candidate
+                for candidate in choices
+                if variant_usage[candidate.variant_index] == minimum_usage
+            ]
+            candidate = rng.choice(least_used)
+            choices.remove(candidate)
+            selected.append(candidate)
+            variant_usage[candidate.variant_index] += 1
+            if len(selected) >= count:
+                break
+    return selected
 
 
 def stable_uid(query_type: str, question: str, cypher: str) -> str:
@@ -336,26 +487,63 @@ def generate_records(
     config: dict[str, Any],
     question_templates_config: dict[str, Any] | None = None,
     limit_per_template: int | None = None,
+    seed: int | None = None,
+    non_empty_ratio: float | None = None,
 ) -> list[dict[str, Any]]:
     values = config.get("values", {})
-    templates = (
-        question_templates_config.get("templates", [])
-        if question_templates_config is not None
-        else config.get("templates", [])
+    templates_config = (
+        question_templates_config if question_templates_config is not None else config
     )
+    templates = templates_config.get("templates", [])
+    sampling_config = templates_config.get("sampling", {})
+    if not isinstance(sampling_config, dict):
+        raise TypeError("sampling must be a mapping.")
+    sampling_seed = int(seed if seed is not None else sampling_config.get("seed", 42))
     scene_index = SceneIndex(config["source_3dsg"]) if config.get("source_3dsg") else None
     records: list[dict[str, Any]] = []
     for template in templates:
-        generated_for_template = 0
         query_type = template["query_type"]
         solution_formats = solution_formats_for_template(template)
         if scene_index is not None and not solution_formats:
             raise KeyError(f"Template `{query_type}` must define solution_formats.")
-        for variables in variable_product(template, values):
+
+        variable_combinations = list(variable_product(template, values))
+        question_templates = list(template["questions"])
+        has_variables = bool(template.get("variables"))
+        target = requested_question_count(template) if has_variables else None
+        if target is not None and limit_per_template is not None:
+            target = min(target, limit_per_template)
+        elif target is None and limit_per_template is not None:
+            target = limit_per_template
+
+        raw_capacity = len(variable_combinations) * len(question_templates)
+        if has_variables and target is not None and raw_capacity < target:
+            warnings.warn(
+                f"Template `{query_type}` requests {target} questions, but its "
+                f"{len(variable_combinations)} variable combinations and "
+                f"{len(question_templates)} question variants can produce at most "
+                f"{raw_capacity}. Generating all available unique questions.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        candidates: list[QuestionCandidate] = []
+        seen_questions: set[str] = set()
+        for variables in variable_combinations:
             cypher = format_nested(template["cypher"], variables).strip()
             solution = scene_index.solution_for(query_type, variables) if scene_index else None
-            for question_template in template["questions"]:
+            variable_key = json.dumps(
+                variables,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for variant_index, question_template in enumerate(question_templates):
                 question = format_nested(question_template, variables).strip()
+                if question in seen_questions:
+                    continue
+                seen_questions.add(question)
                 record = {
                     "uid": stable_uid(query_type, question, cypher),
                     "query_type": query_type,
@@ -370,12 +558,37 @@ def generate_records(
                     "read_only": bool(template.get("read_only", True)),
                     "tags": deepcopy(template.get("tags", [])),
                 }
-                records.append(record)
-                generated_for_template += 1
-                if limit_per_template is not None and generated_for_template >= limit_per_template:
-                    break
-            if limit_per_template is not None and generated_for_template >= limit_per_template:
-                break
+                candidates.append(
+                    QuestionCandidate(
+                        record=record,
+                        has_solution=scene_index is None or not solution_is_empty(solution),
+                        variable_key=variable_key,
+                        variant_index=variant_index,
+                    )
+                )
+
+        if has_variables and target is not None:
+            if len(candidates) < target and len(candidates) < raw_capacity:
+                warnings.warn(
+                    f"Template `{query_type}` requests {target} questions, but only "
+                    f"{len(candidates)} questions are unique after rendering. Generating "
+                    "all unique questions.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            ratio = sampling_ratio(template, sampling_config, non_empty_ratio)
+            records.extend(
+                sampled_candidates(
+                    candidates,
+                    target=target,
+                    non_empty_ratio=ratio,
+                    query_type=query_type,
+                    rng=random.Random(f"{sampling_seed}:{query_type}"),
+                )
+            )
+        else:
+            candidate_records = [candidate.record for candidate in candidates]
+            records.extend(candidate_records[:target])
     return records
 
 
@@ -416,6 +629,8 @@ def command(args: argparse.Namespace) -> None:
         config,
         question_templates_config=question_templates_config,
         limit_per_template=args.limit_per_template,
+        seed=args.seed,
+        non_empty_ratio=args.non_empty_ratio,
     )
     write_questions_yaml(records, data_config["raw_questions_path"])
 
@@ -424,6 +639,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--limit-per-template", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--non-empty-ratio", type=float, default=None)
     args = parser.parse_args()
     command(args)
 

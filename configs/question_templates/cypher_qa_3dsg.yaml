@@ -1,3 +1,7 @@
+sampling:
+  seed: 42
+  non_empty_ratio: 0.9
+
 templates:
   - query_type: object_class_inventory
     tags: [class_inventory]
@@ -13,6 +17,7 @@ templates:
       - What object labels are present?
 
   - query_type: object_class_centers
+    target_questions: 50
     tags: [object_lookup, positions]
     solution_formats: ["set[point]"]
     variables:
@@ -28,6 +33,7 @@ templates:
       - Find every {class} and return its 3D center.
 
   - query_type: object_class_count
+    target_questions: 50
     tags: [aggregation]
     solution_formats: [int]
     variables:
@@ -41,6 +47,7 @@ templates:
       - Tell me how many objects have class {class}.
 
   - query_type: top_object_classes_by_count
+    target_questions: 50
     tags: [aggregation, class_inventory]
     solution_formats: ["set[str]"]
     variables:
@@ -55,6 +62,7 @@ templates:
       - Which {limit} object categories appear most often?
 
   - query_type: objects_in_room_symbol
+    target_questions: 50
     tags: [hierarchy]
     solution_formats: ["set[str]"]
     variables:
@@ -69,6 +77,7 @@ templates:
       - Which objects can be found in room {room}?
 
   - query_type: objects_in_room_class
+    target_questions: 50
     tags: [hierarchy]
     solution_formats: ["set[str]"]
     variables:
@@ -82,6 +91,7 @@ templates:
       - List the objects contained in the {room_class}.
 
   - query_type: objects_in_place_symbol
+    target_questions: 50
     tags: [hierarchy]
     solution_formats: ["set[str]"]
     variables:
@@ -96,6 +106,7 @@ templates:
       - Which objects are in place {case.place}?
 
   - query_type: object_place_lookup
+    target_questions: 50
     tags: [hierarchy]
     solution_formats: [str]
     variables:
@@ -109,6 +120,7 @@ templates:
       - Find the place associated with object {object}.
 
   - query_type: nearest_object_to_mesh_place
+    target_questions: 50
     tags: [spatial, nearest]
     solution_formats: [str]
     variables:
@@ -125,6 +137,7 @@ templates:
       - Find the closest {case.class} to {case.mesh_place}.
 
   - query_type: object_radius_from_point
+    target_questions: 50
     tags: [spatial, distance]
     solution_formats: ["set[str]"]
     variables:
@@ -141,6 +154,7 @@ templates:
       - Find all {case.class} instances near point [{case.point.x}, {case.point.y}, {case.point.z}] within {case.radius} meters.
 
   - query_type: nearest_object_to_object
+    target_questions: 50
     tags: [spatial, nearest, object_reference]
     solution_formats: [str]
     variables:
@@ -158,6 +172,7 @@ templates:
       - Find the nearest {case.class} to {case.object}.
 
   - query_type: objects_in_bounding_box
+    target_questions: 50
     tags: [spatial, bounding_box]
     solution_formats: ["set[str]"]
     variables:
@@ -174,6 +189,7 @@ templates:
       - List objects in the 3D region bounded by [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] and [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}].
 
   - query_type: mesh_place_hops
+    target_questions: 50
     tags: [connectivity, spatial]
     solution_formats: ["set[str]"]
     variables:
@@ -189,6 +205,7 @@ templates:
       - Get all mesh places reachable from {case.mesh_place} in at most {case.hops} steps.
 
   - query_type: room_adjacency_count
+    target_questions: 50
     tags: [connectivity, aggregation]
     solution_formats: [int]
     variables:
@@ -202,6 +219,7 @@ templates:
       - Count the neighboring rooms connected to {room}.
 
   - query_type: place_hops
+    target_questions: 50
     tags: [connectivity, spatial]
     solution_formats: ["set[str]"]
     variables:

@@ -159,6 +159,67 @@ def test_grouped_split_rejects_split_sizes_that_do_not_sum_to_one():
         )
 
 
+def test_grouped_split_is_balanced_by_task_type():
+    records = [
+        make_record(
+            f"{task_type}-{index}",
+            task_type,
+            f"RETURN '{task_type}' AS task, {index} AS count",
+        )
+        for task_type in ("count", "lookup")
+        for index in range(50)
+    ]
+
+    train, eval_records, test, _challenge = grouped_split_records(
+        records,
+        train_size=0.8,
+        eval_size=0.1,
+        test_size=0.1,
+        seed=1,
+    )
+
+    assert Counter(record.task_type for record in train) == {"count": 40, "lookup": 40}
+    assert Counter(record.task_type for record in eval_records) == {"count": 5, "lookup": 5}
+    assert Counter(record.task_type for record in test) == {"count": 5, "lookup": 5}
+
+
+def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test():
+    records = [
+        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n")
+        for index in range(4)
+    ]
+
+    with pytest.warns(UserWarning, match="low-count task remains represented"):
+        train, eval_records, test, _challenge = grouped_split_records(
+            records,
+            train_size=0.8,
+            eval_size=0.1,
+            test_size=0.1,
+            seed=1,
+        )
+
+    assert [len(train), len(eval_records), len(test)] == [2, 1, 1]
+
+
+def test_grouped_split_breaks_minimum_groups_to_reach_exact_per_type_counts():
+    records = [
+        make_record(f"bbox-{group}-{variant}", "bbox", f"RETURN {group} AS bbox")
+        for group in range(25)
+        for variant in range(2)
+    ]
+
+    with pytest.warns(UserWarning, match="meet the exact per-type counts"):
+        train, eval_records, test, _challenge = grouped_split_records(
+            records,
+            train_size=0.8,
+            eval_size=0.1,
+            test_size=0.1,
+            seed=1,
+        )
+
+    assert [len(train), len(eval_records), len(test)] == [40, 5, 5]
+
+
 def test_optimize_student_trace_leaves_one_tool_trace_unchanged():
     record = make_record("one", "count", "MATCH (n) RETURN count(n) AS count")
 
