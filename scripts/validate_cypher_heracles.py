@@ -26,7 +26,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     suppress_neo4j_notification_logs,
 )
 
-DEFAULT_COMPOSE_FILE = "external/heracles/docker/docker-compose.yaml"
+DEFAULT_COMPOSE_FILE = "docker/docker-compose.yaml"
 
 
 def run(command: list[str]) -> None:
@@ -116,7 +116,7 @@ def command(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Start Heracles' Docker Neo4j service, load a 3DSG through Heracles, "
+            "Start the project Docker Neo4j service, load a 3DSG through Heracles, "
             "and validate Cypher records."
         )
     )

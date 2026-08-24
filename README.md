@@ -25,23 +25,35 @@ The active workflow is:
 Cypher seed records remain as internal support for teacher trace generation.
 The public training and evaluation surface is agent-trace based.
 
-## Setup
+## Quick Start
+
+The supported default interface is the GPU-required Docker stack. It provides
+the project Python environment, Neo4j, Ollama, CUDA-enabled PyTorch, and
+llama.cpp without requiring host Python package installation.
+
+Create the local environment file and set `OPENROUTER_API_KEY` when teacher
+generation is required:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-git submodule update --init --recursive
-pip install -e '.[dev]'
+cp docker/.env.example docker/.env
 ```
 
-For LoRA/QLoRA training:
+Validate the host, build the main image, and start all three services:
 
 ```bash
-pip install -e '.[train]'
+docker/stack.sh setup
 ```
 
-Install the PyTorch build that matches the target CUDA or JetPack environment
-separately.
+Load the configured scene and inspect service status:
+
+```bash
+docker/stack.sh load-neo4j
+docker/stack.sh status
+```
+
+Run `docker/stack.sh help` for the ordered first-run guide and command groups.
+See [docs/docker.md](docs/docker.md) for the complete command reference and
+[docs/ollama_export.md](docs/ollama_export.md) for model export and registration.
 
 ## Agent Records
 
@@ -72,48 +84,48 @@ derived from `scene_id`; configure the user-provided Hydra/Spark DSG file with
 Extract template values from the configured 3DSG scene:
 
 ```bash
-.venv/bin/python scripts/extract_3dsg_values.py \
+docker/stack.sh main python scripts/extract_3dsg_values.py \
   --data-config configs/data.yaml
 ```
 
 Generate raw 3DSG questions from those template values:
 
 ```bash
-.venv/bin/python scripts/generate_3dsg_seed_templates.py \
+docker/stack.sh main python scripts/generate_3dsg_seed_templates.py \
   --data-config configs/data.yaml
 ```
 
 Prepare seed records from the configured raw 3DSG questions:
 
 ```bash
-.venv/bin/python scripts/prepare_dataset.py prepare-seeds \
+docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
   --data-config configs/data.yaml
 ```
 
-Start Neo4j and load the same scene configured by `scene_path`:
+Reload Neo4j whenever `scene_path` changes:
 
 ```bash
-scripts/docker/heracles_neo4j.sh up
-.venv/bin/python scripts/load_3dsg_neo4j.py \
-  --scene data/scenes/3dsg_uhumans2.json
+docker/stack.sh load-neo4j data/scenes/3dsg_uhumans2.json
 ```
 
-The Neo4j helper starts a local container using Bolt on
-`neo4j://127.0.0.1:7683`, HTTP on `http://127.0.0.1:7469`, username `neo4j`,
-and password `neo4j_pw`. The trace generator validates teacher Cypher tool calls
-against this database, so reload the database whenever `scene_path` changes.
+The Docker stack provides `main`, `neo4j`, and `ollama` services. Neo4j is
+available inside Docker at `neo4j://neo4j:7683` and from the host at
+`neo4j://127.0.0.1:7683`; HTTP is exposed at `http://127.0.0.1:7469`. The
+username is `neo4j` and the password is `neo4j_pw`. The trace generator
+validates teacher Cypher tool calls against this database, so reload the
+database whenever `scene_path` changes.
 
 Check OpenRouter model availability:
 
 ```bash
-.venv/bin/python scripts/generate_traces.py preflight \
+docker/stack.sh main python scripts/generate_traces.py preflight \
   --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
 Generate and validate teacher traces:
 
 ```bash
-.venv/bin/python scripts/generate_traces.py generate \
+docker/stack.sh main python scripts/generate_traces.py generate \
   --data-config configs/data.yaml \
   --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
@@ -126,7 +138,7 @@ overridden with `--max-tool-calls`.
 Create grouped splits:
 
 ```bash
-.venv/bin/python scripts/prepare_dataset.py split \
+docker/stack.sh main python scripts/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native
 ```
@@ -136,7 +148,7 @@ split/render output and adding rejected `invalid_answer_format` traces that can
 be repaired by replacing only the final answer text:
 
 ```bash
-.venv/bin/python scripts/prepare_dataset.py split \
+docker/stack.sh main python scripts/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native \
   --optimize-student-traces
@@ -145,7 +157,7 @@ be repaired by replacing only the final answer text:
 Evaluate traces:
 
 ```bash
-.venv/bin/python scripts/evaluate_traces.py \
+docker/stack.sh main python scripts/evaluate_traces.py \
   --data-config configs/data.yaml \
   --split train
 ```
@@ -153,7 +165,7 @@ Evaluate traces:
 Train the primary student:
 
 ```bash
-.venv/bin/python scripts/train_agent_lora.py \
+docker/stack.sh main python scripts/train_agent_lora.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
@@ -164,7 +176,7 @@ turns, including generated tool calls and final answers. To inspect the exact
 rendered text and supervised token spans for a split record:
 
 ```bash
-.venv/bin/python scripts/inspect_training_dataset.py \
+docker/stack.sh main python scripts/inspect_training_dataset.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split train \
@@ -174,7 +186,7 @@ rendered text and supervised token spans for a split record:
 Evaluate the primary student:
 
 ```bash
-.venv/bin/python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split all \
@@ -182,7 +194,7 @@ Evaluate the primary student:
 ```
 
 ```bash
-.venv/bin/python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split test \
@@ -193,21 +205,29 @@ Evaluate the primary student:
 Generate a static HTML workflow report for the configured scene:
 
 ```bash
-.venv/bin/python scripts/generate_workflow_report.py \
+docker/stack.sh main python scripts/generate_workflow_report.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
 
-Generate Ollama export metadata:
+See [docs/ollama_export.md](docs/ollama_export.md) for LoRA merge, GGUF
+conversion, quantization, and Ollama model creation.
+
+## Host-Only Setup
+
+Host execution is optional and intended for environments where the Docker
+stack cannot be used:
 
 ```bash
-.venv/bin/python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml
+python3 -m venv .venv
+source .venv/bin/activate
+git submodule update --init --recursive
+pip install -e '.[dev,train]'
 ```
 
-The export helper writes a project-local `Modelfile` scaffold. Adapter merging,
-GGUF conversion, and quantization still depend on the selected base model and
-local llama.cpp/Ollama toolchain.
+Install a PyTorch build matching the host CUDA or JetPack environment
+separately. Host-side GGUF conversion also requires a separate llama.cpp setup;
+see the host-only section in [docs/ollama_export.md](docs/ollama_export.md).
 
 ## Heracles Agents Examples
 
@@ -216,9 +236,12 @@ This repository does not modify
 under `examples/heracles_agents/` and point at the expected Ollama model names:
 
 - `qwen3.5-4b-3dsg-cypher-agent-lora`
-- `granite-3b-3dsg-cypher-agent-lora`
+- `granite-3b-3dsg-cypher-agent-distiled`
 
 ## Validation Gates
 
 Use `pytest`, `ruff`, the import smoke test, and the repository naming tests
 before treating a refactor as complete.
+
+The optional host `dev` installation provides `pytest` and `ruff` for these
+repository checks.

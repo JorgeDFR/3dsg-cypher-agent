@@ -15,5 +15,5 @@ agent_info:
         dsgdb_conf:
           dsg_interface_type: heracles
           uri: $HERACLES_NEO4J_URI
-  tool_interface: ollama
+  tool_interface: ollama #custom
   max_iterations: 5

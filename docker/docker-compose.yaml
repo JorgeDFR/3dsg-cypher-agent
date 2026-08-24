@@ -1,0 +1,111 @@
+---
+x-main-environment: &main-environment
+  NEO4J_URI: neo4j://neo4j:7683
+  NEO4J_USERNAME: neo4j
+  NEO4J_PASSWORD: neo4j_pw
+  NEO4J_DATABASE: neo4j
+  HERACLES_NEO4J_URI: neo4j://neo4j:7683
+  HERACLES_NEO4J_USERNAME: neo4j
+  HERACLES_NEO4J_PASSWORD: neo4j_pw
+  ADT4_HERACLES_IP: neo4j
+  ADT4_HERACLES_PORT: 7683
+  OLLAMA_HOST: http://ollama:11434
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Main project container
+  # ---------------------------------------------------------------------------
+
+  main:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.main
+      args:
+        HOST_UID: "${HOST_UID:-1000}"
+        HOST_GID: "${HOST_GID:-1000}"
+    image: 3dsg-cypher-agent:local
+    gpus: all
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 20s
+    working_dir: /home/user/workspace/3dsg-cypher-agent
+    volumes:
+      - ..:/home/user/workspace/3dsg-cypher-agent
+      #- ../outputs:/home/user/workspace/3dsg-cypher-agent/outputs
+      - huggingface-cache:/home/user/.cache/huggingface
+    networks: [main_net]
+    extra_hosts: [host.docker.internal:host-gateway]
+    stdin_open: true
+    tty: true
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      <<: *main-environment
+    command: ["bash"]
+
+  # ---------------------------------------------------------------------------
+  # Graph database
+  # ---------------------------------------------------------------------------
+
+  neo4j:
+    image: neo4j:5.25.1
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, wget --no-verbose --tries=1 --spider http://localhost:7469 || exit 1]
+      interval: 1s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+    networks: [main_net]
+    ports: [7683:7683, 7469:7469]
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    environment:
+      NEO4J_server_bolt_listen__address: :7683
+      NEO4J_server_bolt_advertised__address: :7683
+      NEO4J_server_http_advertised__address: :7469
+      NEO4J_server_http_listen__address: :7469
+      NEO4J_AUTH: neo4j/neo4j_pw
+
+  # ---------------------------------------------------------------------------
+  # Ollama runtime
+  # ---------------------------------------------------------------------------
+
+  ollama:
+    image: ollama/ollama:0.32.4
+    gpus: all
+    restart: unless-stopped
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ollama-cache:/root/.ollama
+      - ../outputs/ollama:/models
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [main_net]
+    ports: [11434:11434]
+
+networks:
+  main_net:
+    name: 3dsg-cypher-agent-net
+    driver: bridge
+
+volumes:
+  huggingface-cache:
+    name: 3dsg-cypher-agent-huggingface-cache
+  neo4j-data:
+    name: 3dsg-cypher-agent-neo4j-data
+  neo4j-logs:
+    name: 3dsg-cypher-agent-neo4j-logs
+  ollama-cache:
+    name: 3dsg-cypher-agent-ollama-cache

@@ -15,6 +15,7 @@
 - [x] Add optional student-trace pruning for failed repair turns.
 - [x] Add grouped split leakage checks.
 - [x] Add project-local Heracles Agents example configs.
+- [x] Add staged Ollama export tooling for LoRA merge, GGUF conversion, quantization, and model creation.
 
 ## Agent Data
 

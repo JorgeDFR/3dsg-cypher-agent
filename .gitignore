@@ -11,4 +11,7 @@ __pycache__/
 
 data/*
 !data/scenes
-outputs/
+outputs/*
+!outputs/ollama/
+outputs/ollama/*
+!outputs/ollama/.gitkeep

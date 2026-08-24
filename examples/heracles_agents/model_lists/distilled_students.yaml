@@ -4,5 +4,5 @@ models:
     enabled: true
 
   - alias: granite-3b-distilled
-    model: granite-3b-3dsg-cypher-agent-lora
+    model: granite-3b-3dsg-cypher-agent-distiled
     enabled: false
