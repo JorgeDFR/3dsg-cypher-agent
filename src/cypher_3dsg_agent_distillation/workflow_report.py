@@ -131,7 +131,7 @@ def expanded_text(value: Any) -> str:
 
 
 def clean_detail_text(value: Any) -> str:
-    text = one_line_text(str(value).strip())
+    text = one_line_text(str(value).replace("\\n", " ").replace("\\r", " ").strip())
     while len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
     for opener, closer in (("<", ">"), ("[", "]"), ("{", "}")):
@@ -619,6 +619,12 @@ def collect_workflow_report_data(
         )
         for split in SPLITS
     }
+    baseline_raw_generation_reports = {
+        split: read_json_if_exists(
+            report_path(data_config, f"{split}.baseline.raw-generation.report.json")
+        )
+        for split in SPLITS
+    }
     agent_reports = {
         split: read_json_if_exists(report_path(data_config, f"{split}.agent.report.json"))
         for split in SPLITS
@@ -710,6 +716,9 @@ def collect_workflow_report_data(
         "validation": {
             "agent_reports": agent_reports,
             "raw_generation_reports": raw_generation_reports,
+        },
+        "baseline": {
+            "raw_generation_reports": baseline_raw_generation_reports,
         },
     }
 
@@ -993,7 +1002,16 @@ def render_detail_section(
         if messages:
             return f"<h4>{title}</h4>{messages}"
     render_payload = "" if payload in (None, "", [], {}) else payload
-    return f"<h4>{title}</h4>{render_pre_text(render_payload)}"
+    rendered = render_pre_text(
+        render_payload,
+        preserve_newlines=(
+            name in {"expected_cypher", "generated_cypher"}
+            or name.endswith(("_rendered_prompt", "_raw_completion"))
+        ),
+    )
+    if name.endswith("_rendered_prompt"):
+        return f"<details><summary>{title}</summary>{rendered}</details>"
+    return f"<h4>{title}</h4>{rendered}"
 
 
 def render_detail_blocks(blocks: dict[str, Any], *, include_empty: bool = False) -> str:
@@ -1526,6 +1544,8 @@ def raw_generation_task_type_rows(report: dict[str, Any]) -> list[dict[str, Any]
 
 def validation_example_rows(
     raw_generation_reports: dict[str, dict[str, Any] | None],
+    *,
+    detail_title: str = "Validation Example Details",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows = []
     details = []
@@ -1554,13 +1574,86 @@ def validation_example_rows(
                 ),
             }
             rows.append(row)
+            expected = record.get("expected") or {
+                "cypher": tool_call.get("gold_cypher"),
+                "cypher_solution": tool_call.get("expected_solution"),
+                "final_answer": final_answer.get("expected_solution"),
+            }
+            generated = record.get("generated") or {
+                "cypher": tool_call.get("generated_cypher"),
+                "cypher_solution": tool_call.get("cypher_solution"),
+                "cypher_tool_output": (
+                    tool_call.get("validation") or {}
+                ).get("rows"),
+                "final_answer": final_answer.get("generated_text"),
+                "final_answer_value": final_answer.get("generated_answer"),
+            }
+            generation_debug = record.get("generation_debug") or {}
+            cypher_generation = generation_debug.get("cypher_generation") or {}
+            final_answer_generation = (
+                generation_debug.get("final_answer_generation") or {}
+            )
+            # Read the previous report shape only for prompt/completion compatibility.
+            legacy_conversations = record.get("conversations") or {}
+            if not cypher_generation:
+                cypher_generation = legacy_conversations.get("cypher_generation") or {}
+            if not final_answer_generation:
+                final_answer_generation = (
+                    legacy_conversations.get("final_answer_generation") or {}
+                )
+            cypher_validation_issues = {
+                key: value
+                for key, value in {
+                    "static_issues": tool_call.get("static_issues"),
+                    "parse_error": tool_call.get("parse_error"),
+                    "execution_error": tool_call.get("execution_error"),
+                    "result_shape_error": tool_call.get("result_shape_error"),
+                    "generation_error": tool_call.get("generation_error"),
+                }.items()
+                if value not in (None, "", [], {})
+            }
+            final_answer_validation_issues = {
+                key: value
+                for key, value in {
+                    "generation_error": final_answer.get("generation_error"),
+                    "generated_answer_value": generated.get("final_answer_value"),
+                }.items()
+                if value not in (None, "", [], {})
+            }
             details.append(
                 {
-                    "title": "Validation Example Details",
-                    "fields": row,
+                    "title": detail_title,
+                    "fields": {
+                        key: value for key, value in row.items() if key != "question"
+                    },
+                    "blocks": {
+                        "question": record.get("question"),
+                        "expected_cypher": expected.get("cypher"),
+                        "generated_cypher": generated.get("cypher"),
+                        "cypher_tool_output": generated.get("cypher_tool_output"),
+                        "expected_cypher_solution": expected.get("cypher_solution"),
+                        "generated_cypher_solution": generated.get("cypher_solution"),
+                        "cypher_validation_issues": cypher_validation_issues,
+                        "expected_final_answer": expected.get("final_answer"),
+                        "generated_final_answer": generated.get("final_answer"),
+                        "final_answer_validation_issues": (
+                            final_answer_validation_issues
+                        ),
+                    },
+                    "show_empty_blocks": True,
                     "sections": {
-                        "final_answer_from_trace": final_answer,
-                        "tool_call_from_prompt": tool_call,
+                        "cypher_generation_rendered_prompt": cypher_generation.get(
+                            "rendered_prompt"
+                        ),
+                        "cypher_generation_raw_completion": cypher_generation.get(
+                            "raw_completion"
+                        ),
+                        "final_answer_generation_rendered_prompt": (
+                            final_answer_generation.get("rendered_prompt")
+                        ),
+                        "final_answer_generation_raw_completion": (
+                            final_answer_generation.get("raw_completion")
+                        ),
                     },
                 }
             )
@@ -1577,11 +1670,17 @@ def validation_main_rows(
     return rows
 
 
-def render_validation_tab(data: dict[str, Any]) -> str:
-    validation = data["validation"]
-    raw_rows_by_split = validation_main_rows(validation["raw_generation_reports"])
+def render_raw_generation_tab(
+    raw_generation_reports: dict[str, dict[str, Any] | None],
+    *,
+    title: str,
+    summary_title: str,
+    section_id: str,
+) -> str:
+    raw_rows_by_split = validation_main_rows(raw_generation_reports)
     example_rows, example_details = validation_example_rows(
-        validation["raw_generation_reports"]
+        raw_generation_reports,
+        detail_title=f"{title} Example Details",
     )
     summary_tables = []
     for split, rows in raw_rows_by_split.items():
@@ -1600,12 +1699,12 @@ def render_validation_tab(data: dict[str, Any]) -> str:
             )
         )
     return (
-        "<h2>Validation</h2>"
-        + "<h3>Student Raw Generation Summary</h3>"
+        f"<h2>{escape(title)}</h2>"
+        + f"<h3>{escape(summary_title)}</h3>"
         + ("".join(summary_tables) if summary_tables else '<p class="empty">No records found.</p>')
-        + "<h3>Validation Examples</h3>"
+        + f"<h3>{escape(title)} Examples</h3>"
         + render_interactive_record_table(
-            section_id="validation-examples",
+            section_id=f"{section_id}-examples",
             headers=[
                 ("uid", "uid"),
                 ("split", "split"),
@@ -1621,7 +1720,25 @@ def render_validation_tab(data: dict[str, Any]) -> str:
             rows=example_rows,
             details=example_details,
         )
-        + render_json_details("Raw generation reports", validation["raw_generation_reports"])
+        + render_json_details(f"{title} raw generation reports", raw_generation_reports)
+    )
+
+
+def render_validation_tab(data: dict[str, Any]) -> str:
+    return render_raw_generation_tab(
+        data["validation"]["raw_generation_reports"],
+        title="Validation",
+        summary_title="Student Raw Generation Summary",
+        section_id="validation",
+    )
+
+
+def render_baseline_tab(data: dict[str, Any]) -> str:
+    return render_raw_generation_tab(
+        data["baseline"]["raw_generation_reports"],
+        title="Baseline",
+        summary_title="Base Student Raw Generation Summary",
+        section_id="baseline",
     )
 
 
@@ -1660,6 +1777,7 @@ def render_workflow_report(data: dict[str, Any]) -> str:
         ("splits", "Splits", render_splits_tab(data)),
         ("train", "Train", render_train_tab(data)),
         ("validation", "Validation", render_validation_tab(data)),
+        ("baseline", "Baseline", render_baseline_tab(data)),
         ("artifacts", "Artifacts", render_artifacts_tab(data)),
     ]
     buttons = "".join(

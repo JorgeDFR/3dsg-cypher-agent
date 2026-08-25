@@ -230,6 +230,37 @@ def write_minimal_artifacts(config):
                         "uid": "q1",
                         "query_type": "object_class_count",
                         "question": "How many chairs?",
+                        "expected": {
+                            "cypher": (
+                                "MATCH (o:Object {class: 'chair'}) "
+                                "RETURN count(o) AS count"
+                            ),
+                            "cypher_solution": "<\n  O1,\n  O2\n>",
+                            "final_answer": "<answer>2</answer>",
+                        },
+                        "generated": {
+                            "cypher": (
+                                "MATCH (o:Object {class: 'chair'}) "
+                                "RETURN count(o) AS count"
+                            ),
+                            "cypher_solution": "<\\n  O1,\\n  O2\\n>",
+                            "cypher_tool_output": [{"count": 2}],
+                            "final_answer": "<answer>2</answer>",
+                            "final_answer_value": "2",
+                        },
+                        "generation_debug": {
+                            "cypher_generation": {
+                                "rendered_prompt": (
+                                    "<|im_start|>system\n# Tools\n"
+                                    "run_cypher_query<|im_end|>"
+                                ),
+                                "raw_completion": "<tool_call>...</tool_call>",
+                            },
+                            "final_answer_generation": {
+                                "rendered_prompt": "<|im_start|>user\nHow many chairs?",
+                                "raw_completion": "<answer>2</answer><|im_end|>",
+                            },
+                        },
                         "final_answer_from_trace": {
                             "status": "pass",
                             "final_answer_match": "true",
@@ -245,6 +276,16 @@ def write_minimal_artifacts(config):
             },
             handle,
         )
+    with open(
+        f"{reports_dir}/test.student.raw-generation.report.json",
+        encoding="utf-8",
+    ) as source:
+        with open(
+            f"{reports_dir}/test.baseline.raw-generation.report.json",
+            "w",
+            encoding="utf-8",
+        ) as target:
+            target.write(source.read())
 
 
 def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
@@ -258,10 +299,24 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert data["generated_questions"]["by_task_type"] == {"object_class_count": 1}
     assert data["splits"]["optimized_questions"][0]["uid"] == "q1"
     assert data["train"]["aggregate_eval_loss"]["summary"]["examples"] == 1
+    assert data["baseline"]["raw_generation_reports"]["test"]["summary"]["examples"] == 1
+    validation_record = data["validation"]["raw_generation_reports"]["test"][
+        "records"
+    ][0]
+    assert "conversations" not in validation_record
+    assert set(validation_record["generation_debug"]) == {
+        "cypher_generation",
+        "final_answer_generation",
+    }
+    assert set(validation_record["generation_debug"]["cypher_generation"]) == {
+        "rendered_prompt",
+        "raw_completion",
+    }
     assert "3D Scene Graph" in html
     assert "Generated Questions" in html
     assert "Trace Outcomes" in html
     assert "Validation Examples" in html
+    assert "Baseline Examples" in html
     assert "Artifacts" in html
     assert "Object Classes" in html
     assert "Mesh Place Classes" in html
@@ -306,6 +361,24 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "<h3>Trace Details</h3>" in html
     assert "<h3>Split Question Details</h3>" in html
     assert "<h3>Validation Example Details</h3>" in html
+    assert "<h4>Expected Cypher</h4>" in html
+    assert "<h4>Generated Cypher</h4>" in html
+    assert "<h4>Expected Cypher Solution</h4>" in html
+    assert "<h4>Generated Cypher Solution</h4>" in html
+    assert (
+        "<h4>Expected Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
+    )
+    assert (
+        "<h4>Generated Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
+    )
+    assert "<h4>Cypher Tool Output</h4>" in html
+    assert "<h4>Expected Final Answer</h4>" in html
+    assert "<h4>Generated Final Answer</h4>" in html
+    assert "Cypher Generation Conversation" not in html
+    assert "Final Answer Generation Conversation" not in html
+    assert "Tool Schema" not in html
+    assert "Cypher Generation Rendered Prompt" in html
+    assert "Final Answer Generation Rendered Prompt" in html
     assert "<h3>How many chairs?</h3>" not in html
     assert "message-card" in html
     assert "Line one\nLine two" in html
@@ -365,10 +438,29 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert 'data-sort-value="count">count</td>' in split_section
     assert "<h4>Model Cypher</h4><pre>MATCH (o:Object) RETURN o</pre>" in split_section
     validation_section = html[
-        html.index('id="validation"') : html.index('id="artifacts"')
+        html.index('<section id="validation"') : html.index('<section id="baseline"')
     ]
     assert "<h4>Test</h4>" in validation_section
     assert ">All</td>" in validation_section
+    assert "Final Answer From Trace" not in validation_section
+    assert "Tool Call From Prompt" not in validation_section
+    detail_headings = [
+        "Question",
+        "Expected Cypher",
+        "Generated Cypher",
+        "Cypher Tool Output",
+        "Expected Cypher Solution",
+        "Generated Cypher Solution",
+        "Cypher Validation Issues",
+        "Expected Final Answer",
+        "Generated Final Answer",
+        "Final Answer Validation Issues",
+    ]
+    heading_positions = [
+        validation_section.index(f"<h4>{heading}</h4>")
+        for heading in detail_headings
+    ]
+    assert heading_positions == sorted(heading_positions)
     validation_examples_start = validation_section.index("<h3>Validation Examples</h3>")
     validation_examples_table = validation_section[
         validation_examples_start :
@@ -390,6 +482,16 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert [validation_examples_table.index(header) for header in validation_headers] == sorted(
         validation_examples_table.index(header) for header in validation_headers
     )
+    baseline_section = html[
+        html.index('<section id="baseline"') : html.index('<section id="artifacts"')
+    ]
+    assert "<h2>Baseline</h2>" in baseline_section
+    assert "<h3>Base Student Raw Generation Summary</h3>" in baseline_section
+    assert "<h3>Baseline Examples</h3>" in baseline_section
+    assert "<h3>Baseline Example Details</h3>" in baseline_section
+    assert "<h4>Test</h4>" in baseline_section
+    assert "Final Answer From Trace" not in baseline_section
+    assert "Tool Call From Prompt" not in baseline_section
     assert "font: inherit;" in html
     assert "equal-columns" in html
     assert "Agent Trace Reports" not in html

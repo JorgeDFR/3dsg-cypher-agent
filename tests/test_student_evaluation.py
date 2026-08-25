@@ -4,11 +4,13 @@ import pytest
 
 import cypher_3dsg_agent_distillation.student_evaluation as student_evaluation
 import cypher_3dsg_agent_distillation.train as train_module
+from cypher_3dsg_agent_distillation.agent_prompts import run_cypher_tool_schema
 from cypher_3dsg_agent_distillation.student_evaluation import (
     ALL_SPLITS,
     EVAL_LOSS_MODE,
     FINAL_ANSWER_CHECK,
     TOOL_CALL_CHECK,
+    GenerationResult,
     clean_generated_text,
     combine_eval_loss_summaries,
     default_adapter_dir,
@@ -16,8 +18,10 @@ from cypher_3dsg_agent_distillation.student_evaluation import (
     evaluate_eval_loss_with_loaded_model,
     final_answer_prompt_messages,
     finite_perplexity,
+    generation_debug_report,
     generation_length_kwargs,
     initial_prompt_messages,
+    load_student_model_and_tokenizer,
     parse_generated_tool_calls,
     raw_generation_progress_description,
     render_messages_for_generation,
@@ -169,6 +173,18 @@ def test_tokenizer_source_prefers_explicit_tokenizer():
     )
 
 
+def test_tokenizer_source_baseline_ignores_existing_adapter(tmp_path):
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+
+    assert tokenizer_source(
+        adapter_dir=str(adapter_dir),
+        explicit_tokenizer=None,
+        model_config={"base_model": "base-model", "tokenizer": "base-tokenizer"},
+        use_adapter=False,
+    ) == "base-tokenizer"
+
+
 def test_report_output_path_uses_split_and_mode_name():
     output = report_output_path(
         data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
@@ -180,6 +196,18 @@ def test_report_output_path_uses_split_and_mode_name():
     assert output.name == "challenge.student.eval-loss.report.json"
 
 
+def test_report_output_path_keeps_baseline_separate_from_fine_tuned_results():
+    output = report_output_path(
+        data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
+        split="test",
+        mode="raw-generation",
+        output=None,
+        baseline=True,
+    )
+
+    assert output.name == "test.baseline.raw-generation.report.json"
+
+
 def test_report_output_path_uses_aggregate_name_for_all_splits():
     output = report_output_path(
         data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
@@ -189,6 +217,75 @@ def test_report_output_path_uses_aggregate_name_for_all_splits():
     )
 
     assert output.name == "student.eval-loss.report.json"
+
+
+def test_load_baseline_model_does_not_load_lora_adapter(monkeypatch):
+    class FakeTokenizer:
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+        pad_token_id = 0
+        eos_token_id = 1
+        bos_token_id = 2
+
+    class FakeAutoTokenizer:
+        sources = []
+
+        @classmethod
+        def from_pretrained(cls, source, **_kwargs):
+            cls.sources.append(source)
+            return FakeTokenizer()
+
+    class FakeBaseModel:
+        config = type("Config", (), {})()
+        generation_config = type("GenerationConfig", (), {})()
+
+        def eval(self):
+            return self
+
+    class FakeAutoModel:
+        @classmethod
+        def from_pretrained(cls, _source, **_kwargs):
+            return FakeBaseModel()
+
+    class FakePeftModel:
+        calls = []
+
+        @classmethod
+        def from_pretrained(cls, *_args, **_kwargs):
+            cls.calls.append((_args, _kwargs))
+            raise AssertionError("The baseline must not load a LoRA adapter.")
+
+    monkeypatch.setattr(student_evaluation, "configure_model_library_output", lambda: None)
+    monkeypatch.setattr(
+        student_evaluation,
+        "require_eval_loss_dependencies",
+        lambda: (
+            None,
+            FakePeftModel,
+            None,
+            FakeAutoModel,
+            FakeAutoTokenizer,
+            None,
+        ),
+    )
+    monkeypatch.setattr(train_module, "dtype_from_name", lambda _name: "auto")
+
+    model, _tokenizer = load_student_model_and_tokenizer(
+        student_config={
+            "model": {
+                "base_model": "base-model",
+                "tokenizer": "base-tokenizer",
+            }
+        },
+        adapter_dir="outputs/adapter",
+        explicit_tokenizer=None,
+        show_progress=False,
+        use_adapter=False,
+    )
+
+    assert isinstance(model, FakeBaseModel)
+    assert FakeAutoTokenizer.sources == ["base-tokenizer"]
+    assert FakePeftModel.calls == []
 
 
 def test_combine_eval_loss_summaries_weights_by_token_count():
@@ -367,6 +464,57 @@ def test_render_messages_for_generation_disables_thinking_by_default():
     ) == "rendered"
     assert tokenizer.kwargs["add_generation_prompt"] is True
     assert tokenizer.kwargs["enable_thinking"] is False
+
+
+def test_render_messages_for_generation_passes_native_tool_schema():
+    class ChatTemplateTokenizer:
+        chat_template = "template"
+
+        def __init__(self):
+            self.kwargs = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.kwargs = kwargs
+            return "rendered"
+
+    tokenizer = ChatTemplateTokenizer()
+    tools = [run_cypher_tool_schema()]
+
+    assert render_messages_for_generation(
+        tokenizer,
+        [{"role": "user", "content": "question"}],
+        tools=tools,
+    ) == "rendered"
+    assert tokenizer.kwargs["tools"] == tools
+    assert tokenizer.kwargs["tools"][0]["function"]["name"] == "run_cypher_query"
+    parameters = tokenizer.kwargs["tools"][0]["function"]["parameters"]
+    assert parameters["required"] == ["cypher_string"]
+
+
+def test_generation_debug_report_captures_exact_prompt_and_completion_only():
+    generation = GenerationResult(
+        text=(
+            '<tool_call>\n{"name":"run_cypher_query",'
+            '"arguments":{"cypher_string":"MATCH (o:Object) RETURN o"}}\n'
+            "</tool_call>"
+        ),
+        raw_text=(
+            '<tool_call>\n{"name":"run_cypher_query",'
+            '"arguments":{"cypher_string":"MATCH (o:Object) RETURN o"}}\n'
+            "</tool_call><|im_end|>"
+        ),
+        prompt="<|im_start|>system\n# Tools\nrun_cypher_query<|im_end|>",
+        prompt_tokens=20,
+        generated_tokens=10,
+        max_new_tokens=64,
+        token_budget=64,
+    )
+
+    report = generation_debug_report(generation)
+
+    assert report["rendered_prompt"] == generation.prompt
+    assert report["raw_completion"] == generation.raw_text
+    assert set(report) == {"rendered_prompt", "raw_completion"}
 
 
 def test_render_messages_for_generation_falls_back_without_thinking_kwarg():

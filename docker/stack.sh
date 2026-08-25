@@ -39,7 +39,7 @@ Main project container:
 
 Automated workflow:
   demo                     Run the full demo from database load through student
-                           training, evaluation, and HTML report generation.
+                           baseline, training, evaluation, and HTML reporting.
 
 Neo4j and Ollama:
   load-neo4j [SCENE]       Load a scene into the running Neo4j service.
@@ -352,7 +352,7 @@ run_main() {
 }
 
 run_demo() {
-  local total_steps=11
+  local total_steps=13
 
   if [[ $# -ne 0 ]]; then
     die "The demo command takes no arguments. Configure it with the DEMO_* environment variables."
@@ -412,7 +412,23 @@ run_demo() {
       --split challenge \
       --mode raw-generation \
       --max-new-tokens 1024
-  demo_step 11 "${total_steps}" "Generate HTML workflow report" \
+  demo_step 11 "${total_steps}" "Establish baseline on the test split" \
+    python scripts/evaluate_student.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --split test \
+      --mode raw-generation \
+      --baseline \
+      --max-new-tokens 1024
+  demo_step 12 "${total_steps}" "Establish baseline on the challenge split" \
+    python scripts/evaluate_student.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --split challenge \
+      --mode raw-generation \
+      --baseline \
+      --max-new-tokens 1024
+  demo_step 13 "${total_steps}" "Generate HTML workflow report" \
     python scripts/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"

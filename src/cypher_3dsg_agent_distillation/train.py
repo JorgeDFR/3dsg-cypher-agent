@@ -5,6 +5,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from cypher_3dsg_agent_distillation.agent_prompts import run_cypher_tool_schema
 from cypher_3dsg_agent_distillation.cli_output import phase_progress, print_summary
 from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.io import read_jsonl
@@ -262,10 +263,43 @@ def message_to_plain_text(message: dict[str, Any]) -> str:
     return f"{role}: {message.get('content', '')}"
 
 
-def to_chat_text(tokenizer, messages: list[dict[str, Any]]) -> str:
+def training_tool_schemas(record: dict[str, Any]) -> list[dict[str, Any]]:
+    native_schema = run_cypher_tool_schema()
+    native_name = native_schema["function"]["name"]
+    declared_tools = record.get("tools") or [native_name]
+    schemas: list[dict[str, Any]] = []
+    names = set()
+    for declared_tool in declared_tools:
+        schema = (
+            declared_tool
+            if isinstance(declared_tool, dict)
+            else native_schema if declared_tool == native_name else None
+        )
+        if not isinstance(schema, dict):
+            continue
+        function = schema.get("function") or {}
+        name = str(function.get("name") or "")
+        if name and name not in names:
+            schemas.append(schema)
+            names.add(name)
+    return schemas or [native_schema]
+
+
+def to_chat_text(
+    tokenizer,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
     messages = normalize_chat_messages(messages)
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": False,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        return tokenizer.apply_chat_template(messages, **kwargs)
     return "\n\n".join(message_to_plain_text(message) for message in messages)
 
 
@@ -286,6 +320,8 @@ def assistant_token_spans(
     tokenizer,
     messages: list[dict[str, Any]],
     input_ids: list[int],
+    *,
+    tools: list[dict[str, Any]] | None = None,
 ) -> list[tuple[int, int]]:
     spans = []
     for index, message in enumerate(messages):
@@ -293,11 +329,11 @@ def assistant_token_spans(
             continue
         before_ids = tokenize_rendered_text(
             tokenizer,
-            to_chat_text(tokenizer, messages[:index]),
+            to_chat_text(tokenizer, messages[:index], tools=tools),
         )
         after_ids = tokenize_rendered_text(
             tokenizer,
-            to_chat_text(tokenizer, messages[: index + 1]),
+            to_chat_text(tokenizer, messages[: index + 1], tools=tools),
         )
         start = common_prefix_length(input_ids, before_ids)
         end = common_prefix_length(input_ids, after_ids)
@@ -317,13 +353,19 @@ def labels_for_loss_mode(
     messages: list[dict[str, Any]],
     input_ids: list[int],
     loss_mode: str,
+    tools: list[dict[str, Any]] | None = None,
 ) -> list[int]:
     loss_mode = normalize_loss_mode(loss_mode)
     if loss_mode == FULL_LOSS_MODE:
         return list(input_ids)
 
     labels = [IGNORE_INDEX] * len(input_ids)
-    for start, end in assistant_token_spans(tokenizer, messages, input_ids):
+    for start, end in assistant_token_spans(
+        tokenizer,
+        messages,
+        input_ids,
+        tools=tools,
+    ):
         labels[start:end] = input_ids[start:end]
     return labels
 
@@ -353,14 +395,19 @@ def build_training_example(
 ) -> dict[str, Any]:
     loss_mode = normalize_loss_mode(loss_mode)
     messages = normalize_chat_messages(record.get("messages", []))
+    tools = training_tool_schemas(record)
     if loss_mode == FULL_LOSS_MODE and record.get("text"):
-        text = str(record["text"])
+        text = (
+            to_chat_text(tokenizer, messages, tools=tools)
+            if messages
+            else str(record["text"])
+        )
     else:
         if not messages:
             raise ValueError(
                 "Assistant-only training requires records with structured `messages`."
             )
-        text = to_chat_text(tokenizer, messages)
+        text = to_chat_text(tokenizer, messages, tools=tools)
     input_ids = tokenize_rendered_text(tokenizer, text)
     example = {
         "input_ids": input_ids,
@@ -370,6 +417,7 @@ def build_training_example(
             messages=messages,
             input_ids=input_ids,
             loss_mode=loss_mode,
+            tools=tools,
         ),
         "uid": str(record.get("uid", "")),
     }
@@ -388,7 +436,17 @@ def build_dataset(path: str, tokenizer):
     records = read_jsonl(path)
     return Dataset.from_list(
         [
-            {"text": record.get("text") or to_chat_text(tokenizer, record["messages"])}
+            {
+                "text": (
+                    to_chat_text(
+                        tokenizer,
+                        record["messages"],
+                        tools=training_tool_schemas(record),
+                    )
+                    if record.get("messages")
+                    else str(record.get("text") or "")
+                )
+            }
             for record in records
         ]
     )

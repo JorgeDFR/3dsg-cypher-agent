@@ -10,7 +10,3 @@ with the external `heracles_agents` package.
 Use the native Ollama config for deployment when the student model supports tool
 calls. Use the custom fallback for older models or provider paths that do not
 surface native tool calls.
-
-Set `CYPHER_3DSG_AGENT_PATH` to this repository root before using the
-Heracles-aligned configs, so `heracles_agents` can load the distilled prompt
-YAML files.

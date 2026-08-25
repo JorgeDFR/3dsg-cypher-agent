@@ -1,8 +1,0 @@
-models:
-  - alias: qwen3.5-4b-distilled
-    model: qwen3.5-4b-3dsg-cypher-agent-lora
-    enabled: true
-
-  - alias: granite-3b-distilled
-    model: granite-3b-3dsg-cypher-agent-distiled
-    enabled: false

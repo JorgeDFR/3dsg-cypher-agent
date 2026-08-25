@@ -53,6 +53,7 @@ class ToolCallParseResult:
 class GenerationResult:
     text: str
     raw_text: str
+    prompt: str
     prompt_tokens: int
     generated_tokens: int
     max_new_tokens: int | None
@@ -89,10 +90,11 @@ def tokenizer_source(
     adapter_dir: str,
     explicit_tokenizer: str | None,
     model_config: dict[str, Any],
+    use_adapter: bool = True,
 ) -> str:
     if explicit_tokenizer:
         return explicit_tokenizer
-    if Path(adapter_dir).exists():
+    if use_adapter and Path(adapter_dir).exists():
         return adapter_dir
     return str(model_config.get("tokenizer") or model_config["base_model"])
 
@@ -103,15 +105,17 @@ def report_output_path(
     split: str,
     mode: str,
     output: str | None,
+    baseline: bool = False,
 ) -> Path:
     if output:
         return Path(output)
+    model_name = "baseline" if baseline else "student"
     if split == ALL_SPLITS:
         return Path(data_config["test_report_path"]).with_name(
-            f"student.{mode}.report.json"
+            f"{model_name}.{mode}.report.json"
         )
     return Path(data_config["test_report_path"]).with_name(
-        f"{split}.student.{mode}.report.json"
+        f"{split}.{model_name}.{mode}.report.json"
     )
 
 
@@ -202,6 +206,7 @@ def load_student_model_and_tokenizer(
     explicit_tokenizer: str | None,
     disable_cache: bool = True,
     show_progress: bool = True,
+    use_adapter: bool = True,
 ):
     configure_model_library_output()
     (
@@ -219,7 +224,11 @@ def load_student_model_and_tokenizer(
     )
 
     model_config = student_config["model"]
-    with phase_progress("Loading student tokenizer", 3, enabled=show_progress) as (
+    phase_count = 3 if use_adapter else 2
+    initial_description = (
+        "Loading student tokenizer" if use_adapter else "Loading baseline tokenizer"
+    )
+    with phase_progress(initial_description, phase_count, enabled=show_progress) as (
         progress,
         task_id,
     ):
@@ -228,6 +237,7 @@ def load_student_model_and_tokenizer(
                 adapter_dir=adapter_dir,
                 explicit_tokenizer=explicit_tokenizer,
                 model_config=model_config,
+                use_adapter=use_adapter,
             ),
             trust_remote_code=bool(model_config.get("trust_remote_code", False)),
         )
@@ -247,15 +257,21 @@ def load_student_model_and_tokenizer(
         align_model_token_ids(model, tokenizer)
         if disable_cache:
             disable_cache_for_scoring(model)
-        if progress is not None:
-            progress.update(task_id, advance=1, description="Loading LoRA adapter")
-
-        model = PeftModel.from_pretrained(model, adapter_dir)
-        if disable_cache:
-            disable_cache_for_scoring(model)
+        if use_adapter:
+            if progress is not None:
+                progress.update(task_id, advance=1, description="Loading LoRA adapter")
+            model = PeftModel.from_pretrained(model, adapter_dir)
+            if disable_cache:
+                disable_cache_for_scoring(model)
         model.eval()
         if progress is not None:
-            progress.update(task_id, advance=1, description="Student model loaded")
+            progress.update(
+                task_id,
+                advance=1,
+                description=(
+                    "Student model loaded" if use_adapter else "Baseline model loaded"
+                ),
+            )
     return model, tokenizer
 
 
@@ -590,6 +606,7 @@ def render_messages_for_generation(
     messages: list[dict[str, Any]],
     *,
     enable_thinking: bool | None = False,
+    tools: list[dict[str, Any]] | None = None,
 ) -> str:
     from cypher_3dsg_agent_distillation.train import (
         message_to_plain_text,
@@ -602,6 +619,8 @@ def render_messages_for_generation(
             "tokenize": False,
             "add_generation_prompt": True,
         }
+        if tools is not None:
+            kwargs["tools"] = tools
         if enable_thinking is not None:
             kwargs["enable_thinking"] = enable_thinking
         try:
@@ -689,6 +708,20 @@ def add_raw_generation_debug_fields(
     )
 
 
+def generation_debug_report(
+    generation: GenerationResult | None,
+) -> dict[str, Any]:
+    return {
+        "rendered_prompt": generation.prompt if generation is not None else None,
+        "raw_completion": generation.raw_text if generation is not None else None,
+    }
+
+
+def expected_final_answer(record: dict[str, Any]) -> str | None:
+    solution = record_expected_solution(record)
+    return f"<answer>{solution}</answer>" if solution is not None else None
+
+
 def generate_assistant_response(
     model,
     tokenizer,
@@ -696,6 +729,7 @@ def generate_assistant_response(
     *,
     max_new_tokens: int | None,
     enable_thinking: bool | None = False,
+    tools: list[dict[str, Any]] | None = None,
     progress=None,
     progress_task_id=None,
     progress_description: str | None = None,
@@ -705,6 +739,7 @@ def generate_assistant_response(
         tokenizer,
         messages,
         enable_thinking=enable_thinking,
+        tools=tools,
     )
     encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
     input_device = model_input_device(model)
@@ -744,6 +779,7 @@ def generate_assistant_response(
     return GenerationResult(
         text=clean_generated_text(raw_text),
         raw_text=raw_text,
+        prompt=prompt,
         prompt_tokens=int(input_length),
         generated_tokens=generated_tokens,
         max_new_tokens=max_new_tokens,
@@ -758,6 +794,7 @@ def generate_assistant_text(
     *,
     max_new_tokens: int | None,
     enable_thinking: bool | None = False,
+    tools: list[dict[str, Any]] | None = None,
 ) -> str:
     return generate_assistant_response(
         model,
@@ -765,6 +802,7 @@ def generate_assistant_text(
         messages,
         max_new_tokens=max_new_tokens,
         enable_thinking=enable_thinking,
+        tools=tools,
     ).text
 
 
@@ -1014,10 +1052,16 @@ def score_refusal_tool_generation(
     elif not refusal_match:
         status = "missing_refusal"
 
+    tool_calls = parsed.tool_calls
+    function = (tool_calls[0].get("function") or {}) if tool_calls else {}
+    arguments = function.get("arguments") or {}
+    generated_cypher = str(arguments.get("cypher_string") or "").strip()
     return {
         "status": status,
         "generated_text": generated_text,
         "generated_answer": answer,
+        "generated_cypher": generated_cypher or None,
+        "tool_calls": tool_calls,
         "expected_solution": record_expected_solution(record),
         "tool_call_generated": parsed.tool_call_generated,
         "tool_call_parse_success": bool(parsed.tool_calls),
@@ -1292,7 +1336,9 @@ def evaluate_raw_generation(
     policy: dict[str, Any] | None,
     show_progress: bool,
     enable_thinking: bool,
+    baseline: bool = False,
 ) -> dict[str, Any]:
+    from cypher_3dsg_agent_distillation.agent_prompts import run_cypher_tool_schema
     from cypher_3dsg_agent_distillation.io import read_jsonl
 
     if limit is not None and limit <= 0:
@@ -1306,10 +1352,12 @@ def evaluate_raw_generation(
         explicit_tokenizer=explicit_tokenizer,
         disable_cache=False,
         show_progress=show_progress,
+        use_adapter=not baseline,
     )
     records = read_jsonl(data_config["splits"][split])
     if limit is not None:
         records = records[:limit]
+    tool_schemas = [run_cypher_tool_schema()]
 
     evaluated_records = []
     with raw_generation_progress_context(show_progress) as progress:
@@ -1327,6 +1375,8 @@ def evaluate_raw_generation(
             )
 
         for record in records:
+            final_messages = final_answer_prompt_messages(record)
+            tool_messages = initial_prompt_messages(record)
             if progress is not None:
                 progress.update(
                     record_task_id,
@@ -1339,9 +1389,10 @@ def evaluate_raw_generation(
                 final_generation = generate_assistant_response(
                     model,
                     tokenizer,
-                    final_answer_prompt_messages(record),
+                    final_messages,
                     max_new_tokens=max_new_tokens,
                     enable_thinking=enable_thinking,
+                    tools=tool_schemas,
                     progress=progress,
                     progress_task_id=token_task_id,
                     progress_description=raw_generation_progress_description(
@@ -1357,11 +1408,20 @@ def evaluate_raw_generation(
                 final_answer_result["generation"] = generation_report_fields(
                     final_generation
                 )
+                final_generation_debug = generation_debug_report(
+                    final_generation,
+                )
             except Exception as exc:
                 final_answer_result = final_answer_generation_error(record, exc)
+                final_generation_debug = generation_debug_report(
+                    None,
+                )
 
             if tool_call_skip_reason is not None:
                 tool_call_result = skipped_tool_call_result(tool_call_skip_reason)
+                tool_generation_debug = generation_debug_report(
+                    None,
+                )
             else:
                 if progress is not None:
                     progress.update(
@@ -1375,9 +1435,10 @@ def evaluate_raw_generation(
                     tool_generation = generate_assistant_response(
                         model,
                         tokenizer,
-                        initial_prompt_messages(record),
+                        tool_messages,
                         max_new_tokens=max_new_tokens,
                         enable_thinking=enable_thinking,
+                        tools=tool_schemas,
                         progress=progress,
                         progress_task_id=token_task_id,
                         progress_description=raw_generation_progress_description(
@@ -1395,14 +1456,40 @@ def evaluate_raw_generation(
                     tool_call_result["generation"] = generation_report_fields(
                         tool_generation
                     )
+                    tool_generation_debug = generation_debug_report(
+                        tool_generation,
+                    )
                 except Exception as exc:
                     tool_call_result = tool_call_generation_error(record, exc)
+                    tool_generation_debug = generation_debug_report(
+                        None,
+                    )
 
             evaluated_records.append(
                 {
                     "uid": record.get("uid"),
                     "query_type": record_query_type(record),
                     "question": record.get("question"),
+                    "expected": {
+                        "cypher": record_gold_cypher(record),
+                        "cypher_solution": record_expected_solution(record),
+                        "final_answer": expected_final_answer(record),
+                    },
+                    "generated": {
+                        "cypher": tool_call_result.get("generated_cypher"),
+                        "cypher_solution": tool_call_result.get("cypher_solution"),
+                        "final_answer": final_answer_result.get("generated_text"),
+                        "final_answer_value": final_answer_result.get(
+                            "generated_answer"
+                        ),
+                        "cypher_tool_output": (
+                            tool_call_result.get("validation") or {}
+                        ).get("rows"),
+                    },
+                    "generation_debug": {
+                        "cypher_generation": tool_generation_debug,
+                        "final_answer_generation": final_generation_debug,
+                    },
                     FINAL_ANSWER_CHECK: final_answer_result,
                     TOOL_CALL_CHECK: tool_call_result,
                 }
@@ -1444,6 +1531,7 @@ def build_report(
     mode: str,
     adapter_dir: str,
     explicit_tokenizer: str | None,
+    baseline: bool = False,
     batch_size: int | None = None,
     max_length: int | None = None,
     loss_mode: str | None = None,
@@ -1462,11 +1550,13 @@ def build_report(
             else {name: data_config["splits"][name] for name in SUPPORTED_SPLITS}
         ),
         "base_model": student_config["model"]["base_model"],
-        "adapter_dir": adapter_dir,
+        "model_variant": "baseline" if baseline else "fine-tuned",
+        "adapter_dir": None if baseline else adapter_dir,
         "tokenizer": tokenizer_source(
             adapter_dir=adapter_dir,
             explicit_tokenizer=explicit_tokenizer,
             model_config=student_config["model"],
+            use_adapter=not baseline,
         ),
     }
     if batch_size is not None:
@@ -1609,6 +1699,7 @@ def print_raw_generation_summary(
     mode: str,
     summary: dict[str, Any],
     output_path: Path,
+    baseline: bool = False,
 ) -> None:
     final_answer = summary[FINAL_ANSWER_CHECK]
     tool_call = summary[TOOL_CALL_CHECK]
@@ -1636,7 +1727,12 @@ def print_raw_generation_summary(
             ]
         )
     rows.append(("Report", output_path))
-    print_summary("Student raw-generation validation complete", rows)
+    title = (
+        "Baseline raw-generation validation complete"
+        if baseline
+        else "Student raw-generation validation complete"
+    )
+    print_summary(title, rows)
 
 
 def command(args: argparse.Namespace) -> None:
@@ -1644,6 +1740,8 @@ def command(args: argparse.Namespace) -> None:
     data_config = load_data_config(args.data_config)
     student_config = load_yaml(args.student_config)
     adapter_dir = args.adapter_dir or default_adapter_dir(student_config)
+    if args.baseline and args.mode != RAW_GENERATION_MODE:
+        raise ValueError("--baseline is supported only with --mode raw-generation.")
 
     records = None
     extra_metadata = None
@@ -1709,6 +1807,7 @@ def command(args: argparse.Namespace) -> None:
                 policy=schema_policy(load_yaml(data_config["schema_path"])),
                 show_progress=not args.no_progress,
                 enable_thinking=args.enable_thinking,
+                baseline=args.baseline,
             )
         finally:
             if validator is not None:
@@ -1722,6 +1821,7 @@ def command(args: argparse.Namespace) -> None:
                 "max_new_tokens": args.max_new_tokens,
                 "enable_thinking": args.enable_thinking,
                 "progress": not args.no_progress,
+                "model_variant": "baseline" if args.baseline else "fine-tuned",
                 "generation_config": raw_generation["generation_config"],
                 "neo4j": neo4j_metadata,
             }
@@ -1737,6 +1837,7 @@ def command(args: argparse.Namespace) -> None:
         mode=args.mode,
         adapter_dir=adapter_dir,
         explicit_tokenizer=args.tokenizer,
+        baseline=args.baseline,
         batch_size=batch_size,
         max_length=max_length,
         loss_mode=loss_mode,
@@ -1750,6 +1851,7 @@ def command(args: argparse.Namespace) -> None:
             split=args.split,
             mode=args.mode,
             output=args.output,
+            baseline=args.baseline,
         ),
     )
 
@@ -1775,12 +1877,13 @@ def command(args: argparse.Namespace) -> None:
             mode=args.mode,
             summary=summary,
             output_path=output_path,
+            baseline=args.baseline,
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate a fine-tuned student model on configured data splits."
+        description="Evaluate a fine-tuned or baseline student model on configured splits."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument(
@@ -1809,9 +1912,21 @@ def main() -> None:
         help="LoRA adapter directory. Defaults to training.output_dir in the student config.",
     )
     parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help=(
+            "Evaluate the configured base student model without loading its LoRA "
+            "adapter. Supported only in raw-generation mode."
+        ),
+    )
+    parser.add_argument(
         "--tokenizer",
         default=None,
-        help="Tokenizer path/name. Defaults to adapter dir when it exists, else model tokenizer.",
+        help=(
+            "Tokenizer path/name. Fine-tuned evaluation defaults to the adapter "
+            "tokenizer when available; baseline evaluation uses the configured model "
+            "tokenizer."
+        ),
     )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from cypher_3dsg_agent_distillation.io import write_jsonl
 from cypher_3dsg_agent_distillation.train import (
     ASSISTANT_ONLY_LOSS_MODE,
@@ -15,6 +17,7 @@ from cypher_3dsg_agent_distillation.train import (
     sft_trainer_kwargs,
     should_upcast_gemma4_effective_param,
     training_arguments_kwargs,
+    training_tool_schemas,
 )
 
 
@@ -32,6 +35,32 @@ class CharTokenizer(DummyTokenizer):
 
     def decode(self, input_ids, skip_special_tokens=False):
         return "".join(chr(input_id) for input_id in input_ids)
+
+
+class NativeToolTokenizer(CharTokenizer):
+    chat_template = "native-tool-template"
+
+    def __init__(self):
+        self.template_calls = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize,
+        add_generation_prompt,
+        tools=None,
+    ):
+        assert tokenize is False
+        assert add_generation_prompt is False
+        self.template_calls.append({"messages": deepcopy(messages), "tools": tools})
+        tool_names = [tool["function"]["name"] for tool in tools or []]
+        prefix = f"TOOLS:{','.join(tool_names)}\n" if tool_names else ""
+        body = "\n".join(
+            f"{message['role']}:{message.get('content') or message.get('tool_calls') or ''}"
+            for message in messages
+        )
+        return prefix + body
 
 
 def active_label_text(example, tokenizer):
@@ -111,6 +140,49 @@ def test_build_training_example_masks_context_and_supervises_assistant_turns():
     assert "<answer>O1</answer>" in supervised_text
     assert "Question one" not in supervised_text
     assert "[{'n': 1}]" not in supervised_text
+
+
+def test_training_renders_native_tool_schema_once_without_mutating_messages():
+    tokenizer = NativeToolTokenizer()
+    record = {
+        "uid": "one",
+        "tools": ["run_cypher_query", "run_cypher_query"],
+        "messages": [
+            {"role": "user", "content": "Question one"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "run_cypher_query",
+                            "arguments": {"cypher_string": "MATCH (n) RETURN n"},
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "tool_name": "run_cypher_query", "content": "[]"},
+            {"role": "assistant", "content": "<answer>0</answer>"},
+        ],
+    }
+    original_messages = deepcopy(record["messages"])
+
+    example = build_training_example(
+        record,
+        tokenizer,
+        loss_mode=ASSISTANT_ONLY_LOSS_MODE,
+        max_length=4096,
+    )
+    rendered = tokenizer.decode(example["input_ids"])
+
+    assert rendered.count("TOOLS:run_cypher_query") == 1
+    assert record["messages"] == original_messages
+    assert tokenizer.template_calls
+    for call in tokenizer.template_calls:
+        assert len(call["tools"]) == 1
+        assert call["tools"][0]["function"]["name"] == "run_cypher_query"
+    schemas = training_tool_schemas(record)
+    assert len(schemas) == 1
+    assert schemas[0]["function"]["parameters"]["required"] == ["cypher_string"]
 
 
 def test_training_arguments_kwargs_uses_current_eval_strategy_name():

@@ -60,16 +60,17 @@ username is `neo4j` and the password is `neo4j_pw`. The trace generator
 validates teacher Cypher tool calls against this database, so reload the
 database whenever `scene_path` changes.
 
-Run the complete demo from database loading through student training,
-evaluation, validation, and static HTML report generation:
+Run the complete demo from database loading through baseline evaluation,
+student training, validation, and static HTML report generation:
 
 ```bash
 docker/stack.sh demo
 ```
 
 The demo uses the deterministic synthetic teacher, so it does not require an
-OpenRouter key. It trains the configured student and runs eval-loss plus raw
-generation validation on the test and challenge splits. Set `DEMO_SCENE`,
+OpenRouter key. It establishes a base-model raw-generation baseline, trains the
+configured student, and runs eval-loss plus fine-tuned raw-generation validation
+on the test and challenge splits. Set `DEMO_SCENE`,
 `DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, or `DEMO_STUDENT_CONFIG` to use
 alternative inputs.
 
@@ -193,7 +194,10 @@ docker/stack.sh main python scripts/train_agent_lora.py \
 
 Student training defaults to `training.loss_mode: assistant-only`, which masks
 user/system/tool-response tokens from the loss and supervises only assistant
-turns, including generated tool calls and final answers. To inspect the exact
+turns, including generated tool calls and final answers. The split's declared
+`run_cypher_query` tool is resolved to its native JSON schema and passed once to
+the tokenizer chat template; it is not copied into the stored trace messages.
+To inspect the exact
 rendered text and supervised token spans for a split record:
 
 ```bash
@@ -222,6 +226,25 @@ docker/stack.sh main python scripts/evaluate_student.py \
   --mode raw-generation \
   --max-new-tokens 1024
 ```
+
+Evaluate the same split and generation settings with the base student model,
+without loading the trained LoRA adapter:
+
+```bash
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split test \
+  --mode raw-generation \
+  --baseline \
+  --max-new-tokens 1024
+```
+
+Baseline runs write separate `{split}.baseline.raw-generation.report.json`
+artifacts. The workflow HTML displays them in a Baseline tab alongside the
+fine-tuned results in Validation. Training and both evaluation variants pass the same
+`run_cypher_query` JSON schema through Transformers' native `tools=` chat-template
+interface, including the required `cypher_string` argument and Qwen tool-call format.
 
 Generate a static HTML workflow report for the configured scene:
 

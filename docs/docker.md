@@ -53,9 +53,10 @@ docker/stack.sh demo
 
 `demo` loads the scene, extracts template values, generates and prepares
 questions, creates validated traces with the deterministic synthetic teacher,
-creates grouped splits, trains the student adapter, evaluates loss on every
-split, validates raw generation on the test and challenge splits, and writes
-the HTML workflow report. It does not call a paid teacher API. Override its
+creates grouped splits, evaluates the base-model baseline, trains the student
+adapter, evaluates loss on every split, validates fine-tuned raw generation on
+the test and challenge splits, and writes the HTML workflow report with separate
+Baseline and Validation tabs. It does not call a paid teacher API. Override its
 inputs with `DEMO_SCENE`, `DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, and
 `DEMO_STUDENT_CONFIG`.
 
@@ -130,8 +131,8 @@ report when a required service is not running.
 ### Automated Workflow
 
 - `demo`: run the full workflow from the Neo4j scene load through student
-  training, evaluation, validation, and HTML report generation, with numbered
-  progress sections and normalized script summaries.
+  baseline evaluation, training, fine-tuned evaluation, validation, and HTML
+  report generation, with numbered progress sections and normalized summaries.
 
 Expected Python warnings are grouped into compact Rich tables, and uncaught
 script exceptions use Rich tracebacks. Hugging Face, Transformers, Datasets,
@@ -147,6 +148,23 @@ docker/stack.sh main python scripts/train_agent_lora.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
+
+Run raw-generation against the base student without loading the LoRA adapter:
+
+```bash
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split test \
+  --mode raw-generation \
+  --baseline \
+  --max-new-tokens 1024
+```
+
+Training, baseline raw-generation, and fine-tuned raw-generation use the same
+`run_cypher_query` JSON schema through the native Transformers chat-template
+`tools=` interface. Training resolves the split record's tool declaration at
+render time and does not copy schema text into its stored messages.
 
 ### Neo4j And Ollama
 
