@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from cypher_3dsg_agent_distillation.cli_output import captured_warnings, print_summary
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.scene_graph import SceneIndex
 
@@ -633,14 +634,33 @@ def command(args: argparse.Namespace) -> None:
     config["source_3dsg"] = data_config["scene_path"]
     config["question_templates_path"] = data_config["question_templates_path"]
     question_templates_config = load_question_templates(config)
-    records = generate_records(
-        config,
-        question_templates_config=question_templates_config,
-        limit_per_template=args.limit_per_template,
-        seed=args.seed,
-        non_empty_ratio=args.non_empty_ratio,
+    with captured_warnings("Question generation warnings"):
+        records = generate_records(
+            config,
+            question_templates_config=question_templates_config,
+            limit_per_template=args.limit_per_template,
+            seed=args.seed,
+            non_empty_ratio=args.non_empty_ratio,
+        )
+    output_path = data_config["raw_questions_path"]
+    write_questions_yaml(records, output_path)
+    counts = Counter(record["query_type"] for record in records)
+    sampling_config = (question_templates_config or {}).get("sampling", {})
+    effective_non_empty_ratio = (
+        args.non_empty_ratio
+        if args.non_empty_ratio is not None
+        else sampling_config.get("non_empty_ratio", 0.9)
     )
-    write_questions_yaml(records, data_config["raw_questions_path"])
+    print_summary(
+        "Question templates generated",
+        [
+            ("Scene", data_config["scene_id"]),
+            ("Questions", len(records)),
+            ("Question types", len(counts)),
+            ("Non-empty ratio", effective_non_empty_ratio),
+            ("Output", output_path),
+        ],
+    )
 
 
 def main() -> None:

@@ -120,6 +120,7 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     )
 
     assert kwargs["eval_strategy"] == "steps"
+    assert kwargs["disable_tqdm"] is True
     assert kwargs["warmup_steps"] == 0.03
     assert "evaluation_strategy" not in kwargs
     assert "warmup_ratio" not in kwargs

@@ -5,8 +5,12 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from cypher_3dsg_agent_distillation.cli_output import phase_progress, print_summary
 from cypher_3dsg_agent_distillation.config import load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.io import read_jsonl
+from cypher_3dsg_agent_distillation.model_runtime_output import (
+    configure_model_library_output,
+)
 
 DEFAULT_LORA_TARGETS = [
     "q_proj",
@@ -58,13 +62,24 @@ def quantization_config(model_config: dict[str, Any]):
     )
 
 
-def load_model_and_tokenizer(config: dict[str, Any]):
+def load_model_and_tokenizer(
+    config: dict[str, Any],
+    *,
+    progress=None,
+    progress_task_id=None,
+):
     from transformers import AutoModelForCausalLM
 
     model_config = config["model"]
     model_id = model_config["base_model"]
+    if progress is not None:
+        progress.update(progress_task_id, description="Loading tokenizer")
     tokenizer = load_tokenizer(config)
+    if progress is not None:
+        progress.update(progress_task_id, advance=1)
 
+    if progress is not None:
+        progress.update(progress_task_id, description="Loading base model weights")
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         dtype=dtype_from_name(model_config.get("dtype", "auto")),
@@ -73,6 +88,8 @@ def load_model_and_tokenizer(config: dict[str, Any]):
         trust_remote_code=bool(model_config.get("trust_remote_code", False)),
     )
     align_model_token_ids(model, tokenizer)
+    if progress is not None:
+        progress.update(progress_task_id, advance=1)
     return model, tokenizer
 
 
@@ -489,6 +506,7 @@ def training_arguments_kwargs(
         "gradient_checkpointing": bool(training_config.get("gradient_checkpointing", True)),
         "report_to": training_config.get("report_to", "none"),
         "eval_strategy": "steps" if has_eval_dataset else "no",
+        "disable_tqdm": True,
     }
 
 
@@ -531,13 +549,60 @@ def sft_trainer_kwargs(
     return kwargs
 
 
+def rich_trainer_progress_callback(progress, task_id):
+    from transformers import TrainerCallback
+
+    class RichTrainerProgressCallback(TrainerCallback):
+        def on_train_begin(self, _args, state, control, **_kwargs):
+            progress.update(
+                task_id,
+                total=max(1, state.max_steps),
+                completed=state.global_step,
+                description="Training student LoRA adapter",
+            )
+            return control
+
+        def on_step_end(self, _args, state, control, **_kwargs):
+            progress.update(task_id, completed=state.global_step)
+            return control
+
+        def on_log(self, _args, state, control, logs=None, **_kwargs):
+            logs = logs or {}
+            details = []
+            for label, key in (("loss", "loss"), ("eval", "eval_loss"), ("lr", "learning_rate")):
+                value = logs.get(key)
+                if isinstance(value, int | float):
+                    details.append(f"{label}={value:.4g}")
+            description = "Training student LoRA adapter"
+            if details:
+                description = f"{description} ({', '.join(details)})"
+            progress.update(task_id, completed=state.global_step, description=description)
+            return control
+
+        def on_train_end(self, _args, state, control, **_kwargs):
+            progress.update(
+                task_id,
+                completed=max(state.global_step, state.max_steps),
+                description="Student LoRA training complete",
+            )
+            return control
+
+    return RichTrainerProgressCallback()
+
+
 def command(args: argparse.Namespace) -> None:
+    configure_model_library_output()
     LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer = (
         require_training_dependencies()
     )
     config = load_yaml(args.student_config)
     data_config = load_data_config(args.data_config)
-    model, tokenizer = load_model_and_tokenizer(config)
+    with phase_progress("Loading student model", 2) as (progress, task_id):
+        model, tokenizer = load_model_and_tokenizer(
+            config,
+            progress=progress,
+            progress_task_id=task_id,
+        )
 
     if config["model"].get("load_in_4bit", False):
         model = prepare_quantized_model_for_training(
@@ -563,24 +628,28 @@ def command(args: argparse.Namespace) -> None:
     training_config = config["training"]
     max_length = int(training_config.get("max_length", 4096))
     loss_mode = loss_mode_from_training_config(training_config)
-    if loss_mode == FULL_LOSS_MODE:
-        train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
-        eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
-        data_collator = None
-    else:
-        train_dataset = build_training_dataset(
-            data_config["splits"]["train"],
-            tokenizer,
-            loss_mode=loss_mode,
-            max_length=max_length,
-        )
-        eval_dataset = build_training_dataset(
-            data_config["splits"]["eval"],
-            tokenizer,
-            loss_mode=loss_mode,
-            max_length=max_length,
-        )
-        data_collator = CausalLmDataCollator(tokenizer)
+    with phase_progress("Preparing training datasets", 2) as (progress, task_id):
+        if loss_mode == FULL_LOSS_MODE:
+            train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
+            progress.update(task_id, advance=1, description="Preparing evaluation dataset")
+            eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
+            data_collator = None
+        else:
+            train_dataset = build_training_dataset(
+                data_config["splits"]["train"],
+                tokenizer,
+                loss_mode=loss_mode,
+                max_length=max_length,
+            )
+            progress.update(task_id, advance=1, description="Preparing evaluation dataset")
+            eval_dataset = build_training_dataset(
+                data_config["splits"]["eval"],
+                tokenizer,
+                loss_mode=loss_mode,
+                max_length=max_length,
+            )
+            data_collator = CausalLmDataCollator(tokenizer)
+        progress.update(task_id, advance=1)
     training_args = SFTConfig(
         **sft_config_kwargs(
             training_config,
@@ -599,9 +668,40 @@ def command(args: argparse.Namespace) -> None:
             data_collator=data_collator,
         )
     )
-    trainer.train()
-    trainer.save_model(training_config["output_dir"])
-    tokenizer.save_pretrained(training_config["output_dir"])
+    try:
+        from transformers import PrinterCallback
+
+        trainer.remove_callback(PrinterCallback)
+    except (ImportError, ValueError):
+        pass
+    with phase_progress("Training student LoRA adapter", 1) as (progress, task_id):
+        trainer.add_callback(rich_trainer_progress_callback(progress, task_id))
+        train_result = trainer.train()
+    with phase_progress("Saving student adapter", 2) as (progress, task_id):
+        trainer.save_model(training_config["output_dir"])
+        progress.update(task_id, advance=1, description="Saving tokenizer")
+        tokenizer.save_pretrained(training_config["output_dir"])
+        progress.update(task_id, advance=1)
+    metrics = getattr(train_result, "metrics", {}) or {}
+    summary_rows = [
+        ("Base model", config["model"]["base_model"]),
+        ("Training examples", len(train_dataset)),
+        ("Evaluation examples", len(eval_dataset)),
+        ("Loss mode", loss_mode),
+        ("Epochs", training_config.get("num_train_epochs", 3)),
+        ("LoRA rank", lora_config.get("r", 16)),
+        ("LoRA alpha", lora_config.get("alpha", 32)),
+    ]
+    for label, metric in (
+        ("Training loss", "train_loss"),
+        ("Training runtime", "train_runtime"),
+        ("Samples/second", "train_samples_per_second"),
+    ):
+        if metric in metrics:
+            value = metrics[metric]
+            summary_rows.append((label, f"{value:.6f}" if isinstance(value, float) else value))
+    summary_rows.append(("Adapter output", training_config["output_dir"]))
+    print_summary("Student LoRA training complete", summary_rows)
 
 
 def main() -> None:

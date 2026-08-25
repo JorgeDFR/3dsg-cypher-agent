@@ -53,6 +53,16 @@ def test_extract_scene_values_from_spark_dsg():
     assert len(values["nearest_object_cases"]) == 50
     assert len(values["mesh_place_hop_cases"]) == 50
     assert len(values["place_hop_cases"]) == 50
+    assert {case["hops"] for case in values["mesh_place_hop_cases"]} <= {2, 3, 4}
+    assert {case["hops"] for case in values["place_hop_cases"]} <= {2, 3, 4}
+    assert all(
+        len(index.hop_symbols(case["mesh_place"], "MeshPlace", case["hops"])) < 50
+        for case in values["mesh_place_hop_cases"]
+    )
+    assert all(
+        len(index.hop_symbols(case["place"], "Place", case["hops"])) < 50
+        for case in values["place_hop_cases"]
+    )
 
 
 def test_extract_graph_records_from_spark_dsg():

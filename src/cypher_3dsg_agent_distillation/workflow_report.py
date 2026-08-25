@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from cypher_3dsg_agent_distillation.cli_output import print_summary
 from cypher_3dsg_agent_distillation.config import (
     PROJECT_ROOT,
     ensure_parent,
@@ -2071,7 +2072,15 @@ def command(args: argparse.Namespace) -> None:
         student_config,
         workflow_report_output_path(data_config, args.output),
     )
-    print(f"report: {output_path}")
+    print_summary(
+        "Workflow report generated",
+        [
+            ("Scene", data_config["scene_id"]),
+            ("Output", output_path),
+            ("Size", f"{output_path.stat().st_size / (1024 * 1024):.1f} MiB"),
+            ("Open", f"file://{output_path}"),
+        ],
+    )
 
 
 def main() -> None:

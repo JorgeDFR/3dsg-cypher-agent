@@ -19,6 +19,7 @@ from cypher_3dsg_agent_distillation.student_evaluation import (
     generation_length_kwargs,
     initial_prompt_messages,
     parse_generated_tool_calls,
+    raw_generation_progress_description,
     render_messages_for_generation,
     report_output_path,
     score_final_answer_generation,
@@ -96,10 +97,14 @@ class FakeOutputs:
 
 
 class FakeModel:
+    def __init__(self):
+        self.calls = []
+
     def parameters(self):
         return iter(())
 
-    def __call__(self, **_kwargs):
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
         return FakeOutputs()
 
 
@@ -233,16 +238,18 @@ def test_evaluate_eval_loss_updates_progress_per_batch(monkeypatch):
         "shifted_token_metrics",
         lambda _outputs, _labels: {
             "tokens": 5,
+            "nll_sum": 1.25,
             "entropy_sum": 1.0,
             "correct_tokens": 4,
         },
     )
     progress = FakeProgress()
+    model = FakeModel()
 
     summary = evaluate_eval_loss_with_loaded_model(
         data_config={"splits": {"train": "train.jsonl"}},
         split="train",
-        model=FakeModel(),
+        model=model,
         tokenizer=object(),
         batch_size=1,
         max_length=128,
@@ -257,7 +264,7 @@ def test_evaluate_eval_loss_updates_progress_per_batch(monkeypatch):
             "total": 3,
             "completed": 0,
             "visible": True,
-            "description": "eval-loss train",
+            "description": "Evaluating loss · Train",
         },
     )
     assert [update for _task, update in progress.updates[1:]] == [
@@ -269,6 +276,8 @@ def test_evaluate_eval_loss_updates_progress_per_batch(monkeypatch):
     assert summary["tokens"] == 15
     assert summary["eval_loss"] == pytest.approx(0.25)
     assert summary["eval_mean_token_accuracy"] == pytest.approx(0.8)
+    assert all("labels" not in call for call in model.calls)
+    assert all(call["use_cache"] is False for call in model.calls)
 
 
 def test_eval_loss_progress_starts_after_model_and_dataset_setup(monkeypatch):
@@ -301,6 +310,7 @@ def test_eval_loss_progress_starts_after_model_and_dataset_setup(monkeypatch):
         "shifted_token_metrics",
         lambda _outputs, _labels: {
             "tokens": 5,
+            "nll_sum": 1.25,
             "entropy_sum": 1.0,
             "correct_tokens": 4,
         },
@@ -323,6 +333,13 @@ def test_eval_loss_progress_starts_after_model_and_dataset_setup(monkeypatch):
 
 def test_generation_length_kwargs_uses_max_new_tokens():
     assert generation_length_kwargs(256) == {"max_new_tokens": 256}
+
+
+def test_raw_generation_progress_description_is_stable_and_concise():
+    assert raw_generation_progress_description(
+        split="challenge",
+        phase="tool-call tokens",
+    ) == "Generating tool call · Challenge"
 
 
 def test_clean_generated_text_removes_qwen_thinking_and_turn_artifacts():

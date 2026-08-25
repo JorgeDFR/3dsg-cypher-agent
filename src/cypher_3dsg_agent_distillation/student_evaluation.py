@@ -12,14 +12,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cypher_3dsg_agent_distillation.cli_output import (
+    phase_progress,
+    print_breakdown,
+    print_summary,
+)
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.model_runtime_output import (
+    configure_model_library_output,
+)
 
 EVAL_LOSS_MODE = "eval-loss"
 RAW_GENERATION_MODE = "raw-generation"
 SUPPORTED_SPLITS = ("train", "eval", "test", "challenge")
 ALL_SPLITS = "all"
 SPLIT_CHOICES = (*SUPPORTED_SPLITS, ALL_SPLITS)
-DEFAULT_ENTROPY_CHUNK_SIZE = 256
+DEFAULT_ENTROPY_CHUNK_SIZE = 32
 FINAL_ANSWER_CHECK = "final_answer_from_trace"
 TOOL_CALL_CHECK = "tool_call_from_prompt"
 GENERATION_CONFIG_REPORT_KEYS = (
@@ -134,36 +142,43 @@ def shifted_token_metrics(
     if token_count == 0:
         return {
             "tokens": 0,
+            "nll_sum": 0.0,
             "entropy_sum": 0.0,
             "correct_tokens": 0,
         }
 
-    predictions = shift_logits.argmax(dim=-1)
-    correct_tokens = int(((predictions == shift_labels) & active_mask).sum().item())
+    if entropy_chunk_size <= 0:
+        entropy_chunk_size = DEFAULT_ENTROPY_CHUNK_SIZE
+
+    flat_logits = shift_logits.reshape(-1, shift_logits.shape[-1])
+    flat_labels = shift_labels.reshape(-1)
+    active_indices = active_mask.reshape(-1).nonzero(as_tuple=False).flatten()
+    nll_sum = 0.0
+    entropy_sum = 0.0
+    correct_tokens = 0
+    for start in range(0, token_count, entropy_chunk_size):
+        indices = active_indices[start : start + entropy_chunk_size]
+        logits = flat_logits.index_select(0, indices)
+        targets = flat_labels.index_select(0, indices)
+        correct_tokens += int((logits.argmax(dim=-1) == targets).sum().item())
+
+        float_logits = logits.float()
+        nll_sum += cross_entropy_sum(float_logits, targets)
+        entropy_sum += float(torch_entropy_from_logits(float_logits).sum().item())
+        del float_logits, logits, targets, indices
+
     return {
         "tokens": token_count,
-        "entropy_sum": entropy_sum_from_logits(
-            shift_logits,
-            active_mask,
-            chunk_size=entropy_chunk_size,
-        ),
+        "nll_sum": nll_sum,
+        "entropy_sum": entropy_sum,
         "correct_tokens": correct_tokens,
     }
 
 
-def entropy_sum_from_logits(logits, active_mask, *, chunk_size: int) -> float:
-    if chunk_size <= 0:
-        chunk_size = logits.shape[1]
+def cross_entropy_sum(logits, targets) -> float:
+    import torch.nn.functional as torch_functional
 
-    entropy_sum = 0.0
-    for start in range(0, logits.shape[1], chunk_size):
-        end = start + chunk_size
-        chunk_mask = active_mask[:, start:end]
-        if not bool(chunk_mask.any().item()):
-            continue
-        entropy = torch_entropy_from_logits(logits[:, start:end, :].float())
-        entropy_sum += float(entropy[chunk_mask].sum().item())
-    return entropy_sum
+    return torch_functional.cross_entropy(logits, targets, reduction="sum").item()
 
 
 def torch_entropy_from_logits(logits):
@@ -186,7 +201,9 @@ def load_student_model_and_tokenizer(
     adapter_dir: str,
     explicit_tokenizer: str | None,
     disable_cache: bool = True,
+    show_progress: bool = True,
 ):
+    configure_model_library_output()
     (
         _torch,
         PeftModel,
@@ -202,32 +219,43 @@ def load_student_model_and_tokenizer(
     )
 
     model_config = student_config["model"]
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_source(
-            adapter_dir=adapter_dir,
-            explicit_tokenizer=explicit_tokenizer,
-            model_config=model_config,
-        ),
-        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    with phase_progress("Loading student tokenizer", 3, enabled=show_progress) as (
+        progress,
+        task_id,
+    ):
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_source(
+                adapter_dir=adapter_dir,
+                explicit_tokenizer=explicit_tokenizer,
+                model_config=model_config,
+            ),
+            trust_remote_code=bool(model_config.get("trust_remote_code", False)),
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "right"
+        if progress is not None:
+            progress.update(task_id, advance=1, description="Loading base model weights")
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_config["base_model"],
-        dtype=dtype_from_name(model_config.get("dtype", "auto")),
-        quantization_config=quantization_config(model_config),
-        device_map="auto",
-        trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-    )
-    align_model_token_ids(model, tokenizer)
-    if disable_cache:
-        disable_cache_for_scoring(model)
-    model = PeftModel.from_pretrained(model, adapter_dir)
-    if disable_cache:
-        disable_cache_for_scoring(model)
-    model.eval()
+        model = AutoModelForCausalLM.from_pretrained(
+            model_config["base_model"],
+            dtype=dtype_from_name(model_config.get("dtype", "auto")),
+            quantization_config=quantization_config(model_config),
+            device_map="auto",
+            trust_remote_code=bool(model_config.get("trust_remote_code", False)),
+        )
+        align_model_token_ids(model, tokenizer)
+        if disable_cache:
+            disable_cache_for_scoring(model)
+        if progress is not None:
+            progress.update(task_id, advance=1, description="Loading LoRA adapter")
+
+        model = PeftModel.from_pretrained(model, adapter_dir)
+        if disable_cache:
+            disable_cache_for_scoring(model)
+        model.eval()
+        if progress is not None:
+            progress.update(task_id, advance=1, description="Student model loaded")
     return model, tokenizer
 
 
@@ -249,6 +277,7 @@ def evaluate_eval_loss(
         student_config=student_config,
         adapter_dir=adapter_dir,
         explicit_tokenizer=explicit_tokenizer,
+        show_progress=show_progress,
     )
     return evaluate_eval_loss_with_loaded_model(
         data_config=data_config,
@@ -322,20 +351,24 @@ def evaluate_eval_loss_with_loaded_model(
                 total=len(loader),
                 completed=0,
                 visible=True,
-                description=f"eval-loss {split}",
+                description=f"Evaluating loss · {split_display_name(split)}",
             )
 
         with torch.inference_mode():
             for batch in loader:
                 batch = {key: value.to(input_device) for key, value in batch.items()}
+                # Transformers casts the complete logits tensor to float32 when labels
+                # are supplied. Score supervised tokens in bounded chunks instead.
+                labels = batch.pop("labels")
                 outputs = model(**batch, use_cache=False)
-                metrics = shifted_token_metrics(outputs, batch["labels"])
+                metrics = shifted_token_metrics(outputs, labels)
                 token_count = metrics["tokens"]
-                total_nll += float(outputs.loss.item()) * token_count
+                total_nll += metrics["nll_sum"]
                 total_entropy += metrics["entropy_sum"]
                 total_correct_tokens += metrics["correct_tokens"]
                 total_tokens += token_count
                 del outputs
+                del labels
                 del batch
                 if active_progress is not None and active_task_id is not None:
                     active_progress.update(active_task_id, advance=1)
@@ -372,6 +405,7 @@ def evaluate_eval_loss_splits(
         student_config=student_config,
         adapter_dir=adapter_dir,
         explicit_tokenizer=explicit_tokenizer,
+        show_progress=show_progress,
     )
     return {
         split: evaluate_eval_loss_with_loaded_model(
@@ -1225,19 +1259,23 @@ def eval_loss_progress_context(show_progress: bool):
     return raw_generation_progress_context(show_progress)
 
 
-def short_uid(record: dict[str, Any]) -> str:
-    uid = str(record.get("uid") or "<unknown>")
-    return uid if len(uid) <= 36 else f"{uid[:33]}..."
+def split_display_name(split: str) -> str:
+    return split.replace("_", " ").replace("-", " ").title()
 
 
 def raw_generation_progress_description(
     *,
-    index: int,
-    total: int,
+    split: str,
     phase: str,
-    record: dict[str, Any],
 ) -> str:
-    return f"raw-generation {index}/{total} {phase} uid={short_uid(record)}"
+    phase_labels = {
+        "final-answer": "Validating final answer",
+        "final-answer tokens": "Generating final answer",
+        "tool-call": "Validating tool call",
+        "tool-call tokens": "Generating tool call",
+        "done": "Validating records",
+    }
+    return f"{phase_labels[phase]} · {split_display_name(split)}"
 
 
 def evaluate_raw_generation(
@@ -1267,6 +1305,7 @@ def evaluate_raw_generation(
         adapter_dir=adapter_dir,
         explicit_tokenizer=explicit_tokenizer,
         disable_cache=False,
+        show_progress=show_progress,
     )
     records = read_jsonl(data_config["splits"][split])
     if limit is not None:
@@ -1277,18 +1316,23 @@ def evaluate_raw_generation(
         record_task_id = None
         token_task_id = None
         if progress is not None:
-            record_task_id = progress.add_task("raw-generation records", total=len(records))
-            token_task_id = progress.add_task("generation", total=1, visible=False)
+            record_task_id = progress.add_task(
+                f"Validating records · {split_display_name(split)}",
+                total=len(records),
+            )
+            token_task_id = progress.add_task(
+                "Generating response",
+                total=1,
+                visible=False,
+            )
 
-        for index, record in enumerate(records, start=1):
+        for record in records:
             if progress is not None:
                 progress.update(
                     record_task_id,
                     description=raw_generation_progress_description(
-                        index=index,
-                        total=len(records),
+                        split=split,
                         phase="final-answer",
-                        record=record,
                     ),
                 )
             try:
@@ -1301,10 +1345,8 @@ def evaluate_raw_generation(
                     progress=progress,
                     progress_task_id=token_task_id,
                     progress_description=raw_generation_progress_description(
-                        index=index,
-                        total=len(records),
+                        split=split,
                         phase="final-answer tokens",
-                        record=record,
                     ),
                 )
                 final_answer_result = score_final_answer_generation(
@@ -1325,10 +1367,8 @@ def evaluate_raw_generation(
                     progress.update(
                         record_task_id,
                         description=raw_generation_progress_description(
-                            index=index,
-                            total=len(records),
+                            split=split,
                             phase="tool-call",
-                            record=record,
                         ),
                     )
                 try:
@@ -1341,10 +1381,8 @@ def evaluate_raw_generation(
                         progress=progress,
                         progress_task_id=token_task_id,
                         progress_description=raw_generation_progress_description(
-                            index=index,
-                            total=len(records),
+                            split=split,
                             phase="tool-call tokens",
-                            record=record,
                         ),
                     )
                     tool_call_result = score_tool_call_generation(
@@ -1374,13 +1412,15 @@ def evaluate_raw_generation(
                     record_task_id,
                     advance=1,
                     description=raw_generation_progress_description(
-                        index=index,
-                        total=len(records),
+                        split=split,
                         phase="done",
-                        record=record,
                     ),
                 )
         if progress is not None:
+            progress.update(
+                record_task_id,
+                description=f"{split_display_name(split)} validation complete",
+            )
             progress.update(token_task_id, visible=False)
 
     return {
@@ -1499,16 +1539,21 @@ def print_eval_loss_summary(
 ) -> None:
     perplexity = summary["perplexity"]
     perplexity_text = f"{perplexity:.6f}" if perplexity is not None else "overflow"
-    print(f"split: {split}")
-    print(f"mode: {mode}")
-    print(f"loss_mode: {loss_mode}")
-    print(f"examples: {summary['examples']}")
-    print(f"tokens: {summary['tokens']}")
-    print(f"eval_loss: {summary['eval_loss']:.6f}")
-    print(f"perplexity: {perplexity_text}")
-    print(f"eval_entropy: {summary['eval_entropy']:.6f}")
-    print(f"eval_mean_token_accuracy: {summary['eval_mean_token_accuracy']:.6f}")
-    print(f"report: {output_path}")
+    print_summary(
+        "Student eval-loss complete",
+        [
+            ("Split", split),
+            ("Mode", mode),
+            ("Loss mode", loss_mode),
+            ("Examples", summary["examples"]),
+            ("Tokens", summary["tokens"]),
+            ("Evaluation loss", f"{summary['eval_loss']:.6f}"),
+            ("Perplexity", perplexity_text),
+            ("Evaluation entropy", f"{summary['eval_entropy']:.6f}"),
+            ("Mean token accuracy", f"{summary['eval_mean_token_accuracy']:.6f}"),
+            ("Report", output_path),
+        ],
+    )
 
 
 def print_eval_loss_all_splits_summary(
@@ -1518,24 +1563,37 @@ def print_eval_loss_all_splits_summary(
     summary: dict[str, Any],
     output_path: Path,
 ) -> None:
-    print(f"split: {ALL_SPLITS}")
-    print(f"mode: {mode}")
-    print(f"loss_mode: {loss_mode}")
-    for split, split_summary in summary["splits"].items():
-        print(
-            f"{split}: examples={split_summary['examples']} "
-            f"tokens={split_summary['tokens']} "
-            f"eval_loss={split_summary['eval_loss']:.6f}"
-        )
     perplexity = summary["perplexity"]
     perplexity_text = f"{perplexity:.6f}" if perplexity is not None else "overflow"
-    print(f"all.examples: {summary['examples']}")
-    print(f"all.tokens: {summary['tokens']}")
-    print(f"all.eval_loss: {summary['eval_loss']:.6f}")
-    print(f"all.perplexity: {perplexity_text}")
-    print(f"all.eval_entropy: {summary['eval_entropy']:.6f}")
-    print(f"all.eval_mean_token_accuracy: {summary['eval_mean_token_accuracy']:.6f}")
-    print(f"report: {output_path}")
+    print_summary(
+        "Student eval-loss complete",
+        [
+            ("Split", ALL_SPLITS),
+            ("Mode", mode),
+            ("Loss mode", loss_mode),
+            ("Examples", summary["examples"]),
+            ("Tokens", summary["tokens"]),
+            ("Evaluation loss", f"{summary['eval_loss']:.6f}"),
+            ("Perplexity", perplexity_text),
+            ("Evaluation entropy", f"{summary['eval_entropy']:.6f}"),
+            ("Mean token accuracy", f"{summary['eval_mean_token_accuracy']:.6f}"),
+            ("Report", output_path),
+        ],
+    )
+    print_breakdown(
+        "Eval loss by split",
+        ("Split", "Examples", "Tokens", "Evaluation loss"),
+        (
+            (
+                split,
+                split_summary["examples"],
+                split_summary["tokens"],
+                f"{split_summary['eval_loss']:.6f}",
+            )
+            for split, split_summary in summary["splits"].items()
+        ),
+        right_align=(1, 2, 3),
+    )
 
 
 def format_count_rate(section: dict[str, Any], metric: str) -> str:
@@ -1554,37 +1612,35 @@ def print_raw_generation_summary(
 ) -> None:
     final_answer = summary[FINAL_ANSWER_CHECK]
     tool_call = summary[TOOL_CALL_CHECK]
-    print(f"split: {split}")
-    print(f"mode: {mode}")
-    print(f"examples: {summary['examples']}")
-    print(f"{FINAL_ANSWER_CHECK}.match: {format_count_rate(final_answer, 'final_answer_match')}")
-    print(
-        f"{FINAL_ANSWER_CHECK}.has_tags: "
-        f"{format_count_rate(final_answer, 'final_answer_has_tags')}"
-    )
+    rows = [
+        ("Split", split),
+        ("Mode", mode),
+        ("Examples", summary["examples"]),
+        ("Final-answer match", format_count_rate(final_answer, "final_answer_match")),
+        ("Final-answer tags", format_count_rate(final_answer, "final_answer_has_tags")),
+    ]
     if tool_call["skipped"]:
-        print(f"{TOOL_CALL_CHECK}: skipped {tool_call['skipped']}/{tool_call['total']}")
+        rows.append(
+            ("Tool-call validation", f"skipped {tool_call['skipped']}/{tool_call['total']}")
+        )
     else:
-        print(
-            f"{TOOL_CALL_CHECK}.parse_success: "
-            f"{format_count_rate(tool_call, 'tool_call_parse_success')}"
+        rows.extend(
+            [
+                (
+                    "Tool-call parse success",
+                    format_count_rate(tool_call, "tool_call_parse_success"),
+                ),
+                ("Static-valid Cypher", format_count_rate(tool_call, "static_valid")),
+                ("Executable Cypher", format_count_rate(tool_call, "executable")),
+                ("Cypher solution match", format_count_rate(tool_call, "cypher_solution_match")),
+            ]
         )
-        print(
-            f"{TOOL_CALL_CHECK}.static_valid: "
-            f"{format_count_rate(tool_call, 'static_valid')}"
-        )
-        print(
-            f"{TOOL_CALL_CHECK}.executable: "
-            f"{format_count_rate(tool_call, 'executable')}"
-        )
-        print(
-            f"{TOOL_CALL_CHECK}.cypher_solution_match: "
-            f"{format_count_rate(tool_call, 'cypher_solution_match')}"
-        )
-    print(f"report: {output_path}")
+    rows.append(("Report", output_path))
+    print_summary("Student raw-generation validation complete", rows)
 
 
 def command(args: argparse.Namespace) -> None:
+    configure_model_library_output()
     data_config = load_data_config(args.data_config)
     student_config = load_yaml(args.student_config)
     adapter_dir = args.adapter_dir or default_adapter_dir(student_config)

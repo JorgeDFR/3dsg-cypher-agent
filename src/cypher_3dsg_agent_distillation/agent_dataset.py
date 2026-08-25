@@ -17,6 +17,11 @@ from cypher_3dsg_agent_distillation.agent_records import (
     AgentTraceRecord,
 )
 from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
+from cypher_3dsg_agent_distillation.cli_output import (
+    captured_warnings,
+    print_breakdown,
+    print_summary,
+)
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 from cypher_3dsg_agent_distillation.cypher_seed_records import (
     load_raw_seed_records_from_config,
@@ -822,14 +827,15 @@ def split_command(args: argparse.Namespace) -> None:
         records
     )
     split_config = config.get("split", {})
-    train, eval_records, test, challenge = grouped_split_records(
-        records,
-        train_size=float(split_config.get("train_size", 0.8)),
-        eval_size=float(split_config.get("eval_size", 0.1)),
-        test_size=float(split_config.get("test_size", 0.1)),
-        seed=int(split_config.get("seed", 42)),
-        challenge_task_types=set(split_config.get("challenge_task_types", [])),
-    )
+    with captured_warnings("Dataset split warnings"):
+        train, eval_records, test, challenge = grouped_split_records(
+            records,
+            train_size=float(split_config.get("train_size", 0.8)),
+            eval_size=float(split_config.get("eval_size", 0.1)),
+            test_size=float(split_config.get("test_size", 0.1)),
+            seed=int(split_config.get("seed", 42)),
+            challenge_task_types=set(split_config.get("challenge_task_types", [])),
+        )
     paths = config["splits"]
     write_rendered_split(train, paths["train"], args.render_view)
     write_rendered_split(eval_records, paths["eval"], args.render_view)
@@ -854,18 +860,37 @@ def split_command(args: argparse.Namespace) -> None:
         ),
         split_report_output_path(config, args.report_output),
     )
-    print(
-        "\n".join(
-            split_report_lines(
-                source_counts=source_counts,
-                optimization_counts=optimization_counts,
-                cap_dropped_counts=cap_dropped_counts,
-                split_records=split_records,
-                split_paths=paths,
-                optimize_enabled=optimize_enabled,
-            )
-            + [f"  report: {report_path}"]
+    summary_rows = [
+        ("Accepted traces", source_counts["accepted_teacher_traces"]),
+        ("Rejected traces scanned", source_counts["rejected_total"] if optimize_enabled else 0),
+        ("Optimization", "enabled" if optimize_enabled else "disabled"),
+        ("Render view", args.render_view),
+    ]
+    if optimize_enabled:
+        summary_rows.extend(
+            [
+                ("Final-answer repairs", source_counts["repaired_invalid_answer_format"]),
+                ("Pruned failed attempts", optimization_counts["pruned_failed_tool_attempts"]),
+                ("Dropped tool calls", optimization_counts["dropped_tool_calls"]),
+            ]
         )
+    if cap_dropped_counts:
+        summary_rows.append(("Dropped by task cap", format_counter(cap_dropped_counts)))
+    summary_rows.append(("Report", report_path))
+    print_summary("Dataset splits created", summary_rows)
+    print_breakdown(
+        "Split breakdown",
+        ("Split", "Records", "Task types", "Output"),
+        (
+            (
+                split_name,
+                len(split_records[split_name]),
+                format_counter(record_task_type_counts(split_records[split_name])),
+                paths[split_name],
+            )
+            for split_name in ("train", "eval", "test", "challenge")
+        ),
+        right_align=(1,),
     )
 
 
@@ -884,7 +909,20 @@ def prepare_seeds_command(args: argparse.Namespace) -> None:
         output_type=seed_defaults.get("output_type", "SLDP"),
         metadata_defaults=seed_defaults.get("metadata", {}),
     )
-    write_jsonl(prepared, data_config["seed_records_jsonl_path"])
+    output_path = data_config["seed_records_jsonl_path"]
+    write_jsonl(prepared, output_path)
+    counts = Counter(record.query_type for record in prepared)
+    print_summary(
+        "Seed records prepared",
+        [
+            ("Scene", data_config["scene_id"]),
+            ("Records", len(prepared)),
+            ("Question types", len(counts)),
+            ("Task family", seed_defaults.get("task_family", "cypher_qa")),
+            ("Output type", seed_defaults.get("output_type", "SLDP")),
+            ("Output", output_path),
+        ],
+    )
 
 
 def main() -> None:

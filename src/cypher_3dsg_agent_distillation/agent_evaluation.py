@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cypher_3dsg_agent_distillation.agent_records import DEFAULT_AGENT_TOOL, AgentTraceRecord
+from cypher_3dsg_agent_distillation.cli_output import print_breakdown, print_summary
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 from cypher_3dsg_agent_distillation.evaluation import build_summary as build_cypher_summary
 from cypher_3dsg_agent_distillation.io import read_jsonl
@@ -135,6 +136,40 @@ def command(args: argparse.Namespace) -> None:
     )
     evaluated = evaluate_records(read_jsonl(split_path))
     write_report(evaluated, report_path)
+    summary = build_agent_summary(evaluated)
+    metrics = summary["metrics"]
+    print_summary(
+        "Agent traces evaluated",
+        [
+            ("Split", args.split),
+            ("Records", summary["total"]),
+            (
+                "Final-answer matches",
+                f"{metrics.get('final_answer_match', 0)}/{summary['total']} "
+                f"({summary['rates']['final_answer_match']:.1%})",
+            ),
+            (
+                "Executable Cypher",
+                f"{metrics.get('cypher_execution_success', 0)}/{summary['total']} "
+                f"({summary['rates']['cypher_execution_success']:.1%})",
+            ),
+            ("Average tool calls", f"{summary['average_tool_calls']:.2f}"),
+            ("Report", report_path),
+        ],
+    )
+    print_breakdown(
+        "Results by question type",
+        ("Question type", "Records", "Final-answer matches"),
+        (
+            (
+                task_type,
+                task_summary["total"],
+                task_summary["metrics"].get("final_answer_match", 0),
+            )
+            for task_type, task_summary in summary["by_task_type"].items()
+        ),
+        right_align=(1, 2),
+    )
 
 
 def main() -> None:

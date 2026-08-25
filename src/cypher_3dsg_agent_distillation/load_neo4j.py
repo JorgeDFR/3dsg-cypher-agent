@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,6 +8,8 @@ from typing import Any
 
 from neo4j.exceptions import DatabaseError
 
+from cypher_3dsg_agent_distillation.cli_output import print_summary
+from cypher_3dsg_agent_distillation.config import load_data_config
 from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
@@ -220,20 +221,41 @@ def load_scene(
 
 def command(args: argparse.Namespace) -> None:
     uri = args.uri or os.environ.get("NEO4J_URI")
+    scene = args.scene
+    if scene is None:
+        scene = load_data_config(args.data_config)["scene_path"]
     summary = load_scene(
-        scene_path=args.scene,
+        scene_path=scene,
         uri=neo4j_uri_candidates(uri),
         username=args.username or os.environ.get("NEO4J_USERNAME", DEFAULT_HERACLES_NEO4J_USERNAME),
         password=args.password or os.environ.get("NEO4J_PASSWORD", DEFAULT_HERACLES_NEO4J_PASSWORD),
         database=args.database or os.environ.get("NEO4J_DATABASE", DEFAULT_HERACLES_NEO4J_DATABASE),
         clear=not args.no_clear,
     )
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    node_counts = summary["nodes"]
+    print_summary(
+        "Neo4j scene loaded",
+        [
+            ("Scene", scene),
+            *[(f"{label} nodes", count) for label, count in sorted(node_counts.items())],
+            ("Total nodes", sum(node_counts.values())),
+            ("Relationships", summary["relationships"]),
+            (
+                "Database",
+                args.database or os.environ.get("NEO4J_DATABASE", DEFAULT_HERACLES_NEO4J_DATABASE),
+            ),
+        ],
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load a Spark DSG JSON into Neo4j.")
-    parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
+    parser.add_argument(
+        "--scene",
+        default=None,
+        help="Scene JSON path. Defaults to scene_path from --data-config.",
+    )
+    parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument(
         "--uri",
         default=None,

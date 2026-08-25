@@ -9,9 +9,12 @@ from typing import Any
 import spark_dsg
 import yaml
 
+from cypher_3dsg_agent_distillation.cli_output import print_summary
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config
 
 LOCAL_ID_MASK = (1 << 56) - 1
+HOP_COUNTS = (2, 3, 4)
+DEFAULT_MAX_HOP_SOLUTION_SIZE = 50
 
 LAYER_SPECS = [
     ("Object", spark_dsg.DsgLayers.OBJECTS),
@@ -320,7 +323,23 @@ def scene_values(
     non_empty_ratio: float = 0.9,
     max_object_class_solution_size: int = 10,
     max_bbox_solution_size: int = 20,
+    mesh_place_hop_counts: tuple[int, ...] = HOP_COUNTS,
+    max_mesh_place_hop_solution_size: int = DEFAULT_MAX_HOP_SOLUTION_SIZE,
+    place_hop_counts: tuple[int, ...] = HOP_COUNTS,
+    max_place_hop_solution_size: int = DEFAULT_MAX_HOP_SOLUTION_SIZE,
 ) -> dict[str, Any]:
+    for name, hop_values in (
+        ("mesh_place_hop_counts", mesh_place_hop_counts),
+        ("place_hop_counts", place_hop_counts),
+    ):
+        if not hop_values or any(hops < 1 for hops in hop_values):
+            raise ValueError(f"{name} must contain positive integers.")
+    for name, size_limit in (
+        ("max_mesh_place_hop_solution_size", max_mesh_place_hop_solution_size),
+        ("max_place_hop_solution_size", max_place_hop_solution_size),
+    ):
+        if size_limit < 1:
+            raise ValueError(f"{name} must be >= 1.")
     graph = load_graph(scene_path)
     by_label = nodes_by_label(graph)
     index = SceneIndex(scene_path)
@@ -367,7 +386,7 @@ def scene_values(
         "building_symbols": sorted_symbols(by_label["Building"], max_place_symbols),
         "top_class_limits": list(range(1, len(object_class_counts) + 1)),
         "radii": [2, 5, 10],
-        "hop_counts": [2, 3, 4, 5],
+        "hop_counts": list(HOP_COUNTS),
         "points": sample_points(object_points or all_points, max_points),
         "bboxes": build_bounding_box_cases(
             index=index,
@@ -397,15 +416,21 @@ def scene_values(
         ),
         "mesh_place_hop_cases": build_hop_cases(
             symbols=mesh_place_symbols,
-            hop_counts=[2, 3, 4, 5],
+            hop_counts=list(mesh_place_hop_counts),
             symbol_key="mesh_place",
             limit=max_mesh_place_hop_cases,
+            index=index,
+            label="MeshPlace",
+            max_solution_size=max_mesh_place_hop_solution_size,
         ),
         "place_hop_cases": build_hop_cases(
             symbols=sorted_symbols(by_label["Place"], max_place_symbols),
-            hop_counts=[2, 3, 4, 5],
+            hop_counts=list(place_hop_counts),
             symbol_key="place",
             limit=max_place_hop_cases,
+            index=index,
+            label="Place",
+            max_solution_size=max_place_hop_solution_size,
         ),
     }
 
@@ -890,18 +915,31 @@ def build_hop_cases(
     hop_counts: list[int],
     symbol_key: str,
     limit: int,
+    index: SceneIndex | None = None,
+    label: str | None = None,
+    max_solution_size: int | None = None,
 ) -> list[dict[str, Any]]:
-    cases = []
+    candidates = []
     if not symbols or not hop_counts:
-        return cases
-    for index in range(limit):
-        cases.append(
+        return candidates
+    if max_solution_size is None:
+        return [
             {
-                symbol_key: symbols[index % len(symbols)],
-                "hops": hop_counts[index % len(hop_counts)],
+                symbol_key: symbols[case_index % len(symbols)],
+                "hops": hop_counts[case_index % len(hop_counts)],
             }
-        )
-    return cases
+            for case_index in range(limit)
+        ]
+    if index is None or label is None:
+        raise ValueError("Bounded hop cases require both a scene index and node label.")
+    for symbol in symbols:
+        for hops in hop_counts:
+            if len(index.hop_symbols(symbol, label, hops)) >= max_solution_size:
+                continue
+            candidates.append({symbol_key: symbol, "hops": hops})
+    if not candidates:
+        return []
+    return [candidates[case_index % len(candidates)] for case_index in range(limit)]
 
 
 def build_template_config(
@@ -929,6 +967,10 @@ def build_template_config(
             non_empty_ratio=limits.non_empty_ratio,
             max_object_class_solution_size=limits.max_object_class_solution_size,
             max_bbox_solution_size=limits.max_bbox_solution_size,
+            mesh_place_hop_counts=tuple(limits.mesh_place_hop_counts),
+            max_mesh_place_hop_solution_size=limits.max_mesh_place_hop_solution_size,
+            place_hop_counts=tuple(limits.place_hop_counts),
+            max_place_hop_solution_size=limits.max_place_hop_solution_size,
         ),
     }
 
@@ -949,6 +991,34 @@ def command(args: argparse.Namespace) -> None:
             sort_keys=False,
             allow_unicode=True,
         )
+    values = config["values"]
+    mesh_hops = sorted({case["hops"] for case in values["mesh_place_hop_cases"]})
+    place_hops = sorted({case["hops"] for case in values["place_hop_cases"]})
+    print_summary(
+        "Scene template values extracted",
+        [
+            ("Scene", config["scene_id"]),
+            ("Nodes", sum(config["scene_summary"]["nodes"].values())),
+            ("Edges", config["scene_summary"]["edges"]),
+            ("Object classes", len(values["object_classes"])),
+            ("Mesh-place-hop cases", len(values["mesh_place_hop_cases"])),
+            ("Place-hop cases", len(values["place_hop_cases"])),
+            (
+                "Mesh-place-hop range",
+                f"{mesh_hops[0]}-{mesh_hops[-1]}" if mesh_hops else "none",
+            ),
+            (
+                "Place-hop range",
+                f"{place_hops[0]}-{place_hops[-1]}" if place_hops else "none",
+            ),
+            (
+                "Hop answer limits",
+                f"mesh place < {args.max_mesh_place_hop_solution_size}; "
+                f"place < {args.max_place_hop_solution_size}",
+            ),
+            ("Output", output),
+        ],
+    )
 
 
 def main() -> None:
@@ -968,6 +1038,32 @@ def main() -> None:
     parser.add_argument("--max-nearest-object-cases", type=int, default=50)
     parser.add_argument("--max-mesh-place-hop-cases", type=int, default=50)
     parser.add_argument("--max-place-hop-cases", type=int, default=50)
+    parser.add_argument(
+        "--mesh-place-hop-counts",
+        type=int,
+        nargs="+",
+        default=list(HOP_COUNTS),
+        help="Allowed hop counts for mesh_place_hops questions (default: 2 3 4).",
+    )
+    parser.add_argument(
+        "--max-mesh-place-hop-solution-size",
+        type=int,
+        default=DEFAULT_MAX_HOP_SOLUTION_SIZE,
+        help="Discard mesh_place_hops cases with this many answers or more (default: 50).",
+    )
+    parser.add_argument(
+        "--place-hop-counts",
+        type=int,
+        nargs="+",
+        default=list(HOP_COUNTS),
+        help="Allowed hop counts for place_hops questions (default: 2 3 4).",
+    )
+    parser.add_argument(
+        "--max-place-hop-solution-size",
+        type=int,
+        default=DEFAULT_MAX_HOP_SOLUTION_SIZE,
+        help="Discard place_hops cases with this many answers or more (default: 50).",
+    )
     parser.add_argument("--non-empty-ratio", type=float, default=0.9)
     parser.add_argument("--max-object-class-solution-size", type=int, default=10)
     parser.add_argument("--max-bbox-solution-size", type=int, default=20)

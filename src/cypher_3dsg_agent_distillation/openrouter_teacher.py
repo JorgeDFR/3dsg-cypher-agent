@@ -27,6 +27,7 @@ from cypher_3dsg_agent_distillation.agent_records import (
     AgentTraceRecord,
     split_group_for_record,
 )
+from cypher_3dsg_agent_distillation.cli_output import print_summary
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.evaluation import (
     ResultShapeError,
@@ -1339,19 +1340,40 @@ def generate_command(args: argparse.Namespace) -> None:
         json.dumps(rejected_debug_records, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    acceptance_rate = len(teacher_records) / total_attempts if total_attempts else 0.0
+    print_summary(
+        "Teacher traces generated",
+        [
+            ("Provider", provider),
+            ("Seeds", len(seeds)),
+            ("Accepted", len(teacher_records)),
+            ("Rejected", len(rejected_debug_records)),
+            ("Acceptance rate", f"{acceptance_rate:.1%}"),
+            ("Max tool calls", max_tool_calls),
+            ("Training traces", teacher_traces_path),
+            ("Accepted debug", data_config["accepted_traces_path"]),
+            ("Rejected debug", data_config["rejected_traces_path"]),
+        ],
+    )
 
 
 def preflight_command(args: argparse.Namespace) -> None:
     config = load_yaml(args.teacher_config)
     provider = configured_teacher_provider(config)
     if provider == "synthetic":
-        print("Synthetic teacher requires no model preflight.")
+        print_summary(
+            "Teacher preflight complete",
+            [("Provider", provider), ("Model check", "not required")],
+        )
         return
     with OpenRouterTeacherClient(
         model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL)
     ) as client:
         client.preflight()
-        print(f"OpenRouter model `{client.model}` is available.")
+        print_summary(
+            "Teacher preflight complete",
+            [("Provider", provider), ("Model", client.model), ("Available", True)],
+        )
 
 
 def main() -> None:

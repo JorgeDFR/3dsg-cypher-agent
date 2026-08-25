@@ -7,6 +7,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yaml}"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
 NVIDIA_TEST_IMAGE="${NVIDIA_TEST_IMAGE:-ubuntu:24.04}"
 OLLAMA_OUTPUT_DIR="${PROJECT_ROOT}/outputs/ollama"
+DEMO_DATA_CONFIG="${DEMO_DATA_CONFIG:-configs/data.yaml}"
+DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teacher_synthetic.yaml}"
+DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/student_qwen3.5_4b.yaml}"
+DEMO_SCENE="${DEMO_SCENE:-data/scenes/3dsg_uhumans2.json}"
 
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
@@ -18,9 +22,7 @@ Usage: docker/stack.sh COMMAND [ARGS...]
 Recommended first run:
   1. cp docker/.env.example docker/.env and set required credentials.
   2. docker/stack.sh setup
-  3. docker/stack.sh load-neo4j
-  4. docker/stack.sh main python scripts/generate_traces.py preflight \
-       --teacher-config configs/teacher_gpt_oss_120b.yaml
+  3. docker/stack.sh demo
 
 Setup and lifecycle:
   setup                    Validate, build, and start the complete stack.
@@ -34,6 +36,10 @@ Main project container:
   main COMMAND [ARGS...]   Run a command in the running main container.
   shell                    Open an interactive shell in the main container.
   exec COMMAND [ARGS...]   Alias for main (kept for compatibility).
+
+Automated workflow:
+  demo                     Run the full demo from database load through student
+                           training, evaluation, and HTML report generation.
 
 Neo4j and Ollama:
   load-neo4j [SCENE]       Load a scene into the running Neo4j service.
@@ -55,6 +61,10 @@ Examples:
 
 Environment:
   ENV_FILE=path            Optional Compose env file. Defaults to docker/.env.
+  DEMO_DATA_CONFIG=path    Demo data config. Defaults to configs/data.yaml.
+  DEMO_TEACHER_CONFIG=path Demo teacher config. Defaults to the synthetic teacher.
+  DEMO_STUDENT_CONFIG=path Demo student config. Defaults to Qwen 3.5 4B.
+  DEMO_SCENE=path          Demo scene. Defaults to the uhumans2 scene JSON.
 EOF
 }
 
@@ -75,16 +85,35 @@ compose() {
 }
 
 info() {
-  printf 'INFO: %s\n' "$*"
+  printf '[INFO] %s\n' "$*"
 }
 
 warn() {
-  printf 'WARNING: %s\n' "$*" >&2
+  printf '[WARN] %s\n' "$*" >&2
 }
 
 die() {
-  printf '\nERROR: %s\n' "$*" >&2
+  printf '\n[ERROR] %s\n' "$*" >&2
   exit 1
+}
+
+heading() {
+  local title="$1"
+  printf '\n============================================================\n'
+  printf '  %s\n' "${title}"
+  printf '============================================================\n'
+}
+
+demo_step() {
+  local current="$1"
+  local total="$2"
+  local title="$3"
+  shift 3
+
+  heading "Step ${current}/${total}  ${title}"
+  if ! compose exec main "$@"; then
+    die "Step ${current}/${total} failed: ${title}"
+  fi
 }
 
 check_docker() {
@@ -322,6 +351,76 @@ run_main() {
   compose exec main "$@"
 }
 
+run_demo() {
+  local total_steps=11
+
+  if [[ $# -ne 0 ]]; then
+    die "The demo command takes no arguments. Configure it with the DEMO_* environment variables."
+  fi
+
+  prepare_runtime
+  require_service_running main
+  require_service_running neo4j
+
+  heading "3DSG Cypher agent demo"
+  info "Scene: ${DEMO_SCENE}"
+  info "Data config: ${DEMO_DATA_CONFIG}"
+  info "Teacher config: ${DEMO_TEACHER_CONFIG}"
+  info "Student config: ${DEMO_STUDENT_CONFIG}"
+
+  demo_step 1 "${total_steps}" "Load scene into Neo4j" \
+    python scripts/load_3dsg_neo4j.py \
+      --scene "${DEMO_SCENE}"
+  demo_step 2 "${total_steps}" "Extract scene template values" \
+    python scripts/extract_3dsg_values.py \
+      --data-config "${DEMO_DATA_CONFIG}"
+  demo_step 3 "${total_steps}" "Generate question templates" \
+    python scripts/generate_3dsg_seed_templates.py \
+      --data-config "${DEMO_DATA_CONFIG}"
+  demo_step 4 "${total_steps}" "Prepare seed records" \
+    python scripts/prepare_dataset.py prepare-seeds \
+      --data-config "${DEMO_DATA_CONFIG}"
+  demo_step 5 "${total_steps}" "Generate and validate teacher traces" \
+    python scripts/generate_traces.py generate \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --teacher-config "${DEMO_TEACHER_CONFIG}"
+  demo_step 6 "${total_steps}" "Create grouped dataset splits" \
+    python scripts/prepare_dataset.py split \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --render-view ollama_native
+  demo_step 7 "${total_steps}" "Train student LoRA adapter" \
+    python scripts/train_agent_lora.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}"
+  demo_step 8 "${total_steps}" "Evaluate loss on all splits" \
+    python scripts/evaluate_student.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --split all \
+      --mode eval-loss
+  demo_step 9 "${total_steps}" "Validate generation on the test split" \
+    python scripts/evaluate_student.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --split test \
+      --mode raw-generation \
+      --max-new-tokens 1024
+  demo_step 10 "${total_steps}" "Validate generation on the challenge split" \
+    python scripts/evaluate_student.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --split challenge \
+      --mode raw-generation \
+      --max-new-tokens 1024
+  demo_step 11 "${total_steps}" "Generate HTML workflow report" \
+    python scripts/generate_workflow_report.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}"
+
+  heading "Demo complete"
+  info "The HTML report path is shown in the final summary above."
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 0
@@ -376,6 +475,9 @@ case "${command}" in
     ;;
   main | exec)
     run_main "$@"
+    ;;
+  demo)
+    run_demo "$@"
     ;;
   load-neo4j)
     scene="${1:-data/scenes/3dsg_uhumans2.json}"

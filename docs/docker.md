@@ -45,6 +45,20 @@ docker/stack.sh load-neo4j
 docker/stack.sh status
 ```
 
+Run the complete reproducible demo after setup:
+
+```bash
+docker/stack.sh demo
+```
+
+`demo` loads the scene, extracts template values, generates and prepares
+questions, creates validated traces with the deterministic synthetic teacher,
+creates grouped splits, trains the student adapter, evaluates loss on every
+split, validates raw generation on the test and challenge splits, and writes
+the HTML workflow report. It does not call a paid teacher API. Override its
+inputs with `DEMO_SCENE`, `DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, and
+`DEMO_STUDENT_CONFIG`.
+
 When using another scene, pass it explicitly:
 
 ```bash
@@ -112,6 +126,19 @@ report when a required service is not running.
 - `main COMMAND [ARGS...]`: execute a project command in `main`.
 - `shell`: open an interactive Bash shell in `main`.
 - `exec COMMAND [ARGS...]`: backward-compatible alias for `main`.
+
+### Automated Workflow
+
+- `demo`: run the full workflow from the Neo4j scene load through student
+  training, evaluation, validation, and HTML report generation, with numbered
+  progress sections and normalized script summaries.
+
+Expected Python warnings are grouped into compact Rich tables, and uncaught
+script exceptions use Rich tracebacks. Hugging Face, Transformers, Datasets,
+TRL, and PEFT progress rendering is disabled for model workflows; the project
+shows its own Rich phase, training-step, evaluation, and generation bars
+instead. The unauthenticated Hugging Face download warning is suppressed because
+the demo uses public model artifacts; other library warnings remain visible.
 
 Examples:
 

@@ -60,6 +60,19 @@ username is `neo4j` and the password is `neo4j_pw`. The trace generator
 validates teacher Cypher tool calls against this database, so reload the
 database whenever `scene_path` changes.
 
+Run the complete demo from database loading through student training,
+evaluation, validation, and static HTML report generation:
+
+```bash
+docker/stack.sh demo
+```
+
+The demo uses the deterministic synthetic teacher, so it does not require an
+OpenRouter key. It trains the configured student and runs eval-loss plus raw
+generation validation on the test and challenge splits. Set `DEMO_SCENE`,
+`DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, or `DEMO_STUDENT_CONFIG` to use
+alternative inputs.
+
 Run `docker/stack.sh help` for the ordered first-run guide and command groups.
 See [docs/docker.md](docs/docker.md) for the complete command reference and
 [docs/ollama_export.md](docs/ollama_export.md) for model export and registration.
