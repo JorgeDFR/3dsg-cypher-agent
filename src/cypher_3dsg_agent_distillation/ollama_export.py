@@ -21,12 +21,8 @@ from cypher_3dsg_agent_distillation.config import (
 from cypher_3dsg_agent_distillation.train import dtype_from_name
 
 DEFAULT_MODEL_NAME = "3dsg-cypher-agent-distilled"
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a 3D scene graph agent. Use tools for read-only Cypher queries."
-)
 DEFAULT_QUANTIZATION = "Q4_K_M"
 DEFAULT_GGUF_OUTTYPE = "bf16"
-DEFAULT_TARGET_HARDWARE = "Jetson Orin NX 16GB"
 DEFAULT_STOP_TOKENS = ["<|im_end|>"]
 
 EXPORT_STAGES = ("merge", "convert", "quantize", "modelfile")
@@ -43,18 +39,18 @@ GGUF_OUTTYPE_TO_TORCH_DTYPE = {
 class OllamaExportSettings:
     model_name: str
     base_model: str
+    base_only: bool
     tokenizer: str | None
     trust_remote_code: bool
-    adapter_dir: Path
-    merged_model_dir: Path
+    adapter_dir: Path | None
+    merged_model_dir: Path | None
     base_gguf_path: Path
     quantized_gguf_paths: dict[str, Path]
     selected_quantization: str
+    modelfile_gguf_path: Path
     modelfile_path: Path
-    system_prompt: str
     stop_tokens: list[str]
     gguf_outtype: str
-    target_hardware: str
     convert_args: list[str]
     quantize_args: list[str]
 
@@ -71,6 +67,17 @@ def require_export_dependencies():
         msg = "Install export dependencies with `pip install -e '.[export]'` before merging."
         raise RuntimeError(msg) from exc
     return AutoModelForCausalLM, AutoTokenizer, PeftModel
+
+
+def require_huggingface_hub():
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install export dependencies with `pip install -e '.[export]'` "
+            "before exporting a base model."
+        ) from exc
+    return snapshot_download
 
 
 def as_string_list(value: Any, *, name: str) -> list[str]:
@@ -153,19 +160,21 @@ def build_export_settings(
     merged_model_dir: str | Path | None = None,
     base_gguf_path: str | Path | None = None,
     gguf_path: str | Path | None = None,
+    modelfile_gguf: str | Path | None = None,
     modelfile_path: str | Path | None = None,
-    system_prompt: str | None = None,
+    base_only: bool = False,
     quantizations: Sequence[str] | None = None,
     selected_quantization: str | None = None,
     gguf_outtype: str | None = None,
 ) -> OllamaExportSettings:
     export_config = dict(data_config.get("ollama_export") or {})
     model_config = student_config["model"]
-    training_config = student_config["training"]
+    training_config = student_config.get("training") or {}
+    configured_adapter_dir = adapter_dir or training_config.get("output_dir")
+    if not base_only and configured_adapter_dir is None:
+        raise ValueError("Fine-tuned exports require --adapter-dir or training.output_dir.")
 
-    resolved_model_name = (
-        model_name or export_config.get("model_name") or DEFAULT_MODEL_NAME
-    )
+    resolved_model_name = model_name or export_config.get("model_name") or DEFAULT_MODEL_NAME
     export_root = export_root_from_config(export_config)
     export_dir = export_root / str(resolved_model_name)
     resolved_gguf_outtype = (
@@ -179,10 +188,14 @@ def build_export_settings(
         quantizations or export_config.get("quantizations") or configured_quantization
     )
     resolved_selected_quantization = (
-        selected_quantization
-        or export_config.get("selected_quantization")
-        or resolved_quantizations[0]
-    ).strip().upper()
+        (
+            selected_quantization
+            or export_config.get("selected_quantization")
+            or resolved_quantizations[0]
+        )
+        .strip()
+        .upper()
+    )
     if resolved_selected_quantization not in resolved_quantizations:
         msg = (
             f"selected quantization `{resolved_selected_quantization}` is not in "
@@ -190,47 +203,55 @@ def build_export_settings(
         )
         raise ValueError(msg)
 
+    resolved_base_gguf_path = resolve_project_path(
+        base_gguf_path
+        or export_config.get("base_gguf_path")
+        or export_dir / f"{resolved_model_name}.{resolved_gguf_outtype}.gguf"
+    )
+    resolved_quantized_gguf_paths = {
+        quantization: derived_quantized_path(
+            model_name=str(resolved_model_name),
+            quantization=quantization,
+            export_dir=export_dir,
+            configured_gguf_path=configured_gguf_path,
+            configured_quantization=configured_quantization,
+        )
+        for quantization in resolved_quantizations
+    }
+    resolved_modelfile_gguf_path = resolve_project_path(
+        modelfile_gguf
+        or export_config.get("modelfile_gguf")
+        or resolved_quantized_gguf_paths[resolved_selected_quantization]
+    )
+
     return OllamaExportSettings(
         model_name=str(resolved_model_name),
         base_model=str(model_config["base_model"]),
+        base_only=base_only,
         tokenizer=model_config.get("tokenizer"),
         trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-        adapter_dir=resolve_project_path(adapter_dir or training_config["output_dir"]),
-        merged_model_dir=resolve_project_path(
-            merged_model_dir
-            or export_config.get("merged_model_dir")
-            or export_dir / "merged-hf"
-        ),
-        base_gguf_path=resolve_project_path(
-            base_gguf_path
-            or export_config.get("base_gguf_path")
-            or export_dir / f"{resolved_model_name}.{resolved_gguf_outtype}.gguf"
-        ),
-        quantized_gguf_paths={
-            quantization: derived_quantized_path(
-                model_name=str(resolved_model_name),
-                quantization=quantization,
-                export_dir=export_dir,
-                configured_gguf_path=configured_gguf_path,
-                configured_quantization=configured_quantization,
+        adapter_dir=(None if base_only else resolve_project_path(configured_adapter_dir)),
+        merged_model_dir=(
+            None
+            if base_only
+            else resolve_project_path(
+                merged_model_dir
+                or export_config.get("merged_model_dir")
+                or export_dir / "merged-hf"
             )
-            for quantization in resolved_quantizations
-        },
-        selected_quantization=resolved_selected_quantization,
-        modelfile_path=resolve_project_path(
-            modelfile_path
-            or export_config.get("modelfile_path")
-            or export_dir / "Modelfile"
         ),
-        system_prompt=str(
-            system_prompt or export_config.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
+        base_gguf_path=resolved_base_gguf_path,
+        quantized_gguf_paths=resolved_quantized_gguf_paths,
+        selected_quantization=resolved_selected_quantization,
+        modelfile_gguf_path=resolved_modelfile_gguf_path,
+        modelfile_path=resolve_project_path(
+            modelfile_path or export_config.get("modelfile_path") or export_dir / "Modelfile"
         ),
         stop_tokens=as_string_list(
             export_config.get("stop_tokens", DEFAULT_STOP_TOKENS),
             name="ollama_export.stop_tokens",
         ),
         gguf_outtype=str(resolved_gguf_outtype),
-        target_hardware=str(export_config.get("target_hardware", DEFAULT_TARGET_HARDWARE)),
         convert_args=as_string_list(
             export_config.get("convert_args"),
             name="ollama_export.convert_args",
@@ -246,7 +267,9 @@ def tokenizer_source(settings: OllamaExportSettings) -> str:
     if settings.tokenizer:
         return str(settings.tokenizer)
     tokenizer_files = ("tokenizer.json", "tokenizer.model", "tokenizer_config.json")
-    if any((settings.adapter_dir / filename).exists() for filename in tokenizer_files):
+    if settings.adapter_dir and any(
+        (settings.adapter_dir / filename).exists() for filename in tokenizer_files
+    ):
         return str(settings.adapter_dir)
     return settings.base_model
 
@@ -258,6 +281,10 @@ def merge_lora_adapter(
     dtype: str | None = None,
     max_shard_size: str = "4GB",
 ) -> Path:
+    if settings.base_only:
+        raise ValueError("Cannot merge a LoRA adapter for a base-only export.")
+    if settings.adapter_dir is None or settings.merged_model_dir is None:
+        raise ValueError("Fine-tuned exports require adapter and merged-model paths.")
     if not settings.adapter_dir.exists():
         raise FileNotFoundError(f"LoRA adapter directory does not exist: {settings.adapter_dir}")
 
@@ -287,6 +314,24 @@ def merge_lora_adapter(
     )
     tokenizer.save_pretrained(output_dir)
     return output_dir
+
+
+def resolve_base_model_snapshot(settings: OllamaExportSettings) -> Path:
+    """Resolve the exact Hugging Face base checkpoint without copying it to outputs."""
+
+    candidate = Path(settings.base_model).expanduser()
+    if candidate.is_dir():
+        return candidate.resolve()
+    snapshot_download = require_huggingface_hub()
+    return Path(snapshot_download(repo_id=settings.base_model)).resolve()
+
+
+def conversion_source_dir(settings: OllamaExportSettings) -> Path:
+    if settings.base_only:
+        return resolve_base_model_snapshot(settings)
+    if settings.merged_model_dir is None:
+        raise ValueError("Fine-tuned exports require a merged Hugging Face directory.")
+    return settings.merged_model_dir
 
 
 def require_existing_file(path: Path, description: str) -> Path:
@@ -399,8 +444,18 @@ def convert_hf_to_gguf(
     python_bin: str | Path | None = None,
     dry_run: bool = False,
 ) -> Path:
+    source_dir = (
+        Path(settings.base_model)
+        if dry_run and settings.base_only
+        else conversion_source_dir(settings)
+    )
     if not dry_run:
-        require_existing_dir(settings.merged_model_dir, "merged Hugging Face model directory")
+        description = (
+            "base Hugging Face model directory"
+            if settings.base_only
+            else "merged Hugging Face model directory"
+        )
+        require_existing_dir(source_dir, description)
     script = resolve_convert_script(
         llama_cpp_dir=llama_cpp_dir,
         convert_script=convert_script,
@@ -412,7 +467,7 @@ def convert_hf_to_gguf(
             llama_cpp_dir=llama_cpp_dir,
         ),
         str(script),
-        str(settings.merged_model_dir),
+        str(source_dir),
         "--outfile",
         str(output_path),
         "--outtype",
@@ -453,16 +508,11 @@ def quantize_gguf(
     return outputs
 
 
-def escape_modelfile_block(value: str) -> str:
-    return value.strip().replace('"""', '\\"\\"\\"')
-
-
 def write_modelfile(
     *,
     model_name: str,
     gguf_path: str | Path,
     output_path: str | Path,
-    system_prompt: str,
     stop_tokens: Sequence[str] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Path:
@@ -470,8 +520,6 @@ def write_modelfile(
     gguf_reference = modelfile_gguf_reference(gguf_path, path)
     lines = [
         f"FROM {gguf_reference}",
-        "",
-        f'SYSTEM """{escape_modelfile_block(system_prompt)}"""',
         "",
     ]
     for stop_token in stop_tokens or DEFAULT_STOP_TOKENS:
@@ -485,7 +533,6 @@ def write_modelfile(
         "gguf_path": str(gguf_path),
         "modelfile": str(path),
         "recommended_quantization": DEFAULT_QUANTIZATION,
-        "target_hardware": DEFAULT_TARGET_HARDWARE,
     }
     if metadata:
         metadata_payload.update(metadata)
@@ -511,29 +558,31 @@ def modelfile_gguf_reference(gguf_path: str | Path, modelfile_path: Path) -> str
 
 
 def export_metadata(settings: OllamaExportSettings) -> dict[str, Any]:
-    return {
+    metadata = {
         "base_model": settings.base_model,
-        "adapter_dir": str(settings.adapter_dir),
-        "merged_model_dir": str(settings.merged_model_dir),
+        "model_variant": "base" if settings.base_only else "fine-tuned",
         "base_gguf_path": str(settings.base_gguf_path),
-        "gguf_path": str(settings.selected_gguf_path),
+        "gguf_path": str(settings.modelfile_gguf_path),
+        "modelfile_gguf_path": str(settings.modelfile_gguf_path),
         "quantized_gguf_paths": {
-            quantization: str(path)
-            for quantization, path in settings.quantized_gguf_paths.items()
+            quantization: str(path) for quantization, path in settings.quantized_gguf_paths.items()
         },
         "selected_quantization": settings.selected_quantization,
         "gguf_outtype": settings.gguf_outtype,
         "recommended_quantization": settings.selected_quantization,
-        "target_hardware": settings.target_hardware,
     }
+    if settings.adapter_dir is not None:
+        metadata["adapter_dir"] = str(settings.adapter_dir)
+    if settings.merged_model_dir is not None:
+        metadata["merged_model_dir"] = str(settings.merged_model_dir)
+    return metadata
 
 
 def write_settings_modelfile(settings: OllamaExportSettings) -> Path:
     return write_modelfile(
         model_name=settings.model_name,
-        gguf_path=settings.selected_gguf_path,
+        gguf_path=settings.modelfile_gguf_path,
         output_path=settings.modelfile_path,
-        system_prompt=settings.system_prompt,
         stop_tokens=settings.stop_tokens,
         metadata=export_metadata(settings),
     )
@@ -569,6 +618,10 @@ def run_export(
 ) -> None:
     for stage in expand_stages(stages):
         if stage == "merge":
+            if settings.base_only:
+                if dry_run:
+                    print(f"base {settings.base_model} (no LoRA merge)")
+                continue
             if dry_run:
                 print(
                     "merge "
@@ -599,7 +652,7 @@ def run_export(
             )
         elif stage == "modelfile":
             if dry_run:
-                print(f"modelfile {settings.selected_gguf_path} -> {settings.modelfile_path}")
+                print(f"modelfile {settings.modelfile_gguf_path} -> {settings.modelfile_path}")
                 continue
             write_settings_modelfile(settings)
 
@@ -615,8 +668,9 @@ def command(args: argparse.Namespace) -> None:
         merged_model_dir=args.merged_model_dir,
         base_gguf_path=args.base_gguf_path,
         gguf_path=args.gguf_path,
+        modelfile_gguf=args.modelfile_gguf,
         modelfile_path=args.modelfile_path,
-        system_prompt=args.system_prompt,
+        base_only=args.base_only,
         quantizations=args.quantizations,
         selected_quantization=args.selected_quantization,
         gguf_outtype=args.outtype,
@@ -637,7 +691,7 @@ def command(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge a LoRA student and export Ollama/GGUF artifacts."
+        description="Export a base or LoRA-fine-tuned student to Ollama/GGUF artifacts."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument(
@@ -659,8 +713,22 @@ def main() -> None:
     parser.add_argument("--merged-model-dir")
     parser.add_argument("--base-gguf-path")
     parser.add_argument("--gguf-path")
+    parser.add_argument(
+        "--modelfile-gguf",
+        help=(
+            "GGUF path to write in the Modelfile. Defaults to the selected "
+            "quantized GGUF; pass the base GGUF path to use BF16/F16 directly."
+        ),
+    )
     parser.add_argument("--modelfile-path")
-    parser.add_argument("--system-prompt")
+    parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help=(
+            "Export model.base_model directly without loading or merging the LoRA "
+            "adapter. Use --model-name to select its Ollama directory/name."
+        ),
+    )
     parser.add_argument("--quantizations", nargs="+")
     parser.add_argument("--selected-quantization")
     parser.add_argument(

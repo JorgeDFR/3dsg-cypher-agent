@@ -1,0 +1,109 @@
+---
+x-benchmark-environment: &benchmark-environment
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility
+  HERACLES_NEO4J_USERNAME: neo4j
+  HERACLES_NEO4J_PASSWORD: neo4j_pw
+  HERACLES_NEO4J_URI: neo4j://neo4j:7683
+  HERACLES_AGENTS_PATH: /home/benchmark/workspace/heracles_agents
+  ADT4_HERACLES_IP: neo4j
+  ADT4_HERACLES_PORT: 7683
+  OLLAMA_HOST: http://ollama:11434
+  DOCKER_HOST: tcp://docker-socket-proxy:2375
+
+x-benchmark-common: &benchmark-common
+  image: "${BENCHMARK_IMAGE:-3dsg-heracles-benchmark-benchmark-ollama:latest}"
+  build:
+    context: ../..
+    dockerfile: examples/herables_benchmark/Dockerfile.benchmark
+    args:
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+  gpus: all
+  init: true
+  stop_signal: SIGINT
+  stop_grace_period: 20s
+  volumes:
+    - ../../outputs/heracles_benchmark:/home/benchmark/workspace/heracles_agents/output
+    - ../../outputs/ollama:/models:ro
+  networks: [benchmark_net]
+  stdin_open: true
+  tty: true
+  entrypoint: ["/bin/bash"]
+
+services:
+  neo4j:
+    image: neo4j:5.25.1
+    healthcheck:
+      test: [CMD-SHELL, wget --no-verbose --tries=1 --spider http://localhost:7469 || exit 1]
+      interval: 1s
+      timeout: 10s
+      retries: 10
+      start_period: 2s
+    networks: [benchmark_net]
+    environment:
+      NEO4J_server_bolt_listen__address: :7683
+      NEO4J_server_http_advertised__address: :7469
+      NEO4J_server_http_listen__address: :7469
+      NEO4J_AUTH: neo4j/neo4j_pw
+
+  ollama:
+    image: ollama/ollama:0.32.4
+    container_name: 3dsg-heracles-benchmark-ollama
+    gpus: all
+    restart: unless-stopped
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - benchmark-ollama-cache:/root/.ollama
+      - ../../outputs/ollama:/models:ro
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [benchmark_net]
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      benchmark_net:
+        aliases: [docker-socket-proxy]
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      VERSION: 1
+      POST: 0
+      DELETE: 0
+      BUILD: 0
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      EXEC: 0
+      SYSTEM: 0
+
+  benchmark-ollama:
+    <<: *benchmark-common
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+    environment:
+      <<: *benchmark-environment
+
+networks:
+  benchmark_net:
+    name: 3dsg-heracles-benchmark-net
+    driver: bridge
+
+volumes:
+  benchmark-ollama-cache:
+    name: 3dsg-heracles-benchmark-ollama-cache

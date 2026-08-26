@@ -1,0 +1,28 @@
+models:
+  - alias: qwen3-5-4b-baseline
+    model: qwen3.5-4b-baseline
+    variant: baseline
+    family: qwen3.5-4b
+    artifact_dir: qwen3.5-4b-baseline
+    enabled: true
+
+  - alias: qwen3-5-4b-finetune
+    model: qwen3.5-4b-finetune
+    variant: finetune
+    family: qwen3.5-4b
+    artifact_dir: qwen3.5-4b-finetune
+    enabled: true
+
+  - alias: granite4-1-3b-baseline
+    model: granite4.1-3b-baseline
+    variant: baseline
+    family: granite4.1-3b
+    artifact_dir: granite4.1-3b-baseline
+    enabled: false
+
+  - alias: granite4-1-3b-finetune
+    model: granite4.1-3b-finetune
+    variant: finetune
+    family: granite4.1-3b
+    artifact_dir: granite4.1-3b-finetune
+    enabled: false

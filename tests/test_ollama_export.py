@@ -20,7 +20,6 @@ def data_config(tmp_path):
         "ollama_export": {
             "model_name": "agent-distilled",
             "export_root": str(tmp_path),
-            "system_prompt": "Use the run_cypher_query tool.",
             "stop_tokens": ["<stop>"],
             "quantizations": ["Q4_K_M", "Q5_K_M"],
         }
@@ -52,6 +51,7 @@ def test_build_export_settings_derives_all_quantized_paths(tmp_path):
     assert settings.base_gguf_path == export_dir / "agent-distilled.bf16.gguf"
     assert settings.quantized_gguf_paths["Q4_K_M"] == export_dir / "agent-distilled.Q4_K_M.gguf"
     assert settings.quantized_gguf_paths["Q5_K_M"] == export_dir / "agent-distilled.Q5_K_M.gguf"
+    assert settings.modelfile_gguf_path == export_dir / "agent-distilled.Q4_K_M.gguf"
     assert settings.modelfile_path == export_dir / "Modelfile"
 
 
@@ -75,20 +75,91 @@ def test_write_settings_modelfile_writes_metadata(tmp_path):
     modelfile_path = write_settings_modelfile(settings)
 
     assert modelfile_path.read_text(encoding="utf-8") == (
-        "FROM ./agent-distilled.Q4_K_M.gguf\n"
-        "\n"
-        'SYSTEM """Use the run_cypher_query tool."""\n'
-        "\n"
-        'PARAMETER stop "<stop>"\n'
+        'FROM ./agent-distilled.Q4_K_M.gguf\n\nPARAMETER stop "<stop>"\n'
     )
     metadata = json.loads((export_dir / "Modelfile.json").read_text(encoding="utf-8"))
     assert metadata["model_name"] == "agent-distilled"
+    assert metadata["model_variant"] == "fine-tuned"
     assert metadata["adapter_dir"] == str(tmp_path / "adapter")
     assert metadata["merged_model_dir"] == str(export_dir / "merged-hf")
     assert metadata["selected_quantization"] == "Q4_K_M"
+    assert metadata["modelfile_gguf_path"] == str(export_dir / "agent-distilled.Q4_K_M.gguf")
     assert metadata["quantized_gguf_paths"]["Q5_K_M"] == str(
         export_dir / "agent-distilled.Q5_K_M.gguf"
     )
+
+
+def test_base_only_settings_do_not_create_adapter_or_merged_paths(tmp_path):
+    settings = build_export_settings(
+        data_config(tmp_path),
+        student_config(tmp_path),
+        base_only=True,
+        model_name="base-model",
+    )
+
+    assert settings.base_only is True
+    assert settings.adapter_dir is None
+    assert settings.merged_model_dir is None
+    assert settings.base_gguf_path == tmp_path / "base-model" / "base-model.bf16.gguf"
+    assert settings.selected_gguf_path == (tmp_path / "base-model" / "base-model.Q4_K_M.gguf")
+
+
+def test_base_only_settings_do_not_require_training_config(tmp_path):
+    config = student_config(tmp_path)
+    del config["training"]
+
+    settings = build_export_settings(
+        data_config(tmp_path),
+        config,
+        base_only=True,
+        model_name="base-model",
+    )
+
+    assert settings.adapter_dir is None
+    assert settings.merged_model_dir is None
+
+
+def test_modelfile_gguf_override_selects_unquantized_artifact(tmp_path):
+    unquantized = tmp_path / "agent-distilled" / "agent-distilled.bf16.gguf"
+    settings = build_export_settings(
+        data_config(tmp_path),
+        student_config(tmp_path),
+        modelfile_gguf=unquantized,
+    )
+
+    write_settings_modelfile(settings)
+
+    export_dir = tmp_path / "agent-distilled"
+    assert settings.modelfile_gguf_path == unquantized
+    assert settings.selected_gguf_path == export_dir / "agent-distilled.Q4_K_M.gguf"
+    assert (
+        (export_dir / "Modelfile")
+        .read_text(encoding="utf-8")
+        .startswith("FROM ./agent-distilled.bf16.gguf\n")
+    )
+    metadata = json.loads((export_dir / "Modelfile.json").read_text(encoding="utf-8"))
+    assert metadata["gguf_path"] == str(unquantized)
+    assert metadata["modelfile_gguf_path"] == str(unquantized)
+    assert metadata["quantized_gguf_paths"]["Q4_K_M"] == str(
+        export_dir / "agent-distilled.Q4_K_M.gguf"
+    )
+
+
+def test_base_only_modelfile_metadata_omits_merge_fields(tmp_path):
+    settings = build_export_settings(
+        data_config(tmp_path),
+        student_config(tmp_path),
+        base_only=True,
+        model_name="base-model",
+    )
+
+    write_settings_modelfile(settings)
+
+    metadata = json.loads((tmp_path / "base-model" / "Modelfile.json").read_text(encoding="utf-8"))
+    assert metadata["model_variant"] == "base"
+    assert "adapter_dir" not in metadata
+    assert "merged_model_dir" not in metadata
+    assert not (tmp_path / "base-model" / "merged-hf").exists()
 
 
 def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
@@ -151,6 +222,42 @@ def test_convert_hf_to_gguf_uses_llama_cpp_venv_python_by_default(tmp_path, monk
     convert_hf_to_gguf(settings, llama_cpp_dir=llama_cpp_dir)
 
     assert calls[0][0][0] == str(venv_python)
+
+
+def test_convert_base_model_uses_resolved_hugging_face_snapshot(tmp_path, monkeypatch):
+    settings = build_export_settings(
+        data_config(tmp_path),
+        student_config(tmp_path),
+        base_only=True,
+        model_name="base-model",
+    )
+    snapshot = tmp_path / "huggingface-cache" / "snapshot"
+    snapshot.mkdir(parents=True)
+    llama_cpp_dir = tmp_path / "llama.cpp"
+    llama_cpp_dir.mkdir()
+    convert_script = llama_cpp_dir / "convert_hf_to_gguf.py"
+    convert_script.touch()
+    calls = []
+
+    monkeypatch.setattr(
+        ollama_export,
+        "resolve_base_model_snapshot",
+        lambda _settings: snapshot,
+    )
+    monkeypatch.setattr(
+        ollama_export.subprocess,
+        "run",
+        lambda command, check: calls.append((command, check)),
+    )
+
+    convert_hf_to_gguf(
+        settings,
+        llama_cpp_dir=llama_cpp_dir,
+        python_bin="python",
+    )
+
+    assert calls[0][0][2] == str(snapshot)
+    assert not (tmp_path / "base-model" / "merged-hf").exists()
 
 
 def test_quantize_gguf_invokes_llama_quantize_for_each_quantization(tmp_path, monkeypatch):
@@ -242,3 +349,22 @@ def test_run_export_dry_run_does_not_write_modelfile(tmp_path):
 
     assert not (tmp_path / "agent-distilled" / "Modelfile").exists()
     assert not (tmp_path / "agent-distilled" / "Modelfile.json").exists()
+
+
+def test_run_export_base_only_skips_merge_stage(tmp_path, monkeypatch):
+    settings = build_export_settings(
+        data_config(tmp_path),
+        student_config(tmp_path),
+        base_only=True,
+        model_name="base-model",
+    )
+    merges = []
+    monkeypatch.setattr(
+        ollama_export,
+        "merge_lora_adapter",
+        lambda *_args, **_kwargs: merges.append(True),
+    )
+
+    run_export(settings, stages=["merge"], dry_run=False)
+
+    assert merges == []

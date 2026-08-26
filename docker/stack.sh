@@ -2,11 +2,9 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yaml}"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
 NVIDIA_TEST_IMAGE="${NVIDIA_TEST_IMAGE:-ubuntu:24.04}"
-OLLAMA_OUTPUT_DIR="${PROJECT_ROOT}/outputs/ollama"
 DEMO_DATA_CONFIG="${DEMO_DATA_CONFIG:-configs/data.yaml}"
 DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teacher_synthetic.yaml}"
 DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/student_qwen3.5_4b.yaml}"
@@ -28,7 +26,7 @@ Setup and lifecycle:
   setup                    Validate, build, and start the complete stack.
   check                    Validate Docker, Compose, and NVIDIA GPU support.
   build                    Rebuild the main project image.
-  up                       Start main, Neo4j, and Ollama.
+  up                       Start the main project container and Neo4j.
   down                     Stop the stack; persistent volumes are retained.
   restart [SERVICE...]     Restart the complete stack or selected services.
 
@@ -41,10 +39,8 @@ Automated workflow:
   demo                     Run the full demo from database load through student
                            baseline, training, evaluation, and HTML reporting.
 
-Neo4j and Ollama:
+Neo4j:
   load-neo4j [SCENE]       Load a scene into the running Neo4j service.
-  pull-ollama MODEL        Pull a model into the persistent Ollama cache.
-  ollama COMMAND [ARGS...] Run Ollama CLI in the container from /models.
 
 Inspection:
   status                   Show service status.
@@ -56,8 +52,7 @@ Examples:
   docker/stack.sh main python scripts/train_agent_lora.py \
     --data-config configs/data.yaml \
     --student-config configs/student_qwen3.5_4b.yaml
-  docker/stack.sh logs ollama
-  docker/stack.sh ollama list
+  docker/stack.sh logs neo4j
 
 Environment:
   ENV_FILE=path            Optional Compose env file. Defaults to docker/.env.
@@ -297,16 +292,6 @@ set_host_user_ids() {
   info "Main container UID:GID will be ${HOST_UID}:${HOST_GID}."
 }
 
-ensure_host_output_directories() {
-  if ! mkdir -p "${OLLAMA_OUTPUT_DIR}"; then
-    die "Could not create Ollama output directory: ${OLLAMA_OUTPUT_DIR}"
-  fi
-
-  if [[ ! -w "${OLLAMA_OUTPUT_DIR}" ]]; then
-    die "Ollama output directory is not writable by UID ${HOST_UID}: ${OLLAMA_OUTPUT_DIR}"
-  fi
-}
-
 validate_compose_file() {
   [[ -f "${COMPOSE_FILE}" ]] ||
     die "Compose file not found: ${COMPOSE_FILE}"
@@ -319,7 +304,6 @@ validate_compose_file() {
 preflight() {
   check_docker
   set_host_user_ids
-  ensure_host_output_directories
   check_required_gpu
   validate_compose_file
 }
@@ -327,7 +311,6 @@ preflight() {
 prepare_runtime() {
   check_docker
   set_host_user_ids
-  ensure_host_output_directories
   validate_compose_file
 }
 
@@ -454,7 +437,7 @@ case "${command}" in
   setup)
     preflight
     compose build main
-    compose up -d neo4j ollama main
+    compose up -d neo4j main
     info "Stack setup is complete. Next: docker/stack.sh load-neo4j"
     ;;
   check)
@@ -466,7 +449,7 @@ case "${command}" in
     ;;
   up)
     preflight
-    compose up -d neo4j ollama main
+    compose up -d neo4j main
     ;;
   down)
     check_docker
@@ -501,24 +484,6 @@ case "${command}" in
     require_service_running main
     require_service_running neo4j
     compose exec main python scripts/load_3dsg_neo4j.py --scene "${scene}"
-    ;;
-  pull-ollama)
-    if [[ $# -ne 1 ]]; then
-      echo "Usage: docker/stack.sh pull-ollama MODEL" >&2
-      exit 2
-    fi
-    prepare_runtime
-    require_service_running ollama
-    compose exec ollama ollama pull "$1"
-    ;;
-  ollama)
-    if [[ $# -lt 1 ]]; then
-      echo "Usage: docker/stack.sh ollama COMMAND [ARGS...]" >&2
-      exit 2
-    fi
-    prepare_runtime
-    require_service_running ollama
-    compose exec -w /models ollama ollama "$@"
     ;;
   config)
     prepare_runtime

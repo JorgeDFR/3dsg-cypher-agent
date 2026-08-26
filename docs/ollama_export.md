@@ -1,154 +1,140 @@
 # Ollama GGUF Export
 
-The export pipeline converts a trained LoRA/QLoRA adapter into a local Ollama
-model:
+The exporter supports two variants:
 
-1. Merge the PEFT adapter into its Hugging Face base model.
-2. Convert the merged model to a high-precision GGUF with llama.cpp.
-3. Quantize the GGUF with `llama-quantize`.
-4. Write an Ollama `Modelfile` and export metadata.
-5. Register and run the model through the Ollama container.
+- fine-tuned: merge a trained LoRA/QLoRA adapter into its base model, convert
+  the merged checkpoint, and quantize it;
+- base: convert the configured Hugging Face base checkpoint directly, with no
+  adapter merge and no `merged-hf` output.
 
-Docker is the default interface. The `main` image contains the project training
-dependencies, CUDA-enabled PyTorch, and a built llama.cpp checkout at
-`/home/user/workspace/llama.cpp`.
+Both variants produce one neutral `Modelfile`. It contains the selected GGUF
+and stop parameters but no embedded system prompt, so Heracles supplies the
+task-specific Cypher or PDDL prompt during each experiment.
 
-## Export With Docker
+## Export with Docker
 
-Start the validated stack if it is not already running:
+Start the development stack:
 
 ```bash
 docker/stack.sh up
 ```
 
-Run the complete export after training:
+Export a trained Qwen adapter:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
   --stages all
 ```
 
-The stages run in this order:
+The fine-tuned stages are:
 
 ```text
-merged adapter -> merged-hf -> bf16 GGUF -> quantized GGUF -> Modelfile
+base + adapter -> merged-hf -> bf16 GGUF -> quantized GGUF -> Modelfile
 ```
 
-Each model gets an isolated export directory:
+Export the exact base model configured in the same student YAML:
+
+```bash
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-baseline \
+  --stages all \
+  --base-only
+```
+
+For a base export the merge stage is deliberately skipped. The converter reads
+the local Hugging Face path or resolved Hub snapshot directly.
+
+## Output structure
 
 ```text
 outputs/ollama/
-`-- <model_name>/
+|-- qwen3.5-4b-baseline/
+|   |-- qwen3.5-4b-baseline.bf16.gguf
+|   |-- qwen3.5-4b-baseline.Q4_K_M.gguf
+|   |-- Modelfile
+|   `-- Modelfile.json
+`-- qwen3.5-4b-finetune/
     |-- merged-hf/
-    |-- <model_name>.bf16.gguf
-    |-- <model_name>.<quantization>.gguf
+    |-- qwen3.5-4b-finetune.bf16.gguf
+    |-- qwen3.5-4b-finetune.Q4_K_M.gguf
     |-- Modelfile
     `-- Modelfile.json
 ```
 
-The Ollama service sees the same directory at `/models/<model_name>`.
+Directory names identify the model variant and do not encode the current GGUF
+quantization. Quantization remains in the GGUF filename and metadata. Only the
+fine-tuned directory contains `merged-hf`.
 
-### Selected Stages
+## Selected stages and quantizations
 
 `--stages` accepts `merge`, `convert`, `quantize`, `modelfile`, or `all`.
-Multiple stages can be provided in dependency order:
+Multiple stages can be run when an earlier artifact is already valid:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
   --stages convert quantize modelfile
 ```
 
-Use selected stages when an earlier artifact is already valid. For example,
-changing quantization does not require repeating the model merge.
-
-Generate only the Modelfile and metadata:
+Generate more than one quantization with:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
-  --stages modelfile
-```
-
-Use `--dry-run` to print external actions without writing files or running the
-heavy merge.
-
-### Multiple Quantizations
-
-Generate more than the configured default quantization:
-
-```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
   --stages all \
   --quantizations Q4_K_M Q5_K_M
 ```
 
-Every requested quantization is written into the same model export directory.
-The first quantization is selected by default for the Modelfile.
+The first configured quantization is selected for `Modelfile` unless
+`--selected-quantization` is passed.
 
-## Register And Run
-
-The export script writes artifacts but does not run `ollama create`. Register
-the selected GGUF after export:
-
-```bash
-docker/stack.sh ollama create qwen3.5-4b-3dsg-cypher-agent-lora \
-  -f qwen3.5-4b-3dsg-cypher-agent-lora/Modelfile
-```
-
-Run the registered model:
+Use `--modelfile-gguf` when the Modelfile should reference a specific artifact
+independently of the conversion and quantization settings. For example, switch
+an existing finetune export from Q4_K_M to its unquantized BF16 GGUF without
+repeating the merge or conversion:
 
 ```bash
-docker/stack.sh ollama run qwen3.5-4b-3dsg-cypher-agent-lora \
-  "List the objects in room R0."
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
+  --modelfile-gguf outputs/ollama/qwen3.5-4b-finetune/qwen3.5-4b-finetune.bf16.gguf \
+  --stages modelfile
 ```
 
-The generated Modelfile uses `FROM ./<model>.gguf`. Ollama resolves that path
-relative to the Modelfile, so the nested model directory works from both the
-host and the `/models` container mount.
+The selected path is stored as `gguf_path` and `modelfile_gguf_path` in
+`Modelfile.json`. The quantized output paths remain unchanged. `--dry-run`
+prints external operations without performing a merge, conversion,
+quantization, or write.
 
 ## Configuration
 
-Export settings live under `ollama_export` in `configs/data.yaml`:
+Settings under `ollama_export` in `configs/data.yaml` include:
 
-- `model_name`: Ollama model name and export directory name.
-- `export_root`: parent directory; defaults resolve under
-  `<export_root>/<model_name>`.
-- `gguf_outtype`: converter output type, usually `bf16` or `f16`.
-- `quantizations`: llama.cpp quantizations to generate.
-- `selected_quantization`: optional quantization used by the Modelfile.
-- `convert_args`: additional arguments for `convert_hf_to_gguf.py`.
-- `quantize_args`: additional arguments for `llama-quantize`.
-- `target_hardware`: deployment note written to export metadata.
-- `system_prompt`: system prompt embedded in the Modelfile.
+- `model_name`: default export directory and Ollama model name;
+- `export_root`: parent output directory;
+- `gguf_outtype`: intermediate converter type such as `bf16`;
+- `quantizations`: quantizations to generate;
+- `selected_quantization`: optional Modelfile selection;
+- `modelfile_gguf`: optional explicit GGUF path for the Modelfile;
+- `convert_args`: extra `convert_hf_to_gguf.py` arguments;
+- `quantize_args`: extra `llama-quantize` arguments.
 
-`merged_model_dir`, `base_gguf_path`, `gguf_path`, and `modelfile_path` are
-optional explicit overrides. Omit them for normal use so each model remains
-grouped under its own directory.
+Explicit CLI overrides remain available for adapter, merged checkpoint, GGUF,
+and Modelfile paths. The student config supplies `model.base_model`, optional
+tokenizer and remote-code settings, and the default adapter `training.output_dir`.
 
-The student config supplies:
+## Qwen3.5 MTP metadata
 
-- `model.base_model`: Hugging Face base model used for the merge.
-- `model.tokenizer`: optional tokenizer override.
-- `model.trust_remote_code`: forwarded to Transformers.
-- `training.output_dir`: default LoRA adapter directory.
-
-## Qwen3.5 MTP Metadata
-
-Some merged Qwen3.5 checkpoints retain `mtp_num_hidden_layers` in
-`config.json` without containing MTP tensors. A GGUF converted with bundled MTP
-metadata can then fail at runtime with a missing final block such as:
-
-```text
-missing tensor 'blk.32.attn_norm.weight'
-```
-
-Exclude the absent MTP head during conversion:
+Some merged Qwen3.5 checkpoints retain `mtp_num_hidden_layers` without MTP
+tensors. A GGUF containing that metadata can fail with a missing final block.
+This repository configures:
 
 ```yaml
 ollama_export:
@@ -156,54 +142,39 @@ ollama_export:
     - --no-mtp
 ```
 
-Then rerun `convert quantize modelfile` and register the model again. The merge
-does not need to be repeated.
+After changing this setting, rerun `convert quantize modelfile`; an existing
+fine-tuned merge need not be repeated.
 
-## Host-Only Export
+## Registration and benchmarking
 
-Host execution is optional. Install this package's export dependencies in the
-host project environment:
+The development stack no longer includes Ollama. The dedicated Heracles stack
+validates the enabled exported artifacts and performs `ollama create` inside its
+own GPU Ollama container:
+
+```bash
+examples/herables_benchmark/run_benchmark.sh models
+examples/herables_benchmark/run_benchmark.sh ollama list
+examples/herables_benchmark/run_benchmark.sh --benchmarks cypher
+```
+
+See the [benchmark guide](../examples/herables_benchmark/README.md) for
+the manifest and report layout.
+
+## Host-only export
+
+Install export dependencies and provide a llama.cpp checkout:
 
 ```bash
 pip install -e '.[export]'
-```
-
-Install a PyTorch build matching the host CUDA or JetPack environment
-separately.
-
-Install llama.cpp and keep its converter dependencies isolated:
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp external/llama.cpp
-python3 -m venv external/llama.cpp/.venv
-external/llama.cpp/.venv/bin/python -m pip install -U pip
-external/llama.cpp/.venv/bin/python \
-  -m pip install -r external/llama.cpp/requirements.txt
-cmake -S external/llama.cpp -B external/llama.cpp/build
-cmake --build external/llama.cpp/build --config Release -j
 export LLAMA_CPP_DIR=external/llama.cpp
-```
-
-Run the host export:
-
-```bash
 .venv/bin/python scripts/export_agent_ollama.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
-  --stages all \
-  --llama-cpp-dir external/llama.cpp
+  --model-name qwen3.5-4b-finetune \
+  --stages all
 ```
 
-When `<llama-cpp-dir>/.venv/bin/python` exists, the exporter uses it for the
-conversion subprocess. Override it with `--python-bin` only when another
-interpreter is required.
-
-Register from a host Ollama installation by running from the exported model
-directory:
-
-```bash
-cd outputs/ollama/qwen3.5-4b-3dsg-cypher-agent-lora
-ollama create qwen3.5-4b-3dsg-cypher-agent-lora -f Modelfile
-ollama run qwen3.5-4b-3dsg-cypher-agent-lora \
-  "List the objects in room R0."
-```
+When `<llama-cpp-dir>/.venv/bin/python` exists, it is selected for conversion;
+`--python-bin` overrides it. Registration for the benchmark should still use
+the project-local benchmark launcher so local metrics observe the intended
+Ollama container.

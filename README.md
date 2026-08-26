@@ -30,8 +30,10 @@ The public training and evaluation surface is agent-trace based.
 ## Quick Start
 
 The supported default interface is the GPU-required Docker stack. It provides
-the project Python environment, Neo4j, Ollama, CUDA-enabled PyTorch, and
-llama.cpp without requiring host Python package installation.
+the project Python environment, Neo4j, CUDA-enabled PyTorch, and llama.cpp
+without requiring host Python package installation. Ollama runs separately in
+the project-local Heracles benchmark stack so inference metrics have an
+isolated, stable target.
 
 Create the local environment file and set `OPENROUTER_API_KEY` when teacher
 generation is required:
@@ -40,7 +42,7 @@ generation is required:
 cp docker/.env.example docker/.env
 ```
 
-Validate the host, build the main image, and start all three services:
+Validate the host, build the main image, and start the development services:
 
 ```bash
 docker/stack.sh setup
@@ -53,7 +55,7 @@ docker/stack.sh load-neo4j data/scenes/3dsg_uhumans2.json
 docker/stack.sh status
 ```
 
-The Docker stack provides `main`, `neo4j`, and `ollama` services. Neo4j is
+The Docker stack provides `main` and `neo4j` services. Neo4j is
 available inside Docker at `neo4j://neo4j:7683` and from the host at
 `neo4j://127.0.0.1:7683`; HTTP is exposed at `http://127.0.0.1:7469`. The
 username is `neo4j` and the password is `neo4j_pw`. The trace generator
@@ -75,7 +77,7 @@ on the test and challenge splits. Set `DEMO_SCENE`,
 alternative inputs.
 
 Run `docker/stack.sh help` for the ordered first-run guide and command groups.
-See [docs/docker.md](docs/docker.md) for the complete command reference and
+See [docker/README.md](docker/README.md) for the complete command reference and
 [docs/ollama_export.md](docs/ollama_export.md) for model export and registration.
 
 ## Agent Records
@@ -273,14 +275,31 @@ Install a PyTorch build matching the host CUDA or JetPack environment
 separately. Host-side GGUF conversion also requires a separate llama.cpp setup;
 see the host-only section in [docs/ollama_export.md](docs/ollama_export.md).
 
-## Heracles Agents Examples
+## Heracles Benchmark
 
-This repository does not modify
-`/home/coder/workspace/heracles_devel/heracles_agents`. Example YAML files live
-under `examples/heracles_agents/` and point at the expected Ollama model names:
+This repository does not modify or mount
+`/home/coder/workspace/heracles_devel`. The equivalent isolated Docker setup,
+launcher, model manifest, and experiment YAML files live under
+`examples/herables_benchmark/`.
 
-- `qwen3.5-4b-3dsg-cypher-agent-lora`
-- `granite-3b-3dsg-cypher-agent-distiled`
+Run the current Cypher-only base-versus-fine-tuned Ollama sweep with:
+
+```bash
+examples/herables_benchmark/run_benchmark.sh --benchmarks cypher
+```
+
+The launcher also accepts `--benchmarks pddl` or `--benchmarks both` for future
+PDDL-trained models. It registers enabled exports inside its own GPU Ollama
+container, records Heracles local/GPU metrics and raw samples, and writes
+`outputs/heracles_benchmark/model_sweep/report.html`. See the
+[benchmark guide](examples/herables_benchmark/README.md).
+
+Expected fine-tuned Ollama model names include:
+
+- `qwen3.5-4b-finetune`
+- `granite4.1-3b-finetune`
+
+Their base-model counterparts use the `-baseline` suffix (e.g. `qwen3.5-4b-baseline`).
 
 ## Validation Gates
 

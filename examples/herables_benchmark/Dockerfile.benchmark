@@ -1,0 +1,51 @@
+FROM python:3.12-slim
+
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid "${HOST_GID}" benchmark \
+    && useradd \
+        --uid "${HOST_UID}" \
+        --gid "${HOST_GID}" \
+        --create-home \
+        --home-dir /home/benchmark \
+        --shell /bin/bash \
+        benchmark
+
+ENV WORKSPACE_DIR=/home/benchmark/workspace
+RUN mkdir -p "${WORKSPACE_DIR}"
+
+COPY external/heracles/heracles "${WORKSPACE_DIR}/heracles"
+COPY external/heracles_agents "${WORKSPACE_DIR}/heracles_agents"
+
+RUN pip install --no-cache-dir "${WORKSPACE_DIR}/heracles_agents[all]" \
+    && pip install --no-cache-dir --force-reinstall --no-deps \
+        "${WORKSPACE_DIR}/heracles"
+
+COPY examples/herables_benchmark/benchmark_runner.sh \
+     "${WORKSPACE_DIR}/benchmark_runner.sh"
+COPY examples/herables_benchmark/model_manifest.py \
+     "${WORKSPACE_DIR}/model_manifest.py"
+COPY examples/herables_benchmark/config/cypher_student_model_sweep.yaml \
+     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/cypher_student_model_sweep.yaml"
+COPY examples/herables_benchmark/config/pddl_student_model_sweep.yaml \
+     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/pddl_student_model_sweep.yaml"
+COPY examples/herables_benchmark/config/model_lists/students.yaml \
+     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/model_lists/students.yaml"
+
+RUN chmod 0755 \
+        "${WORKSPACE_DIR}/benchmark_runner.sh" \
+        "${WORKSPACE_DIR}/model_manifest.py" \
+    && chown -R benchmark:benchmark /home/benchmark
+
+USER benchmark:benchmark
+WORKDIR "${WORKSPACE_DIR}"
+
+ENV USER=benchmark
+ENV HOME=/home/benchmark
+
+CMD ["bash"]

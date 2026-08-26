@@ -11,9 +11,13 @@ __pycache__/
 
 data/*
 !data/scenes
+
 outputs/*
 !outputs/ollama/
 outputs/ollama/*
 !outputs/ollama/.gitkeep
+!outputs/lora/
+outputs/lora/*
+!outputs/lora/.gitkeep
 
 TODO.md
