@@ -187,13 +187,23 @@ def test_training_renders_native_tool_schema_once_without_mutating_messages():
 
 def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     kwargs = training_arguments_kwargs(
-        {"output_dir": "out", "warmup_steps": 0.03},
+        {
+            "output_dir": "out",
+            "warmup_steps": 2,
+            "load_best_model_at_end": True,
+            "metric_for_best_model": "eval_loss",
+            "greater_is_better": False,
+        },
         has_eval_dataset=True,
     )
 
     assert kwargs["eval_strategy"] == "steps"
+    assert kwargs["save_strategy"] == "steps"
     assert kwargs["disable_tqdm"] is True
-    assert kwargs["warmup_steps"] == 0.03
+    assert kwargs["warmup_steps"] == 2
+    assert kwargs["load_best_model_at_end"] is True
+    assert kwargs["metric_for_best_model"] == "eval_loss"
+    assert kwargs["greater_is_better"] is False
     assert "evaluation_strategy" not in kwargs
     assert "warmup_ratio" not in kwargs
 
@@ -253,6 +263,22 @@ def test_sft_trainer_kwargs_uses_current_processing_class_parameter():
     assert "tokenizer" not in kwargs
     assert "dataset_text_field" not in kwargs
     assert "max_seq_length" not in kwargs
+
+
+def test_sft_trainer_kwargs_passes_configured_callbacks():
+    callback = object()
+
+    kwargs = sft_trainer_kwargs(
+        model="model",
+        tokenizer="tokenizer",
+        train_dataset="train",
+        eval_dataset="eval",
+        training_args="args",
+        peft_config="peft",
+        callbacks=[callback],
+    )
+
+    assert kwargs["callbacks"] == [callback]
 
 
 def test_align_model_token_ids_updates_model_and_generation_config():

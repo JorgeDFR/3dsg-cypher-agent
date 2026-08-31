@@ -15,7 +15,7 @@ OLLAMA_CONTAINER_NAME="3dsg-heracles-benchmark-ollama"
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-3dsg-heracles-benchmark}"
-export BENCHMARK_IMAGE="${BENCHMARK_IMAGE:-${COMPOSE_PROJECT_NAME}-benchmark-ollama:latest}"
+export BENCHMARK_IMAGE="${BENCHMARK_IMAGE:-${COMPOSE_PROJECT_NAME}-main:latest}"
 
 RUN_CYPHER=1
 RUN_PDDL=0
@@ -133,12 +133,12 @@ ensure_benchmark_image() {
   fi
 
   log "Benchmark image not found; building ${BENCHMARK_IMAGE}."
-  compose build benchmark-ollama
+  compose build main
 }
 
 force_build_benchmark_image() {
   log "Force-building the local Heracles benchmark image."
-  compose build benchmark-ollama
+  compose build main
   info "Benchmark image is ready: ${BENCHMARK_IMAGE}"
 }
 
@@ -165,7 +165,7 @@ provision_models() {
       --rm \
       --no-deps \
       --entrypoint python \
-      benchmark-ollama \
+      main \
       /home/benchmark/workspace/model_manifest.py \
       --models-path "${MODEL_MANIFEST_IN_CONTAINER}" \
       --artifacts-root "${MODEL_ARTIFACTS_IN_CONTAINER}" \
@@ -264,7 +264,7 @@ run_sweep() {
   compose run \
     --rm \
     --no-deps \
-    benchmark-ollama \
+    main \
     /home/benchmark/workspace/benchmark_runner.sh \
     "${RUN_CYPHER}" \
     "${RUN_PDDL}" \

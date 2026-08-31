@@ -242,12 +242,6 @@ docker/stack.sh main python scripts/evaluate_student.py \
   --max-new-tokens 1024
 ```
 
-Baseline runs write separate `{split}.baseline.raw-generation.report.json`
-artifacts. The workflow HTML displays them in a Baseline tab alongside the
-fine-tuned results in Validation. Training and both evaluation variants pass the same
-`run_cypher_query` JSON schema through Transformers' native `tools=` chat-template
-interface, including the required `cypher_string` argument and Qwen tool-call format.
-
 Generate a static HTML workflow report for the configured scene:
 
 ```bash

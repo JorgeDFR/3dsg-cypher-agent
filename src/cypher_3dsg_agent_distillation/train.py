@@ -547,14 +547,14 @@ def training_arguments_kwargs(
     training_config: dict[str, Any],
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
-    return {
+    kwargs = {
         "output_dir": training_config["output_dir"],
         "per_device_train_batch_size": int(training_config.get("per_device_train_batch_size", 1)),
         "per_device_eval_batch_size": int(training_config.get("per_device_eval_batch_size", 1)),
         "gradient_accumulation_steps": int(training_config.get("gradient_accumulation_steps", 8)),
         "learning_rate": float(training_config.get("learning_rate", 2e-4)),
         "num_train_epochs": float(training_config.get("num_train_epochs", 3)),
-        "warmup_steps": training_config.get("warmup_steps", 0),
+        "warmup_steps": int(training_config.get("warmup_steps", 0)),
         "logging_steps": int(training_config.get("logging_steps", 10)),
         "eval_steps": int(training_config.get("eval_steps", 100)),
         "save_steps": int(training_config.get("save_steps", 100)),
@@ -564,8 +564,24 @@ def training_arguments_kwargs(
         "gradient_checkpointing": bool(training_config.get("gradient_checkpointing", True)),
         "report_to": training_config.get("report_to", "none"),
         "eval_strategy": "steps" if has_eval_dataset else "no",
+        "save_strategy": training_config.get("save_strategy", "steps"),
         "disable_tqdm": True,
     }
+    if has_eval_dataset:
+        kwargs.update(
+            {
+                "load_best_model_at_end": bool(
+                    training_config.get("load_best_model_at_end", False)
+                ),
+                "metric_for_best_model": training_config.get(
+                    "metric_for_best_model", "eval_loss"
+                ),
+                "greater_is_better": bool(
+                    training_config.get("greater_is_better", False)
+                ),
+            }
+        )
+    return kwargs
 
 
 def sft_config_kwargs(
@@ -593,6 +609,7 @@ def sft_trainer_kwargs(
     training_args,
     peft_config,
     data_collator=None,
+    callbacks=None,
 ) -> dict[str, Any]:
     kwargs = {
         "model": model,
@@ -604,7 +621,28 @@ def sft_trainer_kwargs(
     }
     if data_collator is not None:
         kwargs["data_collator"] = data_collator
+    if callbacks:
+        kwargs["callbacks"] = callbacks
     return kwargs
+
+
+def early_stopping_callback(training_config: dict[str, Any], *, has_eval_dataset: bool):
+    patience = int(training_config.get("early_stopping_patience", 0))
+    if patience <= 0:
+        return None
+    if not has_eval_dataset:
+        raise ValueError("Early stopping requires an evaluation dataset.")
+    if not training_config.get("load_best_model_at_end", False):
+        raise ValueError("Early stopping requires training.load_best_model_at_end=true.")
+
+    from transformers import EarlyStoppingCallback
+
+    return EarlyStoppingCallback(
+        early_stopping_patience=patience,
+        early_stopping_threshold=float(
+            training_config.get("early_stopping_threshold", 0.0)
+        ),
+    )
 
 
 def rich_trainer_progress_callback(progress, task_id):
@@ -714,6 +752,13 @@ def command(args: argparse.Namespace) -> None:
             has_eval_dataset=eval_dataset is not None,
         )
     )
+    callbacks = []
+    stopping_callback = early_stopping_callback(
+        training_config,
+        has_eval_dataset=eval_dataset is not None,
+    )
+    if stopping_callback is not None:
+        callbacks.append(stopping_callback)
 
     trainer = SFTTrainer(
         **sft_trainer_kwargs(
@@ -724,6 +769,7 @@ def command(args: argparse.Namespace) -> None:
             training_args=training_args,
             peft_config=peft_config,
             data_collator=data_collator,
+            callbacks=callbacks,
         )
     )
     try:
@@ -735,10 +781,12 @@ def command(args: argparse.Namespace) -> None:
     with phase_progress("Training student LoRA adapter", 1) as (progress, task_id):
         trainer.add_callback(rich_trainer_progress_callback(progress, task_id))
         train_result = trainer.train()
-    with phase_progress("Saving student adapter", 2) as (progress, task_id):
+    with phase_progress("Saving student adapter", 3) as (progress, task_id):
         trainer.save_model(training_config["output_dir"])
         progress.update(task_id, advance=1, description="Saving tokenizer")
         tokenizer.save_pretrained(training_config["output_dir"])
+        progress.update(task_id, advance=1, description="Saving trainer state")
+        trainer.save_state()
         progress.update(task_id, advance=1)
     metrics = getattr(train_result, "metrics", {}) or {}
     summary_rows = [
@@ -758,6 +806,10 @@ def command(args: argparse.Namespace) -> None:
         if metric in metrics:
             value = metrics[metric]
             summary_rows.append((label, f"{value:.6f}" if isinstance(value, float) else value))
+    if trainer.state.best_model_checkpoint is not None:
+        summary_rows.append(("Best checkpoint", trainer.state.best_model_checkpoint))
+    if trainer.state.best_metric is not None:
+        summary_rows.append(("Best eval metric", f"{trainer.state.best_metric:.6f}"))
     summary_rows.append(("Adapter output", training_config["output_dir"]))
     print_summary("Student LoRA training complete", summary_rows)
 
