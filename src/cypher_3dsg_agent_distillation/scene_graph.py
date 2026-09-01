@@ -327,6 +327,7 @@ def scene_values(
     max_mesh_place_hop_solution_size: int = DEFAULT_MAX_HOP_SOLUTION_SIZE,
     place_hop_counts: tuple[int, ...] = HOP_COUNTS,
     max_place_hop_solution_size: int = DEFAULT_MAX_HOP_SOLUTION_SIZE,
+    max_room_containing_object_cases: int = 50,
 ) -> dict[str, Any]:
     for name, hop_values in (
         ("mesh_place_hop_counts", mesh_place_hop_counts),
@@ -392,6 +393,10 @@ def scene_values(
             index=index,
             limit=max_bboxes,
             max_solution_size=max_bbox_solution_size,
+        ),
+        "room_containing_object_cases": build_room_containing_object_cases(
+            index=index,
+            limit=max_room_containing_object_cases,
         ),
         "place_object_cases": build_place_object_cases(
             index=index,
@@ -876,6 +881,41 @@ def build_place_object_cases(
     return select_balanced_cases(non_empty, empty, limit, non_empty_ratio)
 
 
+def build_room_containing_object_cases(
+    index: SceneIndex,
+    limit: int,
+) -> list[dict[str, str]]:
+    """Select object references round-robin across their containing rooms."""
+    if limit <= 0:
+        return []
+
+    objects_by_region: dict[str, deque[str]] = {}
+    for room in index.rooms_with_class():
+        region = node_symbol(room.id)
+        objects_by_region[region] = deque(
+            node_symbol(obj.id) for obj in index.contained_objects(room)
+        )
+
+    cases: list[dict[str, str]] = []
+    selected_objects: set[str] = set()
+    while len(cases) < limit:
+        added = False
+        for region, object_symbols in objects_by_region.items():
+            while object_symbols and object_symbols[0] in selected_objects:
+                object_symbols.popleft()
+            if not object_symbols:
+                continue
+            object_symbol = object_symbols.popleft()
+            selected_objects.add(object_symbol)
+            cases.append({"object": object_symbol, "region": region})
+            added = True
+            if len(cases) >= limit:
+                break
+        if not added:
+            break
+    return cases
+
+
 def objects_in_bbox(
     index: SceneIndex,
     bbox: dict[str, dict[str, float]],
@@ -1082,6 +1122,7 @@ def build_template_config(
             max_mesh_place_symbols=limits.max_mesh_place_symbols,
             max_points=limits.max_points,
             max_bboxes=limits.max_bboxes,
+            max_room_containing_object_cases=limits.max_room_containing_object_cases,
             max_place_object_cases=limits.max_place_object_cases,
             max_radius_cases=limits.max_radius_cases,
             max_nearest_mesh_cases=limits.max_nearest_mesh_cases,
@@ -1115,31 +1156,12 @@ def command(args: argparse.Namespace) -> None:
             sort_keys=False,
             allow_unicode=True,
         )
-    values = config["values"]
-    mesh_hops = sorted({case["hops"] for case in values["mesh_place_hop_cases"]})
-    place_hops = sorted({case["hops"] for case in values["place_hop_cases"]})
     print_summary(
         "Scene template values extracted",
         [
             ("Scene", config["scene_id"]),
             ("Nodes", sum(config["scene_summary"]["nodes"].values())),
             ("Edges", config["scene_summary"]["edges"]),
-            ("Object classes", len(values["object_classes"])),
-            ("Mesh-place-hop cases", len(values["mesh_place_hop_cases"])),
-            ("Place-hop cases", len(values["place_hop_cases"])),
-            (
-                "Mesh-place-hop range",
-                f"{mesh_hops[0]}-{mesh_hops[-1]}" if mesh_hops else "none",
-            ),
-            (
-                "Place-hop range",
-                f"{place_hops[0]}-{place_hops[-1]}" if place_hops else "none",
-            ),
-            (
-                "Hop answer limits",
-                f"mesh place < {args.max_mesh_place_hop_solution_size}; "
-                f"place < {args.max_place_hop_solution_size}",
-            ),
             ("Output", output),
         ],
     )
@@ -1156,6 +1178,7 @@ def main() -> None:
     parser.add_argument("--max-mesh-place-symbols", type=int, default=50)
     parser.add_argument("--max-points", type=int, default=50)
     parser.add_argument("--max-bboxes", type=int, default=50)
+    parser.add_argument("--max-room-containing-object-cases", type=int, default=50)
     parser.add_argument("--max-place-object-cases", type=int, default=50)
     parser.add_argument("--max-radius-cases", type=int, default=50)
     parser.add_argument("--max-nearest-mesh-cases", type=int, default=60)

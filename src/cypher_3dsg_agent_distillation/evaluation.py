@@ -352,15 +352,30 @@ def row_values(
     return values
 
 
-def row_count_value(rows: list[dict[str, Any]]) -> int | float:
+def row_count_value(
+    rows: list[dict[str, Any]],
+    preferred_keys: list[str] | None = None,
+) -> int | float:
     if not rows:
         return 0
     row = rows[0]
+    for key in preferred_keys or []:
+        value = row.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return value
     value = row.get("count")
     if isinstance(value, int | float) and not isinstance(value, bool):
         return value
     for key, value in row.items():
         if key.lower().startswith("count(") and isinstance(value, int | float):
+            return value
+    for key, value in row.items():
+        normalized_key = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+        if (
+            (normalized_key == "count" or normalized_key.endswith("_count"))
+            and isinstance(value, int | float)
+            and not isinstance(value, bool)
+        ):
             return value
     if len(row) == 1:
         value = next(iter(row.values()))
@@ -466,9 +481,16 @@ def rows_to_solution_value(
             )
         )
     if query_type == "room_adjacency_count":
-        if not rows:
-            return 0
-        return rows[0].get("adjacent_rooms", 0)
+        return row_count_value(
+            rows,
+            preferred_keys=[
+                "adjacent_rooms",
+                "neighbor_count",
+                "neighbour_count",
+                "adjacency_count",
+                "room_count",
+            ],
+        )
     if query_type == "place_hops":
         return scalar_or_set(
             row_values(

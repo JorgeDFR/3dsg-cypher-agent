@@ -12,5 +12,5 @@ scene_graph_description: |
 
     Building nodes represent the highest-level region. Building node symbols use the form B<id>.
 
-    The hierarchy is strict: objects are contained by places or mesh places; places and mesh places are contained by rooms when room nodes are available; rooms are contained by buildings when building nodes are available. Use transitive CONTAINS traversal for hierarchy queries.
+    The hierarchy is strict: objects are contained by places or mesh places; places and mesh places are contained by rooms when room nodes are available; rooms are contained by buildings when building nodes are available. There is no direct Room-to-Object CONTAINS edge. Use a bounded two-edge traversal, (r:Room)-[:CONTAINS*2..2]->(o:Object), for Room-to-Object hierarchy queries.
   </Scene Graph Description>

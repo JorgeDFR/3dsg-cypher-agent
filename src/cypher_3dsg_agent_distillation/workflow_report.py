@@ -34,6 +34,7 @@ LABEL_OVERRIDES = {
     "3d": "3D",
     "3dsg": "3DSG",
     "pddl": "PDDL",
+    "qa": "QA",
     "sldp": "SLDP",
     "usd": "USD",
     "url": "URL",
@@ -121,6 +122,18 @@ def task_family(record: dict[str, Any]) -> str:
 
 def count_by_task_family(records: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(Counter(task_family(record) for record in records).items()))
+
+
+def output_type(record: dict[str, Any]) -> str:
+    metadata = record.get("metadata") or {}
+    value = record.get("output_type") or metadata.get("output_type")
+    if value:
+        return str(value)
+    return "PDDL" if task_family(record) == "cypher_pddl" else "SLDP"
+
+
+def is_pddl_record(record: dict[str, Any]) -> bool:
+    return task_family(record) == "cypher_pddl"
 
 
 def count_tags(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -245,6 +258,8 @@ def compact_question_record(record: dict[str, Any], split: str | None = None) ->
     row = {
         "uid": record.get("uid"),
         "split": split,
+        "task_family": task_family(record),
+        "output_type": output_type(record),
         "task_type": task_type(record),
         "question": record.get("question"),
         "tags": record.get("tags") or [],
@@ -252,6 +267,16 @@ def compact_question_record(record: dict[str, Any], split: str | None = None) ->
         "solution": clean_detail_text(record_solution(record) or ""),
     }
     return {key: value for key, value in row.items() if value not in (None, "", [])}
+
+
+def expected_output_blocks(record: dict[str, Any]) -> dict[str, Any]:
+    solution = record_solution(record)
+    if is_pddl_record(record):
+        return {
+            "expected_pddl_goal": solution,
+            "expected_grounding": record.get("grounding"),
+        }
+    return {"solution": solution}
 
 
 def optimized_from_record(record: dict[str, Any], split: str) -> dict[str, Any] | None:
@@ -370,15 +395,15 @@ def question_detail(record: dict[str, Any], *, title: str | None = None) -> dict
         "title": title or str(record.get("question") or record.get("uid") or "Question"),
         "fields": {
             "uid": record.get("uid"),
+            "task_family": task_family(record),
+            "output_type": output_type(record),
             "task_type": task_type(record),
             "question": record.get("question"),
             "tags": record.get("tags") or [],
-            "solution": record.get("expected_solution")
-            or record.get("real_solution")
-            or record.get("solution"),
         },
         "sections": {
             "gold_cypher": record_gold_cypher(record),
+            **expected_output_blocks(record),
             "metadata": record.get("metadata"),
         },
     }
@@ -396,6 +421,8 @@ def split_question_row(
     return {
         "uid": record.get("uid"),
         "split": split,
+        "task_family": task_family(record),
+        "output_type": output_type(record),
         "task_type": task_type(record),
         "question": record.get("question"),
         "tags": tags_for_record(record, tag_lookup),
@@ -440,7 +467,7 @@ def split_question_detail(
             "question": record.get("question"),
             "gold_cypher": gold_cypher_for_record(record, gold_cypher_lookup),
             "model_cypher": record_model_cypher(record),
-            "solution": record_solution(record),
+            **expected_output_blocks(record),
         },
         "show_empty_blocks": True,
         "sections": {
@@ -467,6 +494,8 @@ def merged_trace_records(data: dict[str, Any]) -> list[dict[str, Any]]:
             "record": record,
             "uid": record.get("uid"),
             "seed_uid": record.get("seed_uid") or (record.get("metadata") or {}).get("seed_uid"),
+            "task_family": task_family(record),
+            "output_type": output_type(record),
             "task_type": task_type(record),
             "question": record.get("question"),
             "rejected": False,
@@ -482,6 +511,8 @@ def merged_trace_records(data: dict[str, Any]) -> list[dict[str, Any]]:
             "record": record,
             "uid": record.get("uid"),
             "seed_uid": record.get("seed_uid") or (record.get("metadata") or {}).get("seed_uid"),
+            "task_family": task_family(record),
+            "output_type": output_type(record),
             "task_type": task_type(record),
             "question": record.get("question"),
             "rejected": True,
@@ -499,6 +530,8 @@ def merged_trace_records(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "uid": record.get("uid"),
                 "seed_uid": record.get("seed_uid")
                 or (record.get("metadata") or {}).get("seed_uid"),
+                "task_family": task_family(record),
+                "output_type": output_type(record),
                 "task_type": task_type(record),
                 "question": record.get("question"),
                 "rejected": False,
@@ -514,6 +547,7 @@ def merged_trace_records(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def trace_detail(row: dict[str, Any], gold_cypher_lookup: dict[str, Any]) -> dict[str, Any]:
     record = row["record"]
+    validation = record.get("validation") or {}
     return {
         "title": "Trace Details",
         "fields": {
@@ -525,12 +559,21 @@ def trace_detail(row: dict[str, Any], gold_cypher_lookup: dict[str, Any]) -> dic
                 "question",
                 "final_answer",
             }
+        }
+        | {
+            key: validation.get(key)
+            for key in (
+                "tool_result_match",
+                "final_answer_domain_valid",
+                "answer_grounded",
+            )
+            if validation.get(key) is not None
         },
         "blocks": {
             "question": row.get("question"),
             "gold_cypher": gold_cypher_for_record(record, gold_cypher_lookup),
             "model_cypher": record_model_cypher(record),
-            "solution": record_solution(record),
+            **expected_output_blocks(record),
             "answer": record.get("final_answer"),
         },
         "show_empty_blocks": True,
@@ -555,6 +598,26 @@ def split_task_type_pivot(by_task_type: dict[str, dict[str, int]]) -> list[dict[
         row = {"task_type": task_type_name}
         for split in SPLITS:
             row[split] = by_task_type.get(split, {}).get(task_type_name, 0)
+        row["total"] = sum(int(row[split]) for split in SPLITS)
+        rows.append(row)
+    return rows
+
+
+def split_task_family_pivot(
+    by_task_family: dict[str, dict[str, int]],
+) -> list[dict[str, Any]]:
+    families = sorted(
+        {
+            family
+            for counts in by_task_family.values()
+            for family in counts
+        }
+    )
+    rows = []
+    for family in families:
+        row = {"task_family": family}
+        for split in SPLITS:
+            row[split] = by_task_family.get(split, {}).get(family, 0)
         row["total"] = sum(int(row[split]) for split in SPLITS)
         rows.append(row)
     return rows
@@ -693,7 +756,9 @@ def collect_workflow_report_data(
             "teacher_by_task_type": count_by_task_type(teacher_traces),
             "teacher_by_task_family": count_by_task_family(teacher_traces),
             "accepted_by_task_type": count_by_task_type(accepted_traces),
+            "accepted_by_task_family": count_by_task_family(accepted_traces),
             "rejected_by_task_type": count_by_task_type(rejected_traces),
+            "rejected_by_task_family": count_by_task_family(rejected_traces),
             "rejected_reasons": dict(
                 sorted(
                     Counter(
@@ -1021,6 +1086,7 @@ def render_detail_section(
         render_payload,
         preserve_newlines=(
             name in {"expected_cypher", "generated_cypher"}
+            or name.endswith("_pddl_goal")
             or name.endswith(("_rendered_prompt", "_raw_completion"))
         ),
     )
@@ -1293,24 +1359,33 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
 def render_generated_questions_tab(data: dict[str, Any]) -> str:
     section = data["generated_questions"]
     rows = [compact_question_record(record) for record in section["records"]]
+    details = [
+        question_detail(record, title="Generated Question Details")
+        for record in section["records"]
+    ]
     return (
         "<h2>Generated Questions</h2>"
         + render_metric_grid(
             {
                 "generated questions": len(section["records"]),
                 "task types": len(section["by_task_type"]),
+                "task families": len(section["by_task_family"]),
             }
         )
         + render_counter_grid(
             [
-                ("Task Type", section["by_task_type"]),
                 ("Tags", section["tag_counts"]),
+                ("Task Type", section["by_task_type"]),
+                ("Task Family", section["by_task_family"]),
             ]
         )
         + "<h3>Questions</h3>"
-        + render_table(
-            [
+        + render_interactive_record_table(
+            section_id="generated-questions",
+            headers=[
                 ("uid", "uid"),
+                ("task_family", "task_family"),
+                ("output_type", "output_type"),
                 ("task_type", "task_type"),
                 ("tags", "tags"),
                 ("question", "question"),
@@ -1318,7 +1393,7 @@ def render_generated_questions_tab(data: dict[str, Any]) -> str:
                 ("solution", "solution"),
             ],
             rows=rows,
-            filterable=True,
+            details=details,
         )
     )
 
@@ -1347,6 +1422,7 @@ def render_traces_tab(data: dict[str, Any]) -> str:
             section_id="trace-outcomes",
             headers=[
                 ("uid", "uid"),
+                ("task_family", "task_family"),
                 ("task_type", "task_type"),
                 ("question", "question"),
                 ("rejected", "rejected"),
@@ -1374,6 +1450,7 @@ def render_splits_tab(data: dict[str, Any]) -> str:
         for split, records in records_by_split.items()
     ]
     task_rows = split_task_type_pivot(splits["by_task_type"])
+    family_rows = split_task_family_pivot(splits["by_task_family"])
     split_question_rows = [
         split_question_row(record, split, optimized_lookup, tag_lookup)
         for split, records in records_by_split.items()
@@ -1414,12 +1491,26 @@ def render_splits_tab(data: dict[str, Any]) -> str:
             task_rows,
             table_class="equal-columns",
         )
+        + "<h3>Task Families Per Split</h3>"
+        + render_table(
+            [
+                ("task_family", "task_family"),
+                ("train", "train"),
+                ("eval", "eval"),
+                ("test", "test"),
+                ("challenge", "challenge"),
+                ("total", "total"),
+            ],
+            family_rows,
+            table_class="equal-columns",
+        )
         + "<h3>Split Questions</h3>"
         + render_interactive_record_table(
             section_id="split-questions",
             headers=[
                 ("uid", "uid"),
                 ("split", "split"),
+                ("task_family", "task_family"),
                 ("task_type", "task_type"),
                 ("question", "question"),
                 ("tags", "tags"),
@@ -1509,23 +1600,68 @@ def bool_rate(records: list[dict[str, Any]], section: str, key: str) -> float | 
     return sum(1 for value in evaluated if bool(value)) / len(evaluated)
 
 
-def raw_generation_summary_fallback_row(report: dict[str, Any]) -> dict[str, Any]:
+def bool_rate_first(
+    records: list[dict[str, Any]],
+    section: str,
+    keys: tuple[str, ...],
+) -> float | None:
+    evaluated = []
+    for record in records:
+        section_record = record.get(section)
+        if not isinstance(section_record, dict):
+            continue
+        value = next(
+            (section_record.get(key) for key in keys if section_record.get(key) is not None),
+            None,
+        )
+        if value is not None:
+            evaluated.append(bool_or_none(value))
+    if not evaluated:
+        return None
+    return sum(1 for value in evaluated if bool(value)) / len(evaluated)
+
+
+def raw_generation_summary_fallback_row(
+    report: dict[str, Any],
+    task_family_name: str,
+) -> dict[str, Any]:
     summary = report.get("summary") or {}
-    final_answer = summary.get(FINAL_ANSWER_CHECK) or {}
-    tool_call = summary.get(TOOL_CALL_CHECK) or {}
+    family_summary = (summary.get("by_task_family") or {}).get(task_family_name) or {}
+    summary_section = family_summary or summary
+    final_answer = summary_section.get(FINAL_ANSWER_CHECK) or {}
+    tool_call = summary_section.get(TOOL_CALL_CHECK) or {}
+    match_key = "grounding_match" if task_family_name == "cypher_pddl" else "cypher_solution_match"
+    result_match = rate_value(tool_call, "rates", match_key)
+    if result_match is None:
+        result_match = rate_value(tool_call, "rates", "tool_result_match")
+    if result_match is None:
+        result_match = rate_value(tool_call, "rates", "cypher_solution_match")
     return {
         "task_type": "All",
-        "examples": summary.get("examples"),
+        "examples": summary_section.get(
+            "examples",
+            final_answer.get("total", summary.get("examples")),
+        ),
         "final_answer_match": rate_value(final_answer, "rates", "final_answer_match"),
+        "final_answer_domain_valid": rate_value(
+            final_answer, "rates", "final_answer_domain_valid"
+        ),
         "tool_call_executable": rate_value(tool_call, "rates", "executable"),
-        "cypher_solution_match": rate_value(tool_call, "rates", "cypher_solution_match"),
+        "result_match": result_match,
     }
 
 
-def raw_generation_task_type_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
-    records = report.get("records") or []
+def raw_generation_task_type_rows(
+    report: dict[str, Any],
+    task_family_name: str,
+) -> list[dict[str, Any]]:
+    records = [
+        record
+        for record in report.get("records") or []
+        if task_family(record) == task_family_name
+    ]
     if not records:
-        return [raw_generation_summary_fallback_row(report)]
+        return [raw_generation_summary_fallback_row(report, task_family_name)]
 
     grouped: dict[str, list[dict[str, Any]]] = {"All": list(records)}
     for record in records:
@@ -1542,15 +1678,26 @@ def raw_generation_task_type_rows(report: dict[str, Any]) -> list[dict[str, Any]
                     FINAL_ANSWER_CHECK,
                     "final_answer_match",
                 ),
+                "final_answer_domain_valid": bool_rate(
+                    task_records,
+                    FINAL_ANSWER_CHECK,
+                    "final_answer_domain_valid",
+                ),
                 "tool_call_executable": bool_rate(
                     task_records,
                     TOOL_CALL_CHECK,
                     "executable",
                 ),
-                "cypher_solution_match": bool_rate(
+                "result_match": bool_rate_first(
                     task_records,
                     TOOL_CALL_CHECK,
-                    "cypher_solution_match",
+                    (
+                        "grounding_match"
+                        if task_family_name == "cypher_pddl"
+                        else "cypher_solution_match",
+                        "tool_result_match",
+                        "cypher_solution_match",
+                    ),
                 ),
             }
         )
@@ -1568,11 +1715,23 @@ def validation_example_rows(
         if not isinstance(report, dict):
             continue
         for record in report.get("records") or []:
+            family = task_family(record)
+            pddl = family == "cypher_pddl"
             final_answer = record.get(FINAL_ANSWER_CHECK) or {}
             tool_call = record.get(TOOL_CALL_CHECK) or {}
+            result_match = bool_or_none(
+                tool_call.get(
+                    "grounding_match" if pddl else "cypher_solution_match",
+                    tool_call.get(
+                        "tool_result_match", tool_call.get("cypher_solution_match")
+                    ),
+                )
+            )
             row = {
                 "uid": record.get("uid"),
                 "split": split,
+                "task_family": family,
+                "output_type": output_type(record),
                 "task_type": task_type(record),
                 "question": record.get("question"),
                 "tool_call_status": tool_call.get("status"),
@@ -1581,8 +1740,10 @@ def validation_example_rows(
                     tool_call.get("tool_call_parse_success")
                 ),
                 "tool_call_executable": bool_or_none(tool_call.get("executable")),
-                "cypher_solution_match": bool_or_none(
-                    tool_call.get("cypher_solution_match")
+                "cypher_solution_match": None if pddl else result_match,
+                "grounding_match": result_match if pddl else None,
+                "final_answer_domain_valid": bool_or_none(
+                    final_answer.get("final_answer_domain_valid")
                 ),
                 "final_answer_match": bool_or_none(
                     final_answer.get("final_answer_match")
@@ -1603,6 +1764,19 @@ def validation_example_rows(
                 "final_answer": final_answer.get("generated_text"),
                 "final_answer_value": final_answer.get("generated_answer"),
             }
+            if pddl:
+                expected = {
+                    **expected,
+                    "pddl_goal": expected.get("pddl_goal")
+                    or expected.get("cypher_solution"),
+                    "grounding": expected.get("grounding")
+                    or tool_call.get("expected_grounding"),
+                }
+                generated = {
+                    **generated,
+                    "actual_grounding": generated.get("actual_grounding")
+                    or tool_call.get("actual_grounding"),
+                }
             generation_debug = record.get("generation_debug") or {}
             cypher_generation = generation_debug.get("cypher_generation") or {}
             final_answer_generation = (
@@ -1635,26 +1809,48 @@ def validation_example_rows(
                 }.items()
                 if value not in (None, "", [], {})
             }
+            detail_blocks = {
+                "question": record.get("question"),
+                "expected_cypher": expected.get("cypher"),
+                "generated_cypher": generated.get("cypher"),
+                "cypher_tool_output": generated.get("cypher_tool_output"),
+            }
+            if pddl:
+                detail_blocks.update(
+                    {
+                        "expected_pddl_goal": expected.get("pddl_goal"),
+                        "expected_grounding": expected.get("grounding"),
+                        "actual_grounding": generated.get("actual_grounding"),
+                        "grounding_validation_issues": {
+                            "status": tool_call.get("status"),
+                            "grounding_match": result_match,
+                        }
+                        if tool_call.get("status") != "pass" or result_match is False
+                        else {},
+                    }
+                )
+            else:
+                detail_blocks.update(
+                    {
+                        "expected_cypher_solution": expected.get("cypher_solution"),
+                        "generated_cypher_solution": generated.get("cypher_solution"),
+                    }
+                )
+            detail_blocks.update(
+                {
+                    "cypher_validation_issues": cypher_validation_issues,
+                    "expected_final_answer": expected.get("final_answer"),
+                    "generated_final_answer": generated.get("final_answer"),
+                    "final_answer_validation_issues": final_answer_validation_issues,
+                }
+            )
             details.append(
                 {
                     "title": detail_title,
                     "fields": {
                         key: value for key, value in row.items() if key != "question"
                     },
-                    "blocks": {
-                        "question": record.get("question"),
-                        "expected_cypher": expected.get("cypher"),
-                        "generated_cypher": generated.get("cypher"),
-                        "cypher_tool_output": generated.get("cypher_tool_output"),
-                        "expected_cypher_solution": expected.get("cypher_solution"),
-                        "generated_cypher_solution": generated.get("cypher_solution"),
-                        "cypher_validation_issues": cypher_validation_issues,
-                        "expected_final_answer": expected.get("final_answer"),
-                        "generated_final_answer": generated.get("final_answer"),
-                        "final_answer_validation_issues": (
-                            final_answer_validation_issues
-                        ),
-                    },
+                    "blocks": detail_blocks,
                     "show_empty_blocks": True,
                     "sections": {
                         "cypher_generation_rendered_prompt": cypher_generation.get(
@@ -1677,11 +1873,21 @@ def validation_example_rows(
 
 def validation_main_rows(
     raw_generation_reports: dict[str, dict[str, Any] | None],
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
     rows = {}
     for split, report in raw_generation_reports.items():
         if isinstance(report, dict):
-            rows[split] = raw_generation_task_type_rows(report)
+            records = report.get("records") or []
+            families = {task_family(record) for record in records}
+            families.update(
+                ((report.get("summary") or {}).get("by_task_family") or {}).keys()
+            )
+            if not families:
+                families.add("cypher_qa")
+            rows[split] = {
+                family: raw_generation_task_type_rows(report, family)
+                for family in sorted(families)
+            }
     return rows
 
 
@@ -1698,20 +1904,28 @@ def render_raw_generation_tab(
         detail_title=f"{title} Example Details",
     )
     summary_tables = []
-    for split, rows in raw_rows_by_split.items():
-        summary_tables.append(
-            f"<h4>{escape(humanize_label(split))}</h4>"
-            + render_table(
-                [
-                    ("task_type", "task_type"),
-                    ("examples", "examples"),
-                    ("final_answer_match", "final_answer_match"),
-                    ("tool_call_executable", "tool_call_executable"),
-                    ("cypher_solution_match", "cypher_solution_match"),
-                ],
-                rows,
-                table_class="equal-columns",
+    for split, family_rows in raw_rows_by_split.items():
+        family_tables = []
+        for family, rows in family_rows.items():
+            result_label = (
+                "grounding_match" if family == "cypher_pddl" else "cypher_solution_match"
             )
+            family_tables.append(
+                f"<h5>{escape(humanize_label(family))}</h5>"
+                + render_table(
+                    [
+                        ("task_type", "task_type"),
+                        ("examples", "examples"),
+                        ("final_answer_match", "final_answer_match"),
+                        ("tool_call_executable", "tool_call_executable"),
+                        ("result_match", result_label),
+                    ],
+                    rows,
+                    table_class="equal-columns",
+                )
+            )
+        summary_tables.append(
+            f"<h4>{escape(humanize_label(split))}</h4>" + "".join(family_tables)
         )
     return (
         f"<h2>{escape(title)}</h2>"
@@ -1723,6 +1937,8 @@ def render_raw_generation_tab(
             headers=[
                 ("uid", "uid"),
                 ("split", "split"),
+                ("task_family", "task_family"),
+                ("output_type", "output_type"),
                 ("task_type", "task_type"),
                 ("question", "question"),
                 ("tool_call_status", "tool_call_status"),
@@ -1730,6 +1946,8 @@ def render_raw_generation_tab(
                 ("tool_call_parse_success", "tool_call_parse_success"),
                 ("tool_call_executable", "tool_call_executable"),
                 ("cypher_solution_match", "cypher_solution_match"),
+                ("grounding_match", "grounding_match"),
+                ("final_answer_domain_valid", "final_answer_domain_valid"),
                 ("final_answer_match", "final_answer_match"),
             ],
             rows=example_rows,

@@ -68,7 +68,7 @@ templates:
     variables:
       room: room_symbols
     cypher: |
-      MATCH (r:Room {nodeSymbol: "{room}"})-[:CONTAINS*]->(o:Object)
+      MATCH (r:Room {nodeSymbol: "{room}"})-[:CONTAINS*2..2]->(o:Object)
       RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
       ORDER BY object
     questions:
@@ -83,7 +83,7 @@ templates:
     variables:
       room_class: room_classes
     cypher: |
-      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*]->(o:Object)
+      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object)
       RETURN DISTINCT o.nodeSymbol AS object, o.class AS class
       ORDER BY object
     questions:

@@ -98,6 +98,23 @@ def test_rows_to_solution_text_accepts_unaliased_neo4j_expression_keys():
     )
 
 
+def test_room_adjacency_count_accepts_gold_and_generated_count_aliases():
+    record = {
+        "query_type": "room_adjacency_count",
+        "solution": 3,
+        "solution_formats": ["int"],
+    }
+
+    assert rows_to_solution_text(
+        record,
+        [{"room": "R1", "adjacent_rooms": 3}],
+    ) == "3"
+    assert rows_to_solution_text(
+        record,
+        [{"room": "R1", "neighbor_count": 3}],
+    ) == "3"
+
+
 def test_rows_to_solution_text_flattens_collected_point_values():
     record = {
         "query_type": "object_class_centers",

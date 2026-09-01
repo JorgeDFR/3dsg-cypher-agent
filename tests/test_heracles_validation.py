@@ -88,6 +88,20 @@ def test_pddl_invalid_format_is_reported():
     assert not correct
 
 
+def test_pddl_mismatch_does_not_print_dependency_diagnostics(capsys):
+    valid_format, correct = answer_matches_with_heracles(
+        "(at-place p31)",
+        "(and (visited-place p31) (in-region R2))",
+        "PDDL",
+    )
+
+    captured = capsys.readouterr()
+    assert valid_format
+    assert not correct
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 def test_pddl_domain_validation_rejects_unknown_predicate_wrong_arity_and_type():
     assert validate_pddl_goal("(teleported-object O1)")[0] is False
     assert validate_pddl_goal("(holding O1 O2)")[0] is False

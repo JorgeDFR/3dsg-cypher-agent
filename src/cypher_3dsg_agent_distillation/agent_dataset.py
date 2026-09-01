@@ -42,7 +42,7 @@ def read_agent_jsonl(path: str | Path) -> list[AgentTraceRecord]:
 
 
 def record_task_key(record: AgentTraceRecord) -> str:
-    if record.task_family == "cypher_qa":
+    if record.task_family in {"cypher_qa", "cypher_pddl"}:
         return record.task_type
     return f"{record.task_family}/{record.task_type}"
 
@@ -53,10 +53,10 @@ def cap_by_task_type(
 ) -> list[AgentTraceRecord]:
     if max_per_task_type is None:
         return records
-    counts: Counter[str] = Counter()
+    counts: Counter[tuple[str, str]] = Counter()
     capped = []
     for record in records:
-        task_key = record_task_key(record)
+        task_key = (record.task_family, record.task_type)
         if counts[task_key] >= max_per_task_type:
             continue
         capped.append(record)

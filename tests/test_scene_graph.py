@@ -7,7 +7,10 @@ from cypher_3dsg_agent_distillation.heracles_loader import (
     labelspace_from_metadata,
     write_heracles_labelspace,
 )
-from cypher_3dsg_agent_distillation.load_neo4j import extract_graph_records
+from cypher_3dsg_agent_distillation.load_neo4j import (
+    extract_graph_records,
+    relationship_for,
+)
 from cypher_3dsg_agent_distillation.scene_graph import (
     SceneIndex,
     node_symbol,
@@ -46,6 +49,10 @@ def test_extract_scene_values_from_spark_dsg():
     assert values["mesh_place_symbols"][:3] == ["P5670", "P5671", "P5672"]
     index = SceneIndex(SCENE_PATH)
     assert len(values["bboxes"]) == 50
+    assert len(values["room_containing_object_cases"]) == 50
+    assert {
+        case["region"] for case in values["room_containing_object_cases"][:8]
+    } == {f"R{index}" for index in range(8)}
     assert all(len(objects_in_bbox(index, bbox)) <= 20 for bbox in values["bboxes"])
     assert len(values["place_object_cases"]) == 50
     assert len(values["object_radius_cases"]) == 50
@@ -81,7 +88,24 @@ def test_extract_graph_records_from_spark_dsg():
         ("Place", "CONTAINS", "Object"),
         ("Place", "PLACE_CONNECTED", "Place"),
         ("MeshPlace", "MESH_PLACE_CONNECTED", "MeshPlace"),
+        ("Room", "CONTAINS", "Place"),
+        ("Room", "ROOM_CONNECTED", "Room"),
     }
+
+
+def test_neo4j_loader_models_room_to_object_containment_as_two_edges():
+    assert relationship_for("Room", "Place") == ("Room", "CONTAINS", "Place")
+    assert relationship_for("Room", "MeshPlace") == (
+        "Room",
+        "CONTAINS",
+        "MeshPlace",
+    )
+    assert relationship_for("Place", "Object") == ("Place", "CONTAINS", "Object")
+    assert relationship_for("MeshPlace", "Object") == (
+        "MeshPlace",
+        "CONTAINS",
+        "Object",
+    )
 
 
 def test_heracles_labelspace_uses_embedded_spark_dsg_labels(tmp_path):
@@ -102,7 +126,7 @@ def test_solution_for_returns_simplified_values():
 
     solution = index.solution_for("object_class_centers", variables)
 
-    assert solution == "POINT(11.832 26.993 1.432)"
+    assert solution == "POINT(11.830 27.001 1.435)"
 
 
 def test_simplified_spatial_solutions_use_object_symbols():
@@ -122,7 +146,7 @@ def test_simplified_spatial_solutions_use_object_symbols():
     )
 
     assert nearest == "O8"
-    assert radius == {"O166", "O261", "O498"}
+    assert radius == "O166"
 
 
 def test_object_class_inventory_uses_object_labels_only():
@@ -142,15 +166,21 @@ def test_room_pddl_solutions_support_class_and_object_containment_references():
         "R0"
     ]
     assert index.solution_for("pddl_end_in_room_class", {"room_class": "lounge"}) == [
-        "R0",
-        "R1",
-        "R2",
-        "R3",
-        "R4",
-        "R5",
-        "R6",
-        "R7",
+        "R0"
     ]
+
+
+def test_room_containing_object_cases_are_balanced_across_regions():
+    values = scene_values(SCENE_PATH, 30, 50, 10, 10, 3)
+    region_counts = Counter(
+        case["region"] for case in values["room_containing_object_cases"][:20]
+    )
+
+    assert set(region_counts) == {f"R{index}" for index in range(8)}
+    assert max(region_counts.values()) - min(region_counts.values()) <= 1
+    assert len(
+        {case["object"] for case in values["room_containing_object_cases"]}
+    ) == len(values["room_containing_object_cases"])
 
 
 def test_curated_cases_include_empty_and_non_empty_solutions():

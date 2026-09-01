@@ -117,6 +117,11 @@ def static_checks(
         return []
 
     policy = policy or {}
+    schema_check_cypher = re.sub(
+        r"\{[A-Za-z_][A-Za-z0-9_.]*\}",
+        "",
+        cypher,
+    )
     issues = []
     issues.extend(forbidden_function_issues(cypher, policy))
     if not allow_writes:
@@ -127,13 +132,17 @@ def static_checks(
 
     allowed_labels = policy.get("labels")
     if allowed_labels:
-        for label in sorted(set(re.findall(r":`?([A-Za-z_][A-Za-z0-9_]*)`?", cypher))):
+        for label in sorted(
+            set(re.findall(r":`?([A-Za-z_][A-Za-z0-9_]*)`?", schema_check_cypher))
+        ):
             if label not in allowed_labels and label not in policy.get("relationships", set()):
                 issues.append(f"unknown label: {label}")
 
     allowed_relationships = policy.get("relationships")
     if allowed_relationships:
-        for relationship in sorted(set(re.findall(r"\[:`?([A-Z_][A-Z0-9_]*)`?", cypher))):
+        for relationship in sorted(
+            set(re.findall(r"\[:`?([A-Z_][A-Z0-9_]*)`?", schema_check_cypher))
+        ):
             if relationship not in allowed_relationships:
                 issues.append(f"unknown relationship: {relationship}")
 
@@ -141,7 +150,7 @@ def static_checks(
     if allowed_properties:
         property_matches = re.findall(
             r"\b([A-Za-z_][A-Za-z0-9_]*)\.`?([A-Za-z_][A-Za-z0-9_]*)`?",
-            cypher,
+            schema_check_cypher,
         )
         for variable_name, property_name in sorted(set(property_matches)):
             if variable_name == "point":

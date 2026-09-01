@@ -2,6 +2,7 @@ import argparse
 import logging
 
 import cypher_3dsg_agent_distillation.neo4j_validation as validation
+from cypher_3dsg_agent_distillation.config import load_yaml
 from cypher_3dsg_agent_distillation.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
@@ -41,6 +42,30 @@ def test_static_checks_accept_valid_3dsg_query():
         policy=schema_policy(SCHEMA),
     )
     assert issues == []
+
+
+def test_generated_room_object_queries_pass_bounded_path_policy():
+    policy = schema_policy(load_yaml("configs/schema_3dsg.yaml"))
+    query_types = {
+        "objects_in_room_symbol",
+        "objects_in_room_class",
+        "pddl_visit_room_containing_object",
+        "pddl_end_in_room_containing_object",
+    }
+    templates = []
+    for path in (
+        "configs/question_templates/cypher_qa_3dsg.yaml",
+        "configs/question_templates/cypher_pddl_3dsg.yaml",
+    ):
+        templates.extend(load_yaml(path)["templates"])
+
+    queries = [
+        template["cypher"]
+        for template in templates
+        if template["query_type"] in query_types
+    ]
+    assert len(queries) == len(query_types)
+    assert all(static_checks(query, allow_writes=False, policy=policy) == [] for query in queries)
 
 
 def test_static_checks_reject_unknown_schema_and_unbounded_paths():

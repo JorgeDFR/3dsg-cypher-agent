@@ -56,6 +56,7 @@ class QuestionCandidate:
     record: dict[str, Any]
     has_solution: bool
     variable_key: str
+    sampling_group_key: str | None
     variant_index: int
 
 
@@ -218,26 +219,51 @@ def diverse_candidate_sample(
     rng: random.Random,
     variant_usage: Counter[int],
 ) -> list[QuestionCandidate]:
-    """Maximize distinct variables before reusing one with another wording."""
+    """Balance configured groups and maximize distinct variables within each group."""
     if count <= 0:
         return []
 
-    by_variable: dict[str, list[QuestionCandidate]] = defaultdict(list)
+    by_group: dict[str, dict[str, list[QuestionCandidate]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for candidate in candidates:
-        by_variable[candidate.variable_key].append(candidate)
-    variable_keys = list(by_variable)
-    rng.shuffle(variable_keys)
-    for variable_candidates in by_variable.values():
-        rng.shuffle(variable_candidates)
+        group_key = candidate.sampling_group_key or "__all__"
+        by_group[group_key][candidate.variable_key].append(candidate)
+    group_keys = list(by_group)
+    rng.shuffle(group_keys)
+    variable_usage: Counter[tuple[str, str]] = Counter()
+    for variables in by_group.values():
+        for variable_candidates in variables.values():
+            rng.shuffle(variable_candidates)
 
     selected: list[QuestionCandidate] = []
     while len(selected) < count:
-        available_keys = [key for key in variable_keys if by_variable[key]]
-        if not available_keys:
+        available_groups = [
+            group_key
+            for group_key in group_keys
+            if any(by_group[group_key].values())
+        ]
+        if not available_groups:
             break
-        rng.shuffle(available_keys)
-        for key in available_keys:
-            choices = by_variable[key]
+        rng.shuffle(available_groups)
+        for group_key in available_groups:
+            variables = by_group[group_key]
+            available_variables = [
+                variable_key
+                for variable_key, variable_candidates in variables.items()
+                if variable_candidates
+            ]
+            minimum_variable_usage = min(
+                variable_usage[(group_key, variable_key)]
+                for variable_key in available_variables
+            )
+            least_used_variables = [
+                variable_key
+                for variable_key in available_variables
+                if variable_usage[(group_key, variable_key)] == minimum_variable_usage
+            ]
+            variable_key = rng.choice(least_used_variables)
+            choices = variables[variable_key]
             minimum_usage = min(variant_usage[candidate.variant_index] for candidate in choices)
             least_used = [
                 candidate
@@ -247,6 +273,7 @@ def diverse_candidate_sample(
             candidate = rng.choice(least_used)
             choices.remove(candidate)
             selected.append(candidate)
+            variable_usage[(group_key, variable_key)] += 1
             variant_usage[candidate.variant_index] += 1
             if len(selected) >= count:
                 break
@@ -598,6 +625,22 @@ def generate_records(
                 separators=(",", ":"),
                 default=str,
             )
+            sampling_group_key = None
+            sampling_group = template.get("sampling_group")
+            if sampling_group is not None:
+                flattened_variables = flatten_mapping(variables)
+                if str(sampling_group) not in flattened_variables:
+                    raise KeyError(
+                        f"Template `{query_type}` sampling_group references missing "
+                        f"value `{sampling_group}`."
+                    )
+                sampling_group_key = json.dumps(
+                    flattened_variables[str(sampling_group)],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
             for variant_index, question_template in enumerate(question_templates):
                 question = format_nested(question_template, variables).strip()
                 if question in seen_questions:
@@ -643,6 +686,7 @@ def generate_records(
                             else scene_index is None or not solution_is_empty(solution)
                         ),
                         variable_key=variable_key,
+                        sampling_group_key=sampling_group_key,
                         variant_index=variant_index,
                     )
                 )

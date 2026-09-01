@@ -30,7 +30,8 @@ interface_description: |
   but lower level than rooms.
 
   Hierarchical edges use (a)-[:CONTAINS]->(b), meaning b is contained within a.
-  Use (a)-[:CONTAINS*]->(b) for transitive hierarchy queries.
+  Use bounded paths for transitive hierarchy queries. For example, Room-to-Object
+  traversal is exactly two edges: (r:Room)-[:CONTAINS*2..2]->(o:Object).
 
   Connectivity edges within a layer are:
     - [:OBJECT_CONNECTED]

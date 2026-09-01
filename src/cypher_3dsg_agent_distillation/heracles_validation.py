@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -146,7 +148,13 @@ def answer_matches_with_heracles(
     valid_solution, parsed_solution, _solution_issues = validate_pddl_goal(str(solution))
     if not valid_solution or parsed_solution is None:
         return False, False
-    return True, pddl_goal_equals(parsed_answer, parsed_solution)
+    # pypddl's equality implementation prints subset-mismatch diagnostics during
+    # ordinary comparisons. A mismatch is an expected validation result, so keep
+    # those dependency-internal debug messages out of CLI progress output.
+    captured_output = StringIO()
+    with redirect_stdout(captured_output), redirect_stderr(captured_output):
+        matches = pddl_goal_equals(parsed_answer, parsed_solution)
+    return True, matches
 
 
 def top_k_with_ties_matches(

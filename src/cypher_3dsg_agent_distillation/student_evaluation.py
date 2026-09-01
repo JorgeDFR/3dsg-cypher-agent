@@ -1021,6 +1021,7 @@ def skipped_tool_call_result(reason: str) -> dict[str, Any]:
         "static_valid": False,
         "executable": False,
         "cypher_solution_match": False,
+        "tool_result_match": False,
     }
 
 
@@ -1039,6 +1040,7 @@ def tool_call_generation_error(record: dict[str, Any], exc: Exception) -> dict[s
         "gold_cypher": record_gold_cypher(record),
         "expected_solution": record_expected_solution(record),
         "cypher_solution_match": False,
+        "tool_result_match": False,
     }
 
 
@@ -1078,6 +1080,7 @@ def score_refusal_tool_generation(
         "executable": refusal_match and not parsed.tool_call_generated,
         "cypher_solution": WRITE_REFUSAL_ANSWER if refusal_match else None,
         "cypher_solution_match": refusal_match,
+        "tool_result_match": refusal_match,
     }
 
 
@@ -1127,6 +1130,7 @@ def score_tool_call_generation(
         "expected_solution": record_expected_solution(record),
         "cypher_solution_format_valid": False,
         "cypher_solution_match": False,
+        "tool_result_match": False,
     }
 
     if record_is_refusal(record):
@@ -1195,12 +1199,15 @@ def score_tool_call_generation(
         return {**base, "status": "execution_error"}
 
     expected_solution = record_expected_solution(record)
-    if record_task_family(record) == "cypher_pddl":
+    is_pddl = record_task_family(record) == "cypher_pddl"
+    if is_pddl:
         cypher_solution_match, cypher_solution, actual_grounding = validate_grounding_rows(
             rows, record.get("grounding")
         )
         format_valid = True
+        base["expected_grounding"] = record.get("grounding")
         base["actual_grounding"] = actual_grounding
+        base["grounding_match"] = cypher_solution_match
     else:
         try:
             cypher_solution = rows_to_solution_text(record_for_solution_conversion(record), rows)
@@ -1233,6 +1240,7 @@ def score_tool_call_generation(
         "cypher_solution": cypher_solution,
         "cypher_solution_format_valid": format_valid,
         "cypher_solution_match": cypher_solution_match,
+        "tool_result_match": cypher_solution_match,
     }
 
 
@@ -1289,6 +1297,7 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
                 "static_valid",
                 "executable",
                 "cypher_solution_match",
+                "tool_result_match",
             ),
         ),
     }
@@ -1297,16 +1306,26 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
         family_records = [
             record for record in records if record.get("task_family", "cypher_qa") == family
         ]
+        family_tool_metrics = ["static_valid", "executable", "tool_result_match"]
+        if family == "cypher_pddl":
+            family_tool_metrics.append("grounding_match")
+        else:
+            family_tool_metrics.append("cypher_solution_match")
         by_family[family] = {
+            "examples": len(family_records),
             FINAL_ANSWER_CHECK: summarize_raw_section(
                 family_records,
                 FINAL_ANSWER_CHECK,
-                ("final_answer_format_valid", "final_answer_match"),
+                (
+                    "final_answer_format_valid",
+                    "final_answer_domain_valid",
+                    "final_answer_match",
+                ),
             ),
             TOOL_CALL_CHECK: summarize_raw_section(
                 family_records,
                 TOOL_CALL_CHECK,
-                ("static_valid", "executable", "cypher_solution_match"),
+                tuple(family_tool_metrics),
             ),
         }
     summary["by_task_family"] = by_family
@@ -1356,6 +1375,55 @@ def raw_generation_progress_description(
         "done": "Validating records",
     }
     return f"{phase_labels[phase]} · {split_display_name(split)}"
+
+
+def raw_generation_report_record(
+    record: dict[str, Any],
+    *,
+    final_answer_result: dict[str, Any],
+    tool_call_result: dict[str, Any],
+    final_generation_debug: dict[str, Any],
+    tool_generation_debug: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one raw-generation report record with task-aware result fields."""
+    family = record_task_family(record)
+    expected_solution = record_expected_solution(record)
+    expected = {
+        "cypher": record_gold_cypher(record),
+        "cypher_solution": expected_solution,
+        "final_answer": expected_final_answer(record),
+    }
+    generated = {
+        "cypher": tool_call_result.get("generated_cypher"),
+        "cypher_solution": tool_call_result.get("cypher_solution"),
+        "final_answer": final_answer_result.get("generated_text"),
+        "final_answer_value": final_answer_result.get("generated_answer"),
+        "cypher_tool_output": (tool_call_result.get("validation") or {}).get("rows"),
+    }
+    if family == "cypher_pddl":
+        expected.update(
+            {
+                "pddl_goal": expected_solution,
+                "grounding": record.get("grounding"),
+            }
+        )
+        generated["actual_grounding"] = tool_call_result.get("actual_grounding")
+
+    return {
+        "uid": record.get("uid"),
+        "query_type": record_query_type(record),
+        "task_family": family,
+        "output_type": record_output_type(record),
+        "question": record.get("question"),
+        "expected": expected,
+        "generated": generated,
+        "generation_debug": {
+            "cypher_generation": tool_generation_debug,
+            "final_answer_generation": final_generation_debug,
+        },
+        FINAL_ANSWER_CHECK: final_answer_result,
+        TOOL_CALL_CHECK: tool_call_result,
+    }
 
 
 def evaluate_raw_generation(
@@ -1502,35 +1570,13 @@ def evaluate_raw_generation(
                     )
 
             evaluated_records.append(
-                {
-                    "uid": record.get("uid"),
-                    "query_type": record_query_type(record),
-                    "task_family": record_task_family(record),
-                    "output_type": record_output_type(record),
-                    "question": record.get("question"),
-                    "expected": {
-                        "cypher": record_gold_cypher(record),
-                        "cypher_solution": record_expected_solution(record),
-                        "final_answer": expected_final_answer(record),
-                    },
-                    "generated": {
-                        "cypher": tool_call_result.get("generated_cypher"),
-                        "cypher_solution": tool_call_result.get("cypher_solution"),
-                        "final_answer": final_answer_result.get("generated_text"),
-                        "final_answer_value": final_answer_result.get(
-                            "generated_answer"
-                        ),
-                        "cypher_tool_output": (
-                            tool_call_result.get("validation") or {}
-                        ).get("rows"),
-                    },
-                    "generation_debug": {
-                        "cypher_generation": tool_generation_debug,
-                        "final_answer_generation": final_generation_debug,
-                    },
-                    FINAL_ANSWER_CHECK: final_answer_result,
-                    TOOL_CALL_CHECK: tool_call_result,
-                }
+                raw_generation_report_record(
+                    record,
+                    final_answer_result=final_answer_result,
+                    tool_call_result=tool_call_result,
+                    final_generation_debug=final_generation_debug,
+                    tool_generation_debug=tool_generation_debug,
+                )
             )
             if progress is not None:
                 progress.update(

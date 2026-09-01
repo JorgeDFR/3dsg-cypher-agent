@@ -1,4 +1,5 @@
 import hashlib
+from collections import Counter
 
 import pytest
 
@@ -94,6 +95,34 @@ def test_variable_sampling_uses_distinct_variables_before_wording_reuse():
     )
 
     assert len({record["gold_cypher"] for record in records}) == 10
+
+
+def test_variable_sampling_balances_explicit_sampling_groups():
+    cases = [
+        {"object": f"O{region}{offset}", "region": f"R{region}"}
+        for region in range(4)
+        for offset in range(5)
+    ]
+    records = generate_records(
+        {
+            "values": {"cases": cases},
+            "templates": [
+                {
+                    "query_type": "room_lookup",
+                    "target_questions": 12,
+                    "variables": {"case": "cases"},
+                    "sampling_group": "case.region",
+                    "cypher": "RETURN '{case.region}' AS region, '{case.object}' AS object",
+                    "questions": ["Find {case.object}.", "Locate {case.object}."],
+                }
+            ],
+        }
+    )
+
+    region_counts = Counter(
+        str(record["gold_cypher"]).split("'")[1] for record in records
+    )
+    assert region_counts == Counter({"R0": 3, "R1": 3, "R2": 3, "R3": 3})
 
 
 def test_variable_template_warns_when_target_exceeds_variant_capacity():
@@ -363,7 +392,7 @@ def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkey
             "values": {
                 "room_symbols": ["R0"],
                 "room_classes": ["office"],
-                "object_symbols": ["O1"],
+                "room_containing_object_cases": [{"object": "O1", "region": "R3"}],
             },
         },
         question_templates_config={"templates": room_templates},
@@ -381,6 +410,19 @@ def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkey
         "pddl_visit_room_containing_object": "(visited-region R3)",
         "pddl_end_in_room_containing_object": "(in-region R3)",
     }
+
+
+def test_all_pddl_room_groundings_accept_region_result_aliases():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    room_fields = [
+        field
+        for template in templates
+        for field in (template.get("grounding", {}).get("fields", {}).values())
+        if field.get("symbol_type") == "Room"
+    ]
+
+    assert room_fields
+    assert all("region" in field.get("aliases", []) for field in room_fields)
 
 
 def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypatch):
@@ -520,3 +562,28 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
             "(and (visited-object O0) (not (holding O0)))"
         ),
     }
+
+
+def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
+    qa_templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    pddl_templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
+    affected_query_types = {
+        "objects_in_room_symbol",
+        "objects_in_room_class",
+        "pddl_visit_room_containing_object",
+        "pddl_end_in_room_containing_object",
+    }
+    affected_templates = [
+        template
+        for template in [*qa_templates, *pddl_templates]
+        if template["query_type"] in affected_query_types
+    ]
+
+    assert {template["query_type"] for template in affected_templates} == affected_query_types
+    assert all(
+        "(r:Room" in template["cypher"]
+        and "[:CONTAINS*2..2]->(o:Object" in template["cypher"]
+        for template in affected_templates
+    )

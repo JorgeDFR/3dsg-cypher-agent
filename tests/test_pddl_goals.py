@@ -95,3 +95,25 @@ def test_grounding_validation_rejects_wrong_entities():
     }
 
     assert validate_grounding_rows([{"object": "O2"}], contract)[0] is False
+
+
+def test_room_grounding_accepts_region_result_alias():
+    contract = {
+        "expected": {"room": ["R3"]},
+        "fields": {
+            "room": {
+                "aliases": ["room", "region", "nodeSymbol"],
+                "symbol_type": "Room",
+                "cardinality": "set",
+            }
+        },
+        "match": "exact",
+    }
+
+    matches, _rendered, actual = validate_grounding_rows(
+        [{"region": "R3"}],
+        contract,
+    )
+
+    assert matches
+    assert actual == {"room": ["R3"]}

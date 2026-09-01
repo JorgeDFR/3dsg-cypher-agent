@@ -658,7 +658,41 @@ def test_score_pddl_tool_call_generation_compares_grounding_not_goal_text():
 
     assert result["status"] == "pass"
     assert result["cypher_solution_match"] is True
+    assert result["tool_result_match"] is True
+    assert result["grounding_match"] is True
+    assert result["expected_grounding"] == record["grounding"]
     assert result["actual_grounding"] == {"object": ["O1"]}
+
+
+def test_raw_generation_report_record_exposes_pddl_goal_and_grounding():
+    record = pddl_generation_record()
+    report_record = student_evaluation.raw_generation_report_record(
+        record,
+        final_answer_result={
+            "generated_text": "<answer>(visited-object O1)</answer>",
+            "generated_answer": "(visited-object O1)",
+            "final_answer_domain_valid": True,
+            "final_answer_match": True,
+        },
+        tool_call_result={
+            "generated_cypher": record["gold_cypher"],
+            "cypher_solution": '{"object": ["O1"]}',
+            "actual_grounding": {"object": ["O1"]},
+            "grounding_match": True,
+            "tool_result_match": True,
+            "validation": {"rows": [{"object": "O1"}]},
+        },
+        final_generation_debug={},
+        tool_generation_debug={},
+    )
+
+    assert report_record["task_family"] == "cypher_pddl"
+    assert report_record["output_type"] == "PDDL"
+    assert report_record["expected"]["pddl_goal"] == "(visited-object O1)"
+    assert report_record["expected"]["grounding"] == record["grounding"]
+    assert report_record["generated"]["actual_grounding"] == {"object": ["O1"]}
+    # Retained for consumers of the previous raw-report schema.
+    assert report_record["expected"]["cypher_solution"] == "(visited-object O1)"
 
 
 def test_score_pddl_final_answer_uses_pddl_comparator():
@@ -747,6 +781,36 @@ def test_summarize_raw_generation_records_counts_both_checks():
     assert summary["examples"] == 1
     assert summary[FINAL_ANSWER_CHECK]["rates"]["final_answer_match"] == 1.0
     assert summary[TOOL_CALL_CHECK]["statuses"] == {"missing_required_tool": 1}
+
+
+def test_summarize_raw_generation_records_reports_pddl_grounding_metrics():
+    record = {
+        "task_family": "cypher_pddl",
+        FINAL_ANSWER_CHECK: {
+            "status": "pass",
+            "final_answer_format_valid": True,
+            "final_answer_domain_valid": True,
+            "final_answer_match": True,
+        },
+        TOOL_CALL_CHECK: {
+            "status": "pass",
+            "static_valid": True,
+            "executable": True,
+            "cypher_solution_match": True,
+            "tool_result_match": True,
+            "grounding_match": True,
+        },
+    }
+
+    family_summary = summarize_raw_generation_records([record])["by_task_family"][
+        "cypher_pddl"
+    ]
+
+    assert family_summary["examples"] == 1
+    assert family_summary[FINAL_ANSWER_CHECK]["rates"][
+        "final_answer_domain_valid"
+    ] == 1.0
+    assert family_summary[TOOL_CALL_CHECK]["rates"]["grounding_match"] == 1.0
 
 
 def test_finite_perplexity_reports_none_before_json_overflow():

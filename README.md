@@ -333,3 +333,23 @@ before treating a refactor as complete.
 
 The optional host `dev` installation provides `pytest` and `ruff` for these
 repository checks.
+
+## Additional Tools
+
+### Label room regions
+
+Interactively add or update room classifications in a Spark DSG scene:
+
+```bash
+docker/stack.sh main python scripts/edit_3dsg_room_labels.py data/scenes/uhumans2_office.json \
+  --output data/scenes/uhumans2_office.updated.json \
+  --figure-output data/scenes/uhumans2_office_rooms.png
+```
+
+The editor opens a top-down view with red room bounding boxes, room symbols,
+and blue object triangles. It then walks through the rooms in symbol order,
+prints contained-object counts by class, and accepts either a listed
+single-word label or its number. The source is preserved by default and the
+result is written beside it as `*.room_labels.json`. Use `--output` to choose a
+different path, `--figure-output` to save the visualization, `--no-show` for a
+headless terminal, and `--list-labels` to inspect the controlled vocabulary.

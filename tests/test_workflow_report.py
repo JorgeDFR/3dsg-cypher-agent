@@ -3,8 +3,10 @@ import json
 from cypher_3dsg_agent_distillation.io import write_jsonl
 from cypher_3dsg_agent_distillation.workflow_report import (
     collect_workflow_report_data,
+    render_record_detail,
     render_workflow_report,
     scene_template_sample_text,
+    validation_example_rows,
     workflow_report_output_path,
 )
 
@@ -351,7 +353,7 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Optimization Type" in html
     assert "Initial Tool Calls" in html
     assert "Tool Calls Dropped" in html
-    assert '<th data-sort-index="2">Task Type</th>' in html
+    assert '<th data-sort-index="3">Task Type</th>' in html
     assert "100.00%" in html
     assert '<span class="status-pill status-good">True</span>' in html
     assert '<span class="status-pill status-good">pass</span>' not in html
@@ -404,6 +406,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     ]
     question_headers = [
         "UID",
+        "Task Family",
+        "Output Type",
         "Task Type",
         "Tags",
         "Question",
@@ -423,7 +427,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "RETURN count(o) AS count</pre>"
         in questions_table
     )
-    assert "generated-questions-detail" not in html
+    assert "generated-questions-detail" in html
+    assert "<h3>Generated Question Details</h3>" in html
     trace_section = html[html.index('id="traces"') : html.index('id="splits"')]
     trace_table = trace_section[
         trace_section.index("<h3>Trace Outcomes</h3>") : trace_section.index("</table>")
@@ -469,6 +474,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     validation_headers = [
         "UID",
         "Split",
+        "Task Family",
+        "Output Type",
         "Task Type",
         "Question",
         "Tool Call Status",
@@ -476,6 +483,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "Tool Call Parse Success",
         "Tool Call Executable",
         "Cypher Solution Match",
+        "Grounding Match",
+        "Final Answer Domain Valid",
         "Final Answer Match",
     ]
     assert all(header in validation_examples_table for header in validation_headers)
@@ -498,6 +507,139 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Teacher Trace JSONL" not in html
     assert "Accepted Traces" not in html
     assert "Rejected Traces" not in html
+
+
+def test_workflow_report_renders_mixed_qa_and_pddl_records(tmp_path):
+    config = minimal_data_config(tmp_path)
+    write_minimal_artifacts(config)
+    data = collect_workflow_report_data(config)
+    goal = """(and
+  (visited-object O1)
+  (not (at-object O2))
+  (or (visited-place p1) (at-place p2))
+)"""
+    grounding = {
+        "expected": {
+            "visited_object": ["O1"],
+            "excluded_object": ["O2"],
+            "place": ["p1", "p2"],
+        },
+        "fields": {
+            "visited_object": {"aliases": ["visited_object"], "symbol_type": "Object"},
+            "excluded_object": {
+                "aliases": ["excluded_object"],
+                "symbol_type": "Object",
+            },
+            "place": {"aliases": ["place"], "symbol_type": "Place"},
+        },
+        "match": "exact",
+    }
+    pddl_record = {
+        "uid": "pddl1",
+        "query_type": "pddl_mixed_object_place_goal",
+        "task_family": "cypher_pddl",
+        "output_type": "PDDL",
+        "question": "Prepare a goal that visits O1 while avoiding O2.",
+        "gold_cypher": "MATCH (o:Object) RETURN o.nodeSymbol AS object",
+        "solution": goal,
+        "grounding": grounding,
+        "tags": ["pddl", "and", "or", "not"],
+        "final_answer": f"<answer>{goal}</answer>",
+        "messages": [{"role": "assistant", "content": f"<answer>{goal}</answer>"}],
+        "validation": {
+            "tool_result_match": True,
+            "final_answer_domain_valid": True,
+            "answer_grounded": True,
+        },
+    }
+
+    questions = data["generated_questions"]
+    questions["records"].append(pddl_record)
+    questions["by_task_family"]["cypher_pddl"] = 1
+    questions["by_task_type"][pddl_record["query_type"]] = 1
+    for tag in pddl_record["tags"]:
+        questions["tag_counts"][tag] = 1
+
+    traces = data["traces"]
+    traces["accepted_records"].append(pddl_record)
+    traces["accepted_by_task_family"]["cypher_pddl"] = 1
+    traces["accepted_by_task_type"][pddl_record["query_type"]] = 1
+    traces["gold_cypher_lookup"]["pddl1"] = pddl_record["gold_cypher"]
+
+    splits = data["splits"]
+    splits["records"]["train"].append(pddl_record)
+    splits["by_task_family"]["train"]["cypher_pddl"] = 1
+    splits["by_task_type"]["train"][pddl_record["query_type"]] = 1
+    splits["gold_cypher_lookup"]["pddl1"] = pddl_record["gold_cypher"]
+
+    pddl_validation_record = {
+        "uid": "pddl1",
+        "query_type": pddl_record["query_type"],
+        "task_family": "cypher_pddl",
+        "output_type": "PDDL",
+        "question": pddl_record["question"],
+        "expected": {
+            "cypher": pddl_record["gold_cypher"],
+            "cypher_solution": goal,
+            "pddl_goal": goal,
+            "grounding": grounding,
+            "final_answer": f"<answer>{goal}</answer>",
+        },
+        "generated": {
+            "cypher": pddl_record["gold_cypher"],
+            "cypher_solution": json.dumps(grounding["expected"], sort_keys=True),
+            "cypher_tool_output": [grounding["expected"]],
+            "actual_grounding": grounding["expected"],
+            "final_answer": f"<answer>{goal}</answer>",
+            "final_answer_value": goal,
+        },
+        "final_answer_from_trace": {
+            "status": "pass",
+            "final_answer_domain_valid": True,
+            "final_answer_match": True,
+        },
+        "tool_call_from_prompt": {
+            "status": "pass",
+            "tool_call_parse_success": True,
+            "executable": True,
+            "cypher_solution_match": True,
+            "tool_result_match": True,
+            "grounding_match": True,
+            "expected_grounding": grounding,
+            "actual_grounding": grounding["expected"],
+        },
+    }
+    data["validation"]["raw_generation_reports"]["test"]["records"].append(
+        pddl_validation_record
+    )
+
+    html = render_workflow_report(data)
+    rows, details = validation_example_rows(
+        {"test": {"records": [pddl_validation_record]}}
+    )
+    pddl_detail = render_record_detail(details[0])
+
+    assert "Task Families Per Split" in html
+    assert "<h3>Task Family</h3>" in html
+    assert "cypher_pddl" in html
+    assert "<h5>Cypher QA</h5>" in html
+    assert "<h5>Cypher PDDL</h5>" in html
+    assert "Grounding Match" in html
+    assert rows[0]["task_family"] == "cypher_pddl"
+    assert rows[0]["output_type"] == "PDDL"
+    assert rows[0]["grounding_match"] is True
+    assert rows[0]["cypher_solution_match"] is None
+    assert "<h4>Expected PDDL Goal</h4>" in pddl_detail
+    assert "(and\n  (visited-object O1)" in pddl_detail
+    assert "(not (at-object O2))" in pddl_detail
+    assert "(or (visited-place p1) (at-place p2))" in pddl_detail
+    assert "<h4>Expected Grounding</h4>" in pddl_detail
+    assert "<h4>Actual Grounding</h4>" in pddl_detail
+    assert "Expected Cypher Solution" not in pddl_detail
+    assert "Generated Cypher Solution" not in pddl_detail
+    assert "Tool Result Match" in html
+    assert "Final Answer Domain Valid" in html
+    assert "Answer Grounded" in html
 
 
 def test_workflow_report_default_output_lives_in_reports_dir(tmp_path):
