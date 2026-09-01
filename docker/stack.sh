@@ -8,7 +8,7 @@ NVIDIA_TEST_IMAGE="${NVIDIA_TEST_IMAGE:-ubuntu:24.04}"
 DEMO_DATA_CONFIG="${DEMO_DATA_CONFIG:-configs/data.yaml}"
 DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teacher_synthetic.yaml}"
 DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/student_qwen3.5_4b.yaml}"
-DEMO_SCENE="${DEMO_SCENE:-data/scenes/3dsg_uhumans2.json}"
+DEMO_SCENE="${DEMO_SCENE:-data/scenes/uhumans2_office.json}"
 
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
@@ -479,7 +479,7 @@ case "${command}" in
     run_demo "$@"
     ;;
   load-neo4j)
-    scene="${1:-data/scenes/3dsg_uhumans2.json}"
+    scene="${1:-data/scenes/uhumans2_office.json}"
     prepare_runtime
     require_service_running main
     require_service_running neo4j

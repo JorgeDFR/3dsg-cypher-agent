@@ -25,9 +25,91 @@ ensure_heracles_agents_importable()
 
 from pypddl.pddl_goal_manipulations import pddl_goal_equals  # noqa: E402
 from pypddl.pddl_goal_parser import lark_parse_pddl_goal  # noqa: E402
+from pypddl.pddl_goal_types import (  # noqa: E402
+    Bool,
+    Conjunction,
+    Disjunction,
+    Fact,
+    NegatedAtomic,
+    NegatedClause,
+    Symbol,
+)
 from sldp.sldp_lang import get_sldp_type, lark_parse_sldp, sldp_equals  # noqa: E402
 
 OutputType = Literal["SLDP", "PDDL"]
+
+PDDL_PREDICATE_SIGNATURES: dict[str, tuple[str, ...]] = {
+    "visited-place": ("PlaceOrMeshPlace",),
+    "at-place": ("PlaceOrMeshPlace",),
+    "visited-object": ("Object",),
+    "at-object": ("Object",),
+    "safe": ("Object",),
+    "visited-region": ("Room",),
+    "in-region": ("Room",),
+    "holding": ("Object",),
+    "object-in-place": ("Object", "PlaceOrMeshPlace"),
+}
+PDDL_SYMBOL_PATTERNS = {
+    "Object": re.compile(r"^O\d+$"),
+    "Place": re.compile(r"^p\d+$"),
+    "MeshPlace": re.compile(r"^P\d+$"),
+    "PlaceOrMeshPlace": re.compile(r"^[pP]\d+$"),
+    "Room": re.compile(r"^R\d+$"),
+    "Building": re.compile(r"^B\d+$"),
+}
+
+
+def pddl_goal_domain_issues(goal: Any) -> list[str]:
+    issues: list[str] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, Fact):
+            signature = PDDL_PREDICATE_SIGNATURES.get(node.head)
+            if signature is None:
+                issues.append(f"unknown predicate: {node.head}")
+                return
+            if len(node.params) != len(signature):
+                issues.append(
+                    f"wrong arity for {node.head}: expected {len(signature)}, "
+                    f"got {len(node.params)}"
+                )
+                return
+            for value, symbol_type in zip(node.params, signature, strict=True):
+                if not PDDL_SYMBOL_PATTERNS[symbol_type].fullmatch(value):
+                    issues.append(
+                        f"invalid {symbol_type} symbol `{value}` for {node.head}"
+                    )
+            return
+        if isinstance(node, Conjunction | Disjunction):
+            if not node.clauses:
+                issues.append(f"empty {type(node).__name__.lower()}")
+            for clause in node.clauses:
+                visit(clause)
+            return
+        if isinstance(node, NegatedClause):
+            visit(node.clause)
+            return
+        if isinstance(node, NegatedAtomic):
+            visit(node.atomic)
+            return
+        if isinstance(node, Bool):
+            return
+        if isinstance(node, Symbol):
+            issues.append("free variables are not valid grounded planning goals")
+            return
+        issues.append(f"unsupported PDDL node: {type(node).__name__}")
+
+    visit(goal)
+    return issues
+
+
+def validate_pddl_goal(answer: str) -> tuple[bool, Any | None, list[str]]:
+    try:
+        parsed = lark_parse_pddl_goal(str(answer))
+    except Exception as exc:
+        return False, None, [f"parse error: {exc}"]
+    issues = pddl_goal_domain_issues(parsed)
+    return not issues, parsed, issues
 
 
 def comparator_for_output_type(output_type: str) -> str:
@@ -58,11 +140,13 @@ def answer_matches_with_heracles(
             return True, top_k_with_ties_matches(parsed_answer, answer_validation)
         return True, False
 
-    try:
-        parsed_answer = lark_parse_pddl_goal(str(answer))
-    except Exception:
+    valid_domain, parsed_answer, _issues = validate_pddl_goal(str(answer))
+    if not valid_domain or parsed_answer is None:
         return False, False
-    return True, pddl_goal_equals(parsed_answer, lark_parse_pddl_goal(str(solution)))
+    valid_solution, parsed_solution, _solution_issues = validate_pddl_goal(str(solution))
+    if not valid_solution or parsed_solution is None:
+        return False, False
+    return True, pddl_goal_equals(parsed_answer, parsed_solution)
 
 
 def top_k_with_ties_matches(
@@ -187,7 +271,7 @@ Please format your response according to the PDDL goal language:
 
 The final answer must be a single valid PDDL goal expression using predicates from the
 provided PDDL domain.
-Use object, place, mesh place, and room symbols exactly as they appear in the scene graph.
+Use object, place, mesh place, and room/region symbols exactly as they appear in the scene graph.
 Do not include explanatory text inside the final answer.
 
 Format your final answer as a PDDL goal wrapped between <answer> and </answer>.

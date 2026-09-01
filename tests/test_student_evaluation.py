@@ -73,6 +73,30 @@ def raw_generation_record():
     }
 
 
+def pddl_generation_record():
+    record = raw_generation_record()
+    record.update(
+        {
+            "task_family": "cypher_pddl",
+            "output_type": "PDDL",
+            "expected_solution": "(visited-object O1)",
+            "grounding": {
+                "expected": {"object": ["O1"]},
+                "fields": {
+                    "object": {
+                        "aliases": ["object"],
+                        "symbol_type": "Object",
+                        "cardinality": "set",
+                    }
+                },
+                "match": "exact",
+            },
+            "metadata": {"task_family": "cypher_pddl", "output_type": "PDDL"},
+        }
+    )
+    return record
+
+
 class FakeValidator:
     def validate(self, cypher, execute):
         return {
@@ -613,6 +637,38 @@ def test_score_tool_call_generation_executes_and_matches_expected_solution():
     assert result["static_valid"] is True
     assert result["executable"] is True
     assert result["cypher_solution_match"] is True
+
+
+def test_score_pddl_tool_call_generation_compares_grounding_not_goal_text():
+    record = pddl_generation_record()
+    result = score_tool_call_generation(
+        record,
+        (
+            "<tool_call>\n"
+            "<function=run_cypher_query>\n"
+            "<parameter=cypher_string>\n"
+            f"{record['gold_cypher']}\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        ),
+        validator=FakeValidator(),
+        policy=None,
+    )
+
+    assert result["status"] == "pass"
+    assert result["cypher_solution_match"] is True
+    assert result["actual_grounding"] == {"object": ["O1"]}
+
+
+def test_score_pddl_final_answer_uses_pddl_comparator():
+    result = score_final_answer_generation(
+        pddl_generation_record(),
+        "<answer>(visited-object O1)</answer>",
+    )
+
+    assert result["status"] == "pass"
+    assert result["final_answer_domain_valid"] is True
 
 
 def test_score_tool_call_generation_preserves_expected_set_syntax_without_format_field():

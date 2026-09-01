@@ -16,9 +16,17 @@ def normalize_cypher(cypher: str) -> str:
     return re.sub(r"\s+", " ", cypher.strip())
 
 
-def split_group_for_record(scene_id: str | None, task_type: str, cypher: str) -> str:
+def split_group_for_record(
+    scene_id: str | None,
+    task_type: str,
+    cypher: str,
+    task_family: str = "cypher_qa",
+) -> str:
     digest = hashlib.sha1(normalize_cypher(cypher).encode("utf-8")).hexdigest()[:16]
-    return f"{scene_id or 'unknown'}:{task_type}:{digest}"
+    prefix = f"{scene_id or 'unknown'}:{task_type}"
+    if task_family != "cypher_qa":
+        prefix = f"{scene_id or 'unknown'}:{task_family}:{task_type}"
+    return f"{prefix}:{digest}"
 
 
 class ToolFunction(BaseModel):
@@ -66,6 +74,10 @@ class TraceValidation(BaseModel):
     cypher_solution_match: bool | None = None
     final_answer_match: bool | None = None
     final_answer_cypher_match: bool | None = None
+    tool_result_match: bool | None = None
+    final_answer_format_valid: bool | None = None
+    final_answer_domain_valid: bool | None = None
+    answer_grounded: bool | None = None
     static_issues: list[str] = Field(default_factory=list)
     error: str | None = None
 
@@ -77,6 +89,9 @@ class AgentTraceRecord(BaseModel):
     scene_id: str | None = None
     question: str
     task_type: str = Field(validation_alias=AliasChoices("task_type", "query_type"))
+    task_family: str = "cypher_qa"
+    output_type: str = "SLDP"
+    experiment_profile: str | None = None
     tools: list[str] = Field(default_factory=lambda: [DEFAULT_AGENT_TOOL])
     messages: list[AgentMessage]
     gold_cypher: str
@@ -84,6 +99,7 @@ class AgentTraceRecord(BaseModel):
     real_solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
+    grounding: dict[str, Any] | None = None
     cypher_solution: Any | None = None
     final_answer: str | None = None
     split_group: str | None = None
@@ -92,6 +108,19 @@ class AgentTraceRecord(BaseModel):
     read_only: bool = True
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def promote_task_metadata(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        metadata = payload.get("metadata") or {}
+        payload.setdefault("task_family", metadata.get("task_family", "cypher_qa"))
+        payload.setdefault("output_type", metadata.get("output_type", "SLDP"))
+        if metadata.get("experiment_profile") is not None:
+            payload.setdefault("experiment_profile", metadata["experiment_profile"])
+        return payload
 
     @model_validator(mode="after")
     def validate_trace(self) -> AgentTraceRecord:
@@ -106,6 +135,7 @@ class AgentTraceRecord(BaseModel):
                 self.scene_id,
                 self.task_type,
                 self.gold_cypher,
+                self.task_family,
             )
         if self.is_refusal:
             if self.tool_calls:

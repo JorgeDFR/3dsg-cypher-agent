@@ -60,7 +60,7 @@ def test_load_data_config_expands_derived_paths(tmp_path):
         "\n".join(
             [
                 "scene_id: uhumans2",
-                "scene_path: data/scenes/3dsg_uhumans2.json",
+                "scene_path: data/scenes/uhumans2_office.json",
                 "schema_path: schema_3dsg.yaml",
             ]
         ),
@@ -69,7 +69,7 @@ def test_load_data_config_expands_derived_paths(tmp_path):
 
     config = load_data_config(config_path)
 
-    assert config["scene_path"] == str(PROJECT_ROOT / "data" / "scenes" / "3dsg_uhumans2.json")
+    assert config["scene_path"] == str(PROJECT_ROOT / "data" / "scenes" / "uhumans2_office.json")
     assert config["schema_path"] == str(PROJECT_ROOT / "configs" / "schema_3dsg.yaml")
     assert config["teacher_traces_jsonl_path"] == str(
         PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "teacher_traces.jsonl"
@@ -88,5 +88,51 @@ def test_scene_id_must_not_be_a_path():
             {
                 "scene_id": "../uhumans2",
                 "scene_path": "/tmp/scene.json",
+            }
+        )
+
+
+def test_data_paths_resolve_multiple_question_sets():
+    paths = data_paths_from_config(
+        {
+            "scene_id": "office_scene",
+            "scene_path": "/tmp/scene.json",
+            "question_sets": [
+                {
+                    "name": "qa",
+                    "question_templates_path": "cypher_qa_3dsg.yaml",
+                    "experiment_profile_path": "cypher_qa_template.yaml",
+                },
+                {
+                    "name": "pddl",
+                    "question_templates_path": "cypher_pddl_3dsg.yaml",
+                    "experiment_profile_path": "cypher_pddl_template.yaml",
+                },
+            ],
+        }
+    )
+
+    assert [question_set.name for question_set in paths.question_sets] == ["qa", "pddl"]
+    assert paths.question_sets[1].question_templates_path.name == "cypher_pddl_3dsg.yaml"
+
+
+def test_duplicate_question_set_names_are_rejected():
+    with pytest.raises(ValueError, match="Duplicate question set"):
+        data_paths_from_config(
+            {
+                "scene_id": "office_scene",
+                "scene_path": "/tmp/scene.json",
+                "question_sets": [
+                    {
+                        "name": "same",
+                        "question_templates_path": "cypher_qa_3dsg.yaml",
+                        "experiment_profile_path": "cypher_qa_template.yaml",
+                    },
+                    {
+                        "name": "same",
+                        "question_templates_path": "cypher_pddl_3dsg.yaml",
+                        "experiment_profile_path": "cypher_pddl_template.yaml",
+                    },
+                ],
             }
         )

@@ -702,6 +702,40 @@ def test_teacher_interaction_accepts_pddl_without_row_solution_conversion():
     assert decision.record.metadata["output_type"] == "PDDL"
 
 
+def test_teacher_interaction_requires_pddl_cypher_grounding_when_declared():
+    grounding = {
+        "expected": {"object": ["O1"]},
+        "fields": {
+            "object": {
+                "aliases": ["object"],
+                "symbol_type": "Object",
+                "cardinality": "set",
+            }
+        },
+        "match": "exact",
+    }
+    validator = FakeValidator(
+        [{"executable": True, "rows": [{"object": "O2"}], "error": None}]
+    )
+
+    decision, _client = run_interaction(
+        seed_record(
+            query_type="pddl_direct_symbol",
+            task_family="cypher_pddl",
+            output_type="PDDL",
+            solution="(visited-object O1)",
+            grounding=grounding,
+        ),
+        [tool_assistant("MATCH (o:Object) RETURN o.nodeSymbol AS object")],
+        validator=validator,
+        max_tool_calls=1,
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "max_tool_calls_exceeded"
+    assert decision.payload["last_failure_reason"] == "grounding_mismatch"
+
+
 def test_teacher_interaction_rejects_invalid_pddl_final_answer():
     decision, _client = run_interaction(
         seed_record(

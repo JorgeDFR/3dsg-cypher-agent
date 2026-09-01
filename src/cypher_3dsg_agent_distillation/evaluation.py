@@ -19,6 +19,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     result_hash,
     static_checks,
 )
+from cypher_3dsg_agent_distillation.pddl_goals import validate_grounding_rows
 from cypher_3dsg_agent_distillation.templates import format_solution_field
 
 NODE_SYMBOL_RE = re.compile(r"^[A-Za-z]\d+$")
@@ -533,21 +534,30 @@ def evaluate_records(
                 "error": validation["error"],
             }
             if validation["executable"]:
-                try:
-                    actual_solution = rows_to_solution_text(record, rows)
-                except ResultShapeError as exc:
-                    execution["result_shape_error"] = str(exc)
+                if str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
+                    grounding_match, actual_solution, _actual_grounding = (
+                        validate_grounding_rows(rows, record.get("grounding"))
+                    )
+                    execution["grounding_match"] = grounding_match
+                else:
+                    try:
+                        actual_solution = rows_to_solution_text(record, rows)
+                    except ResultShapeError as exc:
+                        execution["result_shape_error"] = str(exc)
 
-        solution_match = (
-            answer_matches(
-                actual_solution,
-                expected_solution,
-                str(record.get("output_type") or "SLDP"),
-                answer_validation=record.get("answer_validation"),
+        if str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
+            solution_match = bool(execution.get("grounding_match"))
+        else:
+            solution_match = (
+                answer_matches(
+                    actual_solution,
+                    expected_solution,
+                    str(record.get("output_type") or "SLDP"),
+                    answer_validation=record.get("answer_validation"),
+                )
+                if actual_solution is not None and expected_solution is not None
+                else False
             )
-            if actual_solution is not None and expected_solution is not None
-            else False
-        )
         status = "pass"
         if static_issues:
             status = "static_error"

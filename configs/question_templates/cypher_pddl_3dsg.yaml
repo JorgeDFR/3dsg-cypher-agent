@@ -1,0 +1,806 @@
+sampling:
+  seed: 84
+  non_empty_ratio: 1.0
+
+templates:
+  - query_type: pddl_visit_object_symbol
+    target_questions: 20
+    tags: [pddl, navigation, direct_symbol, waypoint]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.nodeSymbol AS object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: visited-object
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Pass by object {object} at some point, then continue with the mission.
+      - Make object {object} one of the stops on your route.
+      - Swing by {object}; there is no need to remain there afterward.
+      - Before proceeding elsewhere, ensure that object {object} has been visited.
+      - Your route must include object {object}, though it need not end there.
+      - Check in at object {object} and carry on.
+
+  - query_type: pddl_end_at_object_symbol
+    target_questions: 20
+    tags: [pddl, navigation, direct_symbol, destination]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.nodeSymbol AS object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: at-object
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Finish beside object {object}.
+      - Object {object} is your final destination; stop there.
+      - When every other task is done, remain at {object}.
+      - Travel to object {object} and do not continue beyond it.
+      - The route should terminate at object {object}.
+      - End the mission positioned at {object}.
+
+  - query_type: pddl_inspect_object_symbol
+    target_questions: 20
+    tags: [pddl, inspection, direct_symbol]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.nodeSymbol AS object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: safe
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Inspect object {object}.
+      - Give {object} a careful safety check before moving on.
+      - Determine whether object {object} is safe.
+      - Take a close look at {object} and clear it as safe.
+      - Object {object} needs to be examined.
+      - Carry out the required inspection on {object}; report no extra details.
+
+  - query_type: pddl_hold_object_class
+    target_questions: 20
+    tags: [pddl, manipulation, class_reference, ambiguity]
+    variables:
+      class: object_classes
+    cypher: |
+      MATCH (o:Object {class: "{class}"})
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: holding
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Pick up a {class}.
+      - Find any object categorized as {class} and take it with you.
+      - You should be holding one of the {class} objects when this is done.
+      - Secure a {class} in the robot's gripper.
+      - Select whichever {class} is convenient, then retrieve it.
+      - Acquire one {class}; the particular instance does not matter.
+
+  - query_type: pddl_visit_object_class
+    target_questions: 20
+    tags: [pddl, navigation, class_reference, ambiguity, waypoint]
+    variables:
+      class: object_classes
+    cypher: |
+      MATCH (o:Object {class: "{class}"})
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: visited-object
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Visit any {class}, then continue onward.
+      - Add one of the {class} objects as an intermediate stop.
+      - Pass by whichever {class} is most convenient during the route.
+      - Before the mission ends somewhere else, make sure a {class} has been visited.
+      - The route should touch one {class}; choosing the instance is up to you.
+      - Swing past a {class} object without treating it as the final destination.
+
+  - query_type: pddl_end_at_object_class
+    target_questions: 20
+    tags: [pddl, navigation, class_reference, ambiguity, destination]
+    variables:
+      class: object_classes
+    cypher: |
+      MATCH (o:Object {class: "{class}"})
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: at-object
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - End the route at a {class}.
+      - Choose one of the {class} objects as your final stopping point.
+      - When the mission concludes, the robot must be beside a {class}.
+      - Settle at whichever {class} is easiest to reach and remain there.
+      - A {class} should be the destination, not merely a waypoint.
+      - Finish positioned at one of the available {class} objects.
+
+  - query_type: pddl_inspect_object_class
+    target_questions: 20
+    tags: [pddl, inspection, class_reference, ambiguity]
+    variables:
+      class: object_classes
+    cypher: |
+      MATCH (o:Object {class: "{class}"})
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: safe
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Inspect a {class}.
+      - Pick any {class} in the scene and verify its safety.
+      - One of the {class} objects needs a thorough examination.
+      - Perform the safety procedure on whichever {class} you select.
+      - Locate a {class}, check it, and leave it marked safe.
+      - It does not matter which instance you use, but a {class} must be inspected.
+
+  - query_type: pddl_inspect_nearest_object
+    target_questions: 20
+    tags: [pddl, inspection, spatial_reference]
+    variables:
+      case: nearest_object_cases
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{case.object}"})
+      MATCH (target:Object {class: "{case.class}"})
+      WHERE target <> source
+      WITH target, point.distance(source.center, target.center) AS distance
+      RETURN target.nodeSymbol AS object
+      ORDER BY distance ASC, object ASC
+      LIMIT 1
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: safe
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Inspect the {case.class} closest to object {case.object}.
+      - Starting from {case.object}, identify the nearest {case.class} and check its safety.
+      - The {case.class} with the shortest distance to {case.object} needs examination.
+      - Find whichever {case.class} lies nearest {case.object}; inspect that one.
+      - Use object {case.object} as the reference point and clear the closest {case.class} as safe.
+      - Of all the {case.class} objects, perform the safety check on the one nearest to {case.object}.
+
+  - query_type: pddl_end_at_nearest_object
+    target_questions: 20
+    tags: [pddl, navigation, spatial_reference, destination]
+    variables:
+      case: nearest_object_cases
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{case.object}"})
+      MATCH (target:Object {class: "{case.class}"})
+      WHERE target <> source
+      WITH target, point.distance(source.center, target.center) AS distance
+      RETURN target.nodeSymbol AS object
+      ORDER BY distance ASC, object ASC
+      LIMIT 1
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      fact: at-object
+      arguments: [{result: object}]
+      multiple: or
+    questions:
+      - Finish at the {case.class} nearest to object {case.object}.
+      - Find the closest {case.class} to {case.object} and make it your final position.
+      - End the mission beside whichever {case.class} has the shortest distance from {case.object}.
+      - Use {case.object} as the reference, travel to its nearest {case.class}, and remain there.
+      - The closest {case.class} to object {case.object} must be the route's endpoint.
+      - Stop for good at the {case.class} located nearest {case.object}.
+
+  - query_type: pddl_visit_place_symbol
+    target_questions: 20
+    tags: [pddl, navigation, place, waypoint]
+    variables:
+      place: place_symbols
+    cypher: |
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      RETURN p.nodeSymbol AS place
+    grounding:
+      fields:
+        place:
+          source: value
+          aliases: [place, nodeSymbol]
+          symbol_type: Place
+          cardinality: set
+    goal:
+      fact: visited-place
+      arguments: [{result: place}]
+      multiple: or
+    questions:
+      - Pass through place {place} before heading elsewhere.
+      - Put {place} on the itinerary as a waypoint.
+      - Visit place {place}; the route may finish at another location.
+      - Make sure the robot reaches {place} at least once during the mission.
+      - Detour through place {place}, then carry on with the remaining work.
+      - Place {place} must appear somewhere along the route, but not necessarily at its end.
+
+  - query_type: pddl_end_at_place_symbol
+    target_questions: 20
+    tags: [pddl, navigation, place, destination]
+    variables:
+      place: place_symbols
+    cypher: |
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      RETURN p.nodeSymbol AS place
+    grounding:
+      fields:
+        place:
+          source: value
+          aliases: [place, nodeSymbol]
+          symbol_type: Place
+          cardinality: set
+    goal:
+      fact: at-place
+      arguments: [{result: place}]
+      multiple: or
+    questions:
+      - Finish at place {place}.
+      - Treat {place} as the destination and remain there.
+      - After completing everything else, stop at place {place}.
+      - The robot's final position must be {place}.
+      - Travel to place {place} last; do not leave it afterward.
+      - Bring the route to an end at {place}.
+
+  - query_type: pddl_visit_mesh_place_symbol
+    target_questions: 20
+    tags: [pddl, navigation, mesh_place, waypoint]
+    variables:
+      mesh_place: mesh_place_symbols
+    cypher: |
+      MATCH (p:MeshPlace {nodeSymbol: "{mesh_place}"})
+      RETURN p.nodeSymbol AS place
+    grounding:
+      fields:
+        place:
+          source: value
+          aliases: [place, nodeSymbol]
+          symbol_type: MeshPlace
+          cardinality: set
+    goal:
+      fact: visited-place
+      arguments: [{result: place}]
+      multiple: or
+    questions:
+      - Cross mesh place {mesh_place} during the route.
+      - Include {mesh_place} as a temporary waypoint, not the final stop.
+      - At some stage, visit mesh location {mesh_place} and then move on.
+      - Route the robot through {mesh_place} before it completes the mission.
+      - Ensure mesh place {mesh_place} has been reached at least once.
+      - Take a path that touches {mesh_place}; what happens afterward is unrestricted.
+
+  - query_type: pddl_end_at_mesh_place_symbol
+    target_questions: 20
+    tags: [pddl, navigation, mesh_place, destination]
+    variables:
+      mesh_place: mesh_place_symbols
+    cypher: |
+      MATCH (p:MeshPlace {nodeSymbol: "{mesh_place}"})
+      RETURN p.nodeSymbol AS place
+    grounding:
+      fields:
+        place:
+          source: value
+          aliases: [place, nodeSymbol]
+          symbol_type: MeshPlace
+          cardinality: set
+    goal:
+      fact: at-place
+      arguments: [{result: place}]
+      multiple: or
+    questions:
+      - End at mesh place {mesh_place}.
+      - Make {mesh_place} the last location on the route.
+      - Once the robot reaches mesh place {mesh_place}, it should remain there.
+      - Complete the mission positioned at {mesh_place}.
+      - Use mesh place {mesh_place} as the final destination rather than a waypoint.
+      - Stop at {mesh_place} after all other navigation is finished.
+
+  - query_type: pddl_visit_room_symbol
+    target_questions: 20
+    tags: [pddl, navigation, room, waypoint]
+    variables:
+      room: room_symbols
+    cypher: |
+      MATCH (r:Room {nodeSymbol: "{room}"})
+      RETURN r.nodeSymbol AS room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: visited-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Pass through room {room}, but feel free to finish elsewhere.
+      - Include region {room} somewhere in the route.
+      - Visit {room} on the way to the eventual destination.
+      - The robot must enter room {room} at least once before the mission ends.
+      - Take a route through {room}; staying there afterward is not required.
+      - Make {room} an intermediate region on the itinerary.
+
+  - query_type: pddl_end_in_room_symbol
+    target_questions: 20
+    tags: [pddl, navigation, room, direct_symbol, destination]
+    variables:
+      room: room_symbols
+    cypher: |
+      MATCH (r:Room {nodeSymbol: "{room}"})
+      RETURN r.nodeSymbol AS room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: in-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Finish in room {room}.
+      - Make region {room} the final destination rather than a pass-through.
+      - Once inside {room}, stay there until the mission is complete.
+      - The robot must be within room {room} at the end, regardless of its earlier route.
+      - Conclude all navigation in {room}.
+      - End the mission somewhere inside region {room}.
+
+  - query_type: pddl_visit_room_class
+    target_questions: 20
+    tags: [pddl, navigation, room, class_reference, ambiguity, waypoint]
+    variables:
+      room_class: room_classes
+    cypher: |
+      MATCH (r:Room {class: "{room_class}"})
+      RETURN r.nodeSymbol AS room
+      ORDER BY room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: visited-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Visit any {room_class} room before continuing to the destination.
+      - Pass through one region classified as {room_class}; which one is unimportant.
+      - Add a {room_class} room as a waypoint on the route.
+      - At some point, the robot must enter one of the {room_class} rooms and later may leave.
+      - Choose whichever {room_class} region is convenient and travel through it.
+      - Ensure a room of type {room_class} has been visited, without requiring the route to end there.
+
+  - query_type: pddl_end_in_room_class
+    target_questions: 20
+    tags: [pddl, navigation, room, class_reference, ambiguity, destination]
+    variables:
+      room_class: room_classes
+    cypher: |
+      MATCH (r:Room {class: "{room_class}"})
+      RETURN r.nodeSymbol AS room
+      ORDER BY room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: in-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Finish in a {room_class} room.
+      - Select any region of type {room_class} as the mission's endpoint.
+      - The robot should end up inside one of the {room_class} rooms and remain there.
+      - Conclude the route in whichever {room_class} region is easiest to reach.
+      - A {room_class} room must contain the robot when all tasks are complete.
+      - "Do not merely pass through: stop for good in one of the {room_class} rooms."
+
+  - query_type: pddl_visit_room_containing_object
+    target_questions: 20
+    tags: [pddl, navigation, room, hierarchy, object_reference, waypoint]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (r:Room)-[:CONTAINS*]->(o:Object {nodeSymbol: "{object}"})
+      RETURN DISTINCT r.nodeSymbol AS room
+      ORDER BY room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: visited-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Visit the room containing object {object}, then continue elsewhere.
+      - Use {object} to identify its room and include that region as a waypoint.
+      - Pass through whichever room contains {object}; it need not be the final region.
+      - Before completing the mission, enter the room in which object {object} is located.
+      - Find {object}'s containing region, travel through it, and carry on.
+      - The route must include the room associated with object {object} at least once.
+
+  - query_type: pddl_end_in_room_containing_object
+    target_questions: 20
+    tags: [pddl, navigation, room, hierarchy, object_reference, destination]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (r:Room)-[:CONTAINS*]->(o:Object {nodeSymbol: "{object}"})
+      RETURN DISTINCT r.nodeSymbol AS room
+      ORDER BY room
+    grounding:
+      fields:
+        room:
+          source: value
+          aliases: [room, nodeSymbol]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      fact: in-region
+      arguments: [{result: room}]
+      multiple: or
+    questions:
+      - Finish in the room containing object {object}.
+      - Locate {object}'s room and use that entire region as the final destination.
+      - When the mission ends, the robot must still be in the same room as {object}.
+      - Travel to whichever region contains object {object} and remain inside it.
+      - Conclude the route within the room associated with {object}.
+      - Do not stop elsewhere; the endpoint belongs in object {object}'s containing room.
+
+  - query_type: pddl_move_object_to_place
+    target_questions: 20
+    tags: [pddl, manipulation, destination]
+    variables:
+      object: object_symbols
+      place: place_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
+    grounding:
+      fields:
+        object:
+          source: object
+          aliases: [object]
+          symbol_type: Object
+          cardinality: set
+        place:
+          source: place
+          aliases: [place]
+          symbol_type: Place
+          cardinality: set
+    goal:
+      fact: object-in-place
+      arguments: [{result: object}, {result: place}]
+      multiple: or
+    questions:
+      - Move object {object} to place {place}.
+      - Object {object} belongs in {place}; relocate it there.
+      - Carry {object} over to place {place} and leave the object behind.
+      - Reposition object {object} so that it is contained by {place}.
+      - Deliver {object} to {place}.
+      - Take object {object} from wherever it is now and put it inside place {place}.
+
+  - query_type: pddl_inspect_object_and_end_at_place
+    target_questions: 20
+    tags: [pddl, compound, conjunction, inspection, destination]
+    variables:
+      object: object_symbols
+      place: place_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
+    grounding:
+      fields:
+        object:
+          source: object
+          aliases: [object]
+          symbol_type: Object
+          cardinality: set
+        place:
+          source: place
+          aliases: [place]
+          symbol_type: Place
+          cardinality: set
+    goal:
+      operator: and
+      clauses:
+        - fact: safe
+          arguments: [{result: object}]
+        - fact: at-place
+          arguments: [{result: place}]
+    questions:
+      - Inspect object {object} and finish at place {place}.
+      - Before stopping at {place}, complete a safety check on {object}.
+      - Two conditions must hold when you are done; {object} is safe and your final position is {place}.
+      - Examine {object}, then bring the route to an end at place {place}.
+      - Clear object {object} as safe while ensuring the mission concludes at {place}.
+      - Object {object} needs inspection, and place {place} must be the robot's destination.
+
+  - query_type: pddl_visit_object_and_end_at_object
+    target_questions: 20
+    tags: [pddl, compound, conjunction, navigation, waypoint, destination]
+    variables:
+      waypoint_object: object_symbols
+      destination_object: object_symbols
+    cypher: |
+      MATCH (waypoint:Object {nodeSymbol: "{waypoint_object}"})
+      MATCH (destination:Object {nodeSymbol: "{destination_object}"})
+      WHERE waypoint <> destination
+      RETURN waypoint.nodeSymbol AS waypoint, destination.nodeSymbol AS destination
+    grounding:
+      fields:
+        waypoint:
+          source: waypoint
+          aliases: [waypoint]
+          symbol_type: Object
+          cardinality: set
+        destination:
+          source: destination
+          aliases: [destination]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      operator: and
+      clauses:
+        - fact: visited-object
+          arguments: [{result: waypoint}]
+        - fact: at-object
+          arguments: [{result: destination}]
+    questions:
+      - Visit object {waypoint_object}, but end the route at {destination_object}.
+      - Stop by {waypoint_object} on the way; the final destination is object {destination_object}.
+      - Make sure {waypoint_object} is visited and that the robot ultimately remains at {destination_object}.
+      - Include {waypoint_object} as a waypoint before finishing beside {destination_object}.
+      - The route must touch object {waypoint_object} and terminate at object {destination_object}.
+      - Pass {waypoint_object} during the mission, then settle at {destination_object}.
+
+  - query_type: pddl_visit_place_and_end_in_room
+    target_questions: 20
+    tags: [pddl, compound, conjunction, navigation, waypoint, room, destination]
+    variables:
+      place: place_symbols
+      room: room_symbols
+    cypher: |
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      MATCH (r:Room {nodeSymbol: "{room}"})
+      RETURN p.nodeSymbol AS place, r.nodeSymbol AS room
+    grounding:
+      fields:
+        place:
+          source: place
+          aliases: [place]
+          symbol_type: Place
+          cardinality: set
+        room:
+          source: room
+          aliases: [room]
+          symbol_type: Room
+          cardinality: set
+    goal:
+      operator: and
+      clauses:
+        - fact: visited-place
+          arguments: [{result: place}]
+        - fact: in-region
+          arguments: [{result: room}]
+    questions:
+      - Pass through place {place} and finish inside room {room}.
+      - Place {place} is a required waypoint; after visiting it, end the mission in {room}.
+      - Travel via {place}, but make region {room} the final destination.
+      - Ensure {place} appears on the route and the robot remains in room {room} at completion.
+      - Visit place {place} at some stage, then conclude all navigation within {room}.
+      - The mission needs both a stop at {place} and a final position inside region {room}.
+
+  - query_type: pddl_not_holding_object_symbol
+    target_questions: 20
+    tags: [pddl, negation, manipulation, direct_symbol]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.nodeSymbol AS object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      operator: not
+      clauses:
+        - fact: holding
+          arguments: [{result: object}]
+    questions:
+      - Do not finish while holding object {object}.
+      - Make sure {object} is out of the robot's gripper when the task is complete.
+      - Object {object} must not be held in the final state.
+      - Release {object} if necessary; it should not remain in hand.
+      - Whatever else happens, end the mission without carrying {object}.
+      - Leave object {object} unheld.
+
+  - query_type: pddl_not_holding_object_class
+    target_questions: 20
+    tags: [pddl, negation, manipulation, class_reference, ambiguity]
+    variables:
+      class: object_classes
+    cypher: |
+      MATCH (o:Object {class: "{class}"})
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      operator: not
+      clauses:
+        - fact: holding
+          arguments: [{result: object}]
+          multiple: or
+    questions:
+      - Do not end up holding any {class}.
+      - Every {class} must be outside the robot's gripper at completion.
+      - Finish the mission without carrying one of the {class} objects.
+      - If a {class} is currently held, release it before the task ends.
+      - The final state must not have the robot holding a {class}.
+      - Keep all objects classified as {class} unheld.
+
+  - query_type: pddl_object_not_in_place
+    target_questions: 20
+    tags: [pddl, negation, manipulation, direct_symbol]
+    variables:
+      object: object_symbols
+      place: place_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      MATCH (p:Place {nodeSymbol: "{place}"})
+      RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
+    grounding:
+      fields:
+        object:
+          source: object
+          aliases: [object]
+          symbol_type: Object
+          cardinality: set
+        place:
+          source: place
+          aliases: [place]
+          symbol_type: Place
+          cardinality: set
+    goal:
+      operator: not
+      clauses:
+        - fact: object-in-place
+          arguments: [{result: object}, {result: place}]
+    questions:
+      - Ensure object {object} is not in place {place}.
+      - Remove {object} from {place} if it is there.
+      - Place {place} must not contain object {object} in the final state.
+      - Keep {object} somewhere other than {place}.
+      - By the end, object {object} should be outside place {place}.
+      - Make the relationship between {object} and {place} one of non-containment.
+
+  - query_type: pddl_visit_object_without_holding
+    target_questions: 20
+    tags: [pddl, compound, conjunction, negation, navigation, waypoint, direct_symbol]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.nodeSymbol AS object
+    grounding:
+      fields:
+        object:
+          source: value
+          aliases: [object, nodeSymbol]
+          symbol_type: Object
+          cardinality: set
+    goal:
+      operator: and
+      clauses:
+        - fact: visited-object
+          arguments: [{result: object}]
+        - operator: not
+          clauses:
+            - fact: holding
+              arguments: [{result: object}]
+    questions:
+      - Visit object {object}, but do not finish holding it.
+      - Stop by {object} without taking it away in the gripper.
+      - The route must reach object {object}, and the final state must leave it unheld.
+      - Check in at {object}; if you pick it up, release it again before completion.
+      - Make contact with object {object} as a waypoint while ensuring it is not carried at the end.
+      - Object {object} needs a visit, not possession.

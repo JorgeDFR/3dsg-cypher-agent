@@ -18,6 +18,13 @@ import yaml
 
 from cypher_3dsg_agent_distillation.cli_output import captured_warnings, print_summary
 from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.experiment_profiles import load_experiment_profile
+from cypher_3dsg_agent_distillation.heracles_validation import validate_pddl_goal
+from cypher_3dsg_agent_distillation.pddl_goals import (
+    grounding_contract,
+    grounding_is_non_empty,
+    render_pddl_solution,
+)
 from cypher_3dsg_agent_distillation.scene_graph import SceneIndex
 
 
@@ -246,8 +253,18 @@ def diverse_candidate_sample(
     return selected
 
 
-def stable_uid(query_type: str, question: str, cypher: str) -> str:
-    digest = hashlib.sha1(f"{query_type}\n{question}\n{cypher}".encode()).hexdigest()
+def stable_uid(
+    query_type: str,
+    question: str,
+    cypher: str,
+    task_family: str = "cypher_qa",
+) -> str:
+    identity = f"{query_type}\n{question}\n{cypher}"
+    if task_family != "cypher_qa":
+        identity = f"{task_family}\n{identity}"
+    digest = hashlib.sha1(
+        identity.encode()
+    ).hexdigest()
     return f"tpl_{digest[:12]}"
 
 
@@ -490,12 +507,18 @@ def generate_records(
     limit_per_template: int | None = None,
     seed: int | None = None,
     non_empty_ratio: float | None = None,
+    task_family: str | None = None,
+    output_type: str | None = None,
+    experiment_profile: str | None = None,
+    question_set: str | None = None,
 ) -> list[dict[str, Any]]:
     values = config.get("values", {})
     templates_config = (
         question_templates_config if question_templates_config is not None else config
     )
     templates = templates_config.get("templates", [])
+    task_family = str(task_family or templates_config.get("task_family") or "cypher_qa")
+    output_type = str(output_type or templates_config.get("output_type") or "SLDP")
     sampling_config = templates_config.get("sampling", {})
     if not isinstance(sampling_config, dict):
         raise TypeError("sampling must be a mapping.")
@@ -505,8 +528,16 @@ def generate_records(
     for template in templates:
         query_type = template["query_type"]
         solution_formats = solution_formats_for_template(template)
-        if scene_index is not None and not solution_formats:
+        if scene_index is not None and task_family == "cypher_qa" and not solution_formats:
             raise KeyError(f"Template `{query_type}` must define solution_formats.")
+        if task_family == "cypher_pddl" and not isinstance(template.get("goal"), dict):
+            raise KeyError(f"PDDL template `{query_type}` must define a goal mapping.")
+        if task_family == "cypher_pddl" and not (
+            isinstance(template.get("grounding"), dict)
+            and isinstance(template["grounding"].get("fields"), dict)
+            and template["grounding"]["fields"]
+        ):
+            raise KeyError(f"PDDL template `{query_type}` must define grounding fields.")
 
         variable_combinations = list(variable_product(template, values))
         question_templates = list(template["questions"])
@@ -532,7 +563,28 @@ def generate_records(
         seen_questions: set[str] = set()
         for variables in variable_combinations:
             cypher = format_nested(template["cypher"], variables).strip()
-            solution = scene_index.solution_for(query_type, variables) if scene_index else None
+            raw_solution = scene_index.solution_for(query_type, variables) if scene_index else None
+            record_grounding = None
+            if task_family == "cypher_pddl":
+                record_grounding = grounding_contract(
+                    raw_solution,
+                    template.get("grounding") or {},
+                    variables,
+                )
+                solution = (
+                    render_pddl_solution(template["goal"], record_grounding)
+                    if grounding_is_non_empty(record_grounding)
+                    else None
+                )
+                if solution is not None:
+                    valid_goal, _parsed_goal, goal_issues = validate_pddl_goal(solution)
+                    if not valid_goal:
+                        raise ValueError(
+                            f"PDDL template `{query_type}` generated an invalid goal: "
+                            + "; ".join(goal_issues)
+                        )
+            else:
+                solution = raw_solution
             answer_validation_for = getattr(scene_index, "answer_validation_for", None)
             answer_validation = (
                 answer_validation_for(query_type, variables)
@@ -552,14 +604,21 @@ def generate_records(
                     continue
                 seen_questions.add(question)
                 record = {
-                    "uid": stable_uid(query_type, question, cypher),
+                    "uid": stable_uid(query_type, question, cypher, task_family),
                     "query_type": query_type,
+                    "task_family": task_family,
+                    "output_type": output_type,
+                    "experiment_profile": experiment_profile,
                     "question": question,
                     "gold_cypher": LiteralString(f"{cypher}\n"),
                     "solution_formats": deepcopy(solution_formats),
-                    "solution": format_solution_field(
-                        deepcopy(solution),
-                        solution_formats=solution_formats,
+                    "solution": (
+                        str(solution)
+                        if task_family == "cypher_pddl" and solution is not None
+                        else format_solution_field(
+                            deepcopy(solution),
+                            solution_formats=solution_formats,
+                        )
                     ),
                     "scene_id": config.get("scene_id"),
                     "read_only": bool(template.get("read_only", True)),
@@ -567,14 +626,29 @@ def generate_records(
                 }
                 if answer_validation is not None:
                     record["answer_validation"] = deepcopy(answer_validation)
+                if record_grounding is not None:
+                    record["grounding"] = deepcopy(record_grounding)
+                record["metadata"] = {
+                    "experiment_profile": experiment_profile,
+                    "question_set": question_set,
+                    "task_family": task_family,
+                    "output_type": output_type,
+                }
                 candidates.append(
                     QuestionCandidate(
                         record=record,
-                        has_solution=scene_index is None or not solution_is_empty(solution),
+                        has_solution=(
+                            grounding_is_non_empty(record_grounding)
+                            if record_grounding is not None
+                            else scene_index is None or not solution_is_empty(solution)
+                        ),
                         variable_key=variable_key,
                         variant_index=variant_index,
                     )
                 )
+
+        if task_family == "cypher_pddl":
+            candidates = [candidate for candidate in candidates if candidate.has_solution]
 
         if has_variables and target is not None:
             if len(candidates) < target and len(candidates) < raw_capacity:
@@ -632,24 +706,34 @@ def command(args: argparse.Namespace) -> None:
     config = load_yaml(data_config["scene_template_values_path"])
     config["scene_id"] = data_config["scene_id"]
     config["source_3dsg"] = data_config["scene_path"]
-    config["question_templates_path"] = data_config["question_templates_path"]
-    question_templates_config = load_question_templates(config)
+    question_sets = data_config.get("question_sets") or []
+    all_records: list[dict[str, Any]] = []
     with captured_warnings("Question generation warnings"):
-        records = generate_records(
-            config,
-            question_templates_config=question_templates_config,
-            limit_per_template=args.limit_per_template,
-            seed=args.seed,
-            non_empty_ratio=args.non_empty_ratio,
-        )
+        for question_set in question_sets:
+            templates_config = load_yaml(question_set["question_templates_path"])
+            profile = load_experiment_profile(question_set["experiment_profile_path"])
+            all_records.extend(
+                generate_records(
+                    config,
+                    question_templates_config=templates_config,
+                    limit_per_template=args.limit_per_template,
+                    seed=args.seed,
+                    non_empty_ratio=args.non_empty_ratio,
+                    task_family=profile.task_family,
+                    output_type=profile.output_type,
+                    experiment_profile=profile.name,
+                    question_set=question_set["name"],
+                )
+            )
+    records = all_records
+    uids = [record["uid"] for record in records]
+    if len(uids) != len(set(uids)):
+        raise ValueError("Question generation produced duplicate record UIDs.")
     output_path = data_config["raw_questions_path"]
     write_questions_yaml(records, output_path)
     counts = Counter(record["query_type"] for record in records)
-    sampling_config = (question_templates_config or {}).get("sampling", {})
     effective_non_empty_ratio = (
-        args.non_empty_ratio
-        if args.non_empty_ratio is not None
-        else sampling_config.get("non_empty_ratio", 0.9)
+        args.non_empty_ratio if args.non_empty_ratio is not None else "per set"
     )
     print_summary(
         "Question templates generated",
@@ -657,6 +741,7 @@ def command(args: argparse.Namespace) -> None:
             ("Scene", data_config["scene_id"]),
             ("Questions", len(records)),
             ("Question types", len(counts)),
+            ("Question sets", len(question_sets)),
             ("Non-empty ratio", effective_non_empty_ratio),
             ("Output", output_path),
         ],

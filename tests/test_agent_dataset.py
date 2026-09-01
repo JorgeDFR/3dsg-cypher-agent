@@ -6,6 +6,8 @@ from agent_helpers import answerable_trace
 
 from cypher_3dsg_agent_distillation.agent_dataset import (
     assert_no_split_leakage,
+    cap_by_task_type,
+    consolidate_cross_task_cypher,
     grouped_split_records,
     optimize_student_trace,
     optimize_student_traces,
@@ -126,6 +128,30 @@ def test_assert_no_split_leakage_rejects_repeated_cypher():
 
     with pytest.raises(ValueError, match="Split leakage"):
         assert_no_split_leakage({"train": [record], "test": [leaked]})
+
+
+def test_cross_family_equivalent_cypher_is_consolidated_into_one_split():
+    cypher = "MATCH (o:Object) RETURN o.nodeSymbol AS object"
+    qa_record = make_record("qa", "object_lookup", cypher)
+    pddl_record = make_record("pddl", "pddl_visit_object", cypher).model_copy(
+        update={"task_family": "cypher_pddl", "output_type": "PDDL"}
+    )
+    splits = {"train": [qa_record], "eval": [], "test": [pddl_record]}
+
+    consolidate_cross_task_cypher(splits)
+
+    occupied = [name for name, records in splits.items() if records]
+    assert occupied == ["train"]
+    assert {record.uid for record in splits["train"]} == {"qa", "pddl"}
+
+
+def test_per_task_cap_is_independent_across_task_families():
+    qa_record = make_record("qa", "lookup", "RETURN 1 AS value")
+    pddl_record = make_record("pddl", "lookup", "RETURN 2 AS value").model_copy(
+        update={"task_family": "cypher_pddl", "output_type": "PDDL"}
+    )
+
+    assert cap_by_task_type([qa_record, pddl_record], 1) == [qa_record, pddl_record]
 
 
 def test_grouped_split_keeps_challenge_task_out_of_main_splits():
@@ -530,9 +556,11 @@ def test_split_report_payload_lists_optimized_questions():
         {
             "uid": "optimized",
             "scene_id": "scene",
-            "split": "train",
-            "task_type": "object_count",
-            "question": "How many chairs?",
+                "split": "train",
+                "task_type": "object_count",
+                "task_family": "cypher_qa",
+                "output_type": "SLDP",
+                "question": "How many chairs?",
             "split_group": record.split_group,
             "gold_cypher": "MATCH (o:Object) RETURN count(o) AS count",
             "expected_solution": 3,

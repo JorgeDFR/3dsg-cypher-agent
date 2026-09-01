@@ -18,11 +18,13 @@ class CypherSeedRecord(BaseModel):
     query_type: str = "unknown"
     task_family: str | None = None
     output_type: str | None = None
+    experiment_profile: str | None = None
     read_only: bool = True
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
+    grounding: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -37,11 +39,13 @@ class PreparedCypherSeedRecord(BaseModel):
     query_type: str
     task_family: str = "cypher_qa"
     output_type: str = "SLDP"
+    experiment_profile: str | None = None
     read_only: bool
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
+    grounding: dict[str, Any] | None = None
     tags: list[str]
     scene_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -86,11 +90,15 @@ def prepare_seed_records(
                 query_type=record.query_type,
                 task_family=record.task_family or task_family,
                 output_type=record.output_type or output_type,
+                experiment_profile=(
+                    record.experiment_profile or metadata.get("experiment_profile")
+                ),
                 read_only=record.read_only,
                 expected_result_hash=record.expected_result_hash,
                 solution=record.solution,
                 solution_formats=record.solution_formats,
                 answer_validation=record.answer_validation,
+                grounding=record.grounding,
                 tags=record.tags,
                 scene_id=record.scene_id,
                 metadata=metadata,

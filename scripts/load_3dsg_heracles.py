@@ -18,7 +18,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Load a 3DSG JSON into Neo4j through Heracles."
     )
-    parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
+    parser.add_argument("--scene", default="data/scenes/uhumans2_office.json")
     parser.add_argument(
         "--uri",
         default=None,

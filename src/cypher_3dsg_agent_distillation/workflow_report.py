@@ -114,6 +114,15 @@ def count_by_task_type(records: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(Counter(task_type(record) for record in records).items()))
 
 
+def task_family(record: dict[str, Any]) -> str:
+    metadata = record.get("metadata") or {}
+    return str(record.get("task_family") or metadata.get("task_family") or "cypher_qa")
+
+
+def count_by_task_family(records: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(sorted(Counter(task_family(record) for record in records).items()))
+
+
 def count_tags(records: list[dict[str, Any]]) -> dict[str, int]:
     counter: Counter[str] = Counter()
     for record in records:
@@ -674,6 +683,7 @@ def collect_workflow_report_data(
             "records": generated_questions,
             "seed_records": seed_records,
             "by_task_type": count_by_task_type(generated_questions),
+            "by_task_family": count_by_task_family(generated_questions),
             "tag_counts": count_tags(generated_questions),
         },
         "traces": {
@@ -681,6 +691,7 @@ def collect_workflow_report_data(
             "accepted_records": accepted_traces,
             "rejected_records": rejected_traces,
             "teacher_by_task_type": count_by_task_type(teacher_traces),
+            "teacher_by_task_family": count_by_task_family(teacher_traces),
             "accepted_by_task_type": count_by_task_type(accepted_traces),
             "rejected_by_task_type": count_by_task_type(rejected_traces),
             "rejected_reasons": dict(
@@ -697,6 +708,10 @@ def collect_workflow_report_data(
             "records": split_records,
             "by_task_type": {
                 split: count_by_task_type(records) for split, records in split_records.items()
+            },
+            "by_task_family": {
+                split: count_by_task_family(records)
+                for split, records in split_records.items()
             },
             "split_report": split_report,
             "optimized_questions": (

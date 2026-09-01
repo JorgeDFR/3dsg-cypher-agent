@@ -3,6 +3,7 @@ from cypher_3dsg_agent_distillation.heracles_validation import (
     answer_type_hint,
     answer_type_hint_from_solution_formats,
     ensure_heracles_agents_importable,
+    validate_pddl_goal,
 )
 
 
@@ -67,8 +68,8 @@ def test_top_k_with_ties_rejects_missing_higher_ranked_or_wrong_size_answers():
 
 def test_pddl_equality_uses_heracles_goal_semantics():
     valid_format, correct = answer_matches_with_heracles(
-        "(and (visited-object O1) (visited-room R2))",
-        "(and (visited-room R2) (visited-object O1))",
+        "(and (visited-object O1) (visited-region R2))",
+        "(and (visited-region R2) (visited-object O1))",
         "PDDL",
     )
 
@@ -85,6 +86,30 @@ def test_pddl_invalid_format_is_reported():
 
     assert not valid_format
     assert not correct
+
+
+def test_pddl_domain_validation_rejects_unknown_predicate_wrong_arity_and_type():
+    assert validate_pddl_goal("(teleported-object O1)")[0] is False
+    assert validate_pddl_goal("(holding O1 O2)")[0] is False
+    assert validate_pddl_goal("(holding R1)")[0] is False
+
+
+def test_pddl_domain_validation_accepts_place_and_mesh_place_symbols():
+    assert validate_pddl_goal("(visited-place p1)")[0]
+    assert validate_pddl_goal("(visited-place P2)")[0]
+
+
+def test_pddl_domain_validation_uses_region_predicates_for_room_symbols():
+    assert validate_pddl_goal("(visited-region R1)")[0]
+    assert validate_pddl_goal("(in-region R2)")[0]
+    assert validate_pddl_goal("(visited-room R1)")[0] is False
+    assert validate_pddl_goal("(in-room R2)")[0] is False
+
+
+def test_pddl_domain_validation_accepts_conjunction_and_negation():
+    assert validate_pddl_goal(
+        "(and (safe O1) (at-place p2) (not (holding O1)))"
+    )[0]
 
 
 def test_sldp_answer_type_hint_uses_heracles_parser():

@@ -121,7 +121,7 @@ def main() -> None:
         )
     )
     parser.add_argument("--compose-file", default=DEFAULT_COMPOSE_FILE)
-    parser.add_argument("--scene", default="data/scenes/3dsg_uhumans2.json")
+    parser.add_argument("--scene", default="data/scenes/uhumans2_office.json")
     parser.add_argument("--input", default="data/legacy/processed/cypher_records.jsonl")
     parser.add_argument(
         "--output",

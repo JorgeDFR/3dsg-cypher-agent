@@ -15,6 +15,7 @@ from cypher_3dsg_agent_distillation.agent_records import (
     DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
     AgentTraceRecord,
+    normalize_cypher,
 )
 from cypher_3dsg_agent_distillation.agent_rendering import RenderView, render_trace
 from cypher_3dsg_agent_distillation.cli_output import (
@@ -28,7 +29,8 @@ from cypher_3dsg_agent_distillation.cypher_seed_records import (
     prepare_seed_records,
 )
 from cypher_3dsg_agent_distillation.experiment_profiles import (
-    load_experiment_profile_from_config,
+    experiment_profile_for_seed,
+    load_experiment_profiles_from_config,
     profile_seed_defaults,
 )
 from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
@@ -37,6 +39,12 @@ from cypher_3dsg_agent_distillation.io import read_jsonl, write_jsonl
 
 def read_agent_jsonl(path: str | Path) -> list[AgentTraceRecord]:
     return [AgentTraceRecord.model_validate(record) for record in read_jsonl(path)]
+
+
+def record_task_key(record: AgentTraceRecord) -> str:
+    if record.task_family == "cypher_qa":
+        return record.task_type
+    return f"{record.task_family}/{record.task_type}"
 
 
 def cap_by_task_type(
@@ -48,10 +56,11 @@ def cap_by_task_type(
     counts: Counter[str] = Counter()
     capped = []
     for record in records:
-        if counts[record.task_type] >= max_per_task_type:
+        task_key = record_task_key(record)
+        if counts[task_key] >= max_per_task_type:
             continue
         capped.append(record)
-        counts[record.task_type] += 1
+        counts[task_key] += 1
     return capped
 
 
@@ -156,6 +165,8 @@ def repair_rejected_invalid_answer_trace(
         or (trace.get("metadata") or {}).get("output_type")
         or "SLDP"
     )
+    if output_type.upper() != "SLDP":
+        return None
     valid_cypher_format, cypher_matches_real = answer_matches_with_heracles(
         str(cypher_solution),
         str(real_solution),
@@ -208,12 +219,16 @@ def repair_rejected_invalid_answer_trace(
             "scene_id": trace.get("scene_id"),
             "question": question,
             "query_type": trace.get("query_type", "unknown"),
+            "task_family": trace.get("task_family", "cypher_qa"),
+            "output_type": output_type,
+            "experiment_profile": trace.get("experiment_profile"),
             "messages": repaired_messages,
             "gold_cypher": cypher,
             "expected_solution": real_solution,
             "real_solution": real_solution,
             "solution_formats": trace.get("solution_formats", []),
             "answer_validation": trace.get("answer_validation"),
+            "grounding": trace.get("grounding"),
             "cypher_solution": cypher_solution,
             "final_answer": str(cypher_solution),
             "split_group": trace.get("split_group"),
@@ -406,7 +421,7 @@ def grouped_split_records(
     split_sizes = {"train": train_size, "eval": eval_size, "test": test_size}
     records_by_task_type: dict[str, list[AgentTraceRecord]] = defaultdict(list)
     for record in main_records:
-        records_by_task_type[record.task_type].append(record)
+        records_by_task_type[record_task_key(record)].append(record)
 
     record_level_task_types: set[str] = set()
     for task_type in sorted(records_by_task_type):
@@ -465,11 +480,45 @@ def grouped_split_records(
     for split_records in split_lists.values():
         output_rng.shuffle(split_records)
 
+    consolidate_cross_task_cypher(split_lists)
+
     assert_no_split_leakage(
         split_lists,
         allow_group_leakage_task_types=record_level_task_types,
     )
     return train, eval_records, test, challenge
+
+
+def consolidate_cross_task_cypher(
+    splits: dict[str, list[AgentTraceRecord]],
+) -> None:
+    """Keep a Cypher-equivalent group in one split even across task families."""
+    locations: dict[str, dict[str, list[AgentTraceRecord]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    task_keys: dict[str, set[str]] = defaultdict(set)
+    for split_name, records in splits.items():
+        for record in records:
+            key = normalize_cypher(record.gold_cypher)
+            locations[key][split_name].append(record)
+            task_keys[key].add(record_task_key(record))
+
+    priority = {"train": 2, "eval": 1, "test": 0}
+    for cypher, by_split in locations.items():
+        if len(by_split) <= 1 or len(task_keys[cypher]) <= 1:
+            continue
+        target = max(
+            by_split,
+            key=lambda name: (len(by_split[name]), priority.get(name, -1)),
+        )
+        for split_name, records in by_split.items():
+            if split_name == target:
+                continue
+            record_ids = {id(record) for record in records}
+            splits[split_name][:] = [
+                record for record in splits[split_name] if id(record) not in record_ids
+            ]
+            splits[target].extend(records)
 
 
 def stratified_split_counts(
@@ -594,7 +643,7 @@ def values_by(
     excluded_task_types = excluded_task_types or set()
     values = set()
     for record in records:
-        if field != "uid" and record.task_type in excluded_task_types:
+        if field != "uid" and record_task_key(record) in excluded_task_types:
             continue
         if field == "uid":
             values.add(record.uid)
@@ -635,7 +684,11 @@ def write_rendered_split(
 
 
 def record_task_type_counts(records: list[AgentTraceRecord]) -> Counter[str]:
-    return Counter(record.task_type for record in records)
+    return Counter(record_task_key(record) for record in records)
+
+
+def record_task_family_counts(records: list[AgentTraceRecord]) -> Counter[str]:
+    return Counter(record.task_family for record in records)
 
 
 def format_counter(counter: Counter[str]) -> str:
@@ -670,6 +723,8 @@ def optimized_question_payload(record: AgentTraceRecord, split_name: str) -> dic
         "scene_id": record.scene_id,
         "split": split_name,
         "task_type": record.task_type,
+        "task_family": record.task_family,
+        "output_type": record.output_type,
         "question": record.question,
         "split_group": record.split_group,
         "gold_cypher": record.gold_cypher,
@@ -699,6 +754,9 @@ def split_records_payload(
         payload[split_name] = {
             "questions": len(records),
             "task_type_counts": counter_to_sorted_dict(record_task_type_counts(records)),
+            "task_family_counts": counter_to_sorted_dict(
+                record_task_family_counts(records)
+            ),
             "optimized_questions": sum(1 for record in records if optimization_kinds(record)),
             "uids": [record.uid for record in records],
         }
@@ -896,13 +954,18 @@ def split_command(args: argparse.Namespace) -> None:
 
 def prepare_seeds_command(args: argparse.Namespace) -> None:
     data_config = load_data_config(args.data_config)
-    profile = load_experiment_profile_from_config(data_config)
-    if profile is None:
+    profiles = load_experiment_profiles_from_config(data_config)
+    if not profiles:
         raise ValueError(
-            "Seed preparation requires a valid `experiment_profile_path` in the data config."
+            "Seed preparation requires at least one experiment profile."
         )
-    seed_defaults = profile_seed_defaults(profile)
+    default_profile = next(iter(profiles.values()))
+    seed_defaults = profile_seed_defaults(default_profile)
     raw_records = load_raw_seed_records_from_config(data_config)
+    for raw_record in raw_records:
+        experiment_profile_for_seed(
+            raw_record.model_dump(by_alias=True, exclude_none=True), profiles
+        )
     prepared = prepare_seed_records(
         raw_records=raw_records,
         task_family=seed_defaults.get("task_family", "cypher_qa"),
@@ -912,14 +975,14 @@ def prepare_seeds_command(args: argparse.Namespace) -> None:
     output_path = data_config["seed_records_jsonl_path"]
     write_jsonl(prepared, output_path)
     counts = Counter(record.query_type for record in prepared)
+    family_counts = Counter(record.task_family for record in prepared)
     print_summary(
         "Seed records prepared",
         [
             ("Scene", data_config["scene_id"]),
             ("Records", len(prepared)),
             ("Question types", len(counts)),
-            ("Task family", seed_defaults.get("task_family", "cypher_qa")),
-            ("Output type", seed_defaults.get("output_type", "SLDP")),
+            ("Task families", format_counter(family_counts)),
             ("Output", output_path),
         ],
     )

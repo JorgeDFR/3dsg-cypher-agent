@@ -1,9 +1,11 @@
 # 3DSG Cypher Agent Distillation
 
 This repository fine-tunes and distills small tool-using agents for querying
-Neo4j-backed 3D Scene Graphs. The active target is an agent that answers by
-calling `run_cypher_query(cypher_string: str)` through either Ollama-native tool
-calls or a custom XML fallback interface.
+Neo4j-backed 3D Scene Graphs. A dataset can mix direct question answering and
+robot-planning instructions: both call
+`run_cypher_query(cypher_string: str)`, then return either an SLDP answer or a
+grounded PDDL goal. Tool calls use either Ollama-native calls or a custom XML
+fallback interface.
 
 - Teacher options: `openai/gpt-oss-120b` through OpenRouter, or a deterministic
   `synthetic` teacher using gold Cypher and live Neo4j results
@@ -13,12 +15,14 @@ calls or a custom XML fallback interface.
 
 The active workflow is:
 
-1. Generate or load validated 3DSG Cypher seed records.
+1. Generate or load validated 3DSG Cypher seed records from one or more question sets.
 2. Generate tool-using traces with either an OpenRouter teacher or the deterministic
    synthetic teacher.
 3. Execute teacher Cypher tool calls locally through Neo4j validation.
 4. Allow bounded repair attempts, then keep only interactions that pass static
-   safety, execution, and expected-answer checks.
+   safety, execution, and task-specific checks. QA rows are compared with the
+   expected answer; PDDL rows must satisfy their grounding contract and the final
+   goal must be valid for the configured robot domain.
 5. Render accepted traces as `ollama_native` or `custom_xml`, optionally pruning
    unnecessary failed repair turns for student training.
 6. Train QLoRA student agents on grouped, leakage-checked splits.
@@ -51,7 +55,7 @@ docker/stack.sh setup
 Load the configured scene and inspect service status:
 
 ```bash
-docker/stack.sh load-neo4j data/scenes/3dsg_uhumans2.json
+docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
 docker/stack.sh status
 ```
 
@@ -86,6 +90,12 @@ Canonical training data is validated by `AgentTraceRecord`. Answerable examples
 call `run_cypher_query`; refusal examples call no tool and answer
 `<answer>WRITE_QUERY_NOT_ALLOWED</answer>`.
 
+Each record carries `task_family`, `output_type`, and `experiment_profile`.
+`cypher_qa` records use `SLDP`; `cypher_pddl` records use `PDDL` and additionally
+carry a `grounding` contract. The contract declares which result aliases and
+symbol types the Cypher tool must return. It prevents a syntactically correct
+goal from being accepted when the query retrieved the wrong scene entities.
+
 Teacher-generated traces are captured from real interactions. The
 training-ready accepted teacher traces are written to `teacher_traces.jsonl`.
 Debug copies are written to `accepted.json` and `rejected.json`; both include
@@ -105,6 +115,22 @@ Generated dataset artifacts are resolved from `scene_id` in `configs/data.yaml`
 and written under `data/3dsg/{scene_id}/...`. The source 3DSG JSON is not
 derived from `scene_id`; configure the user-provided Hydra/Spark DSG file with
 `scene_path`.
+
+Question sources are configured as a list, so one generated file and its later
+training splits can contain multiple task families:
+
+```yaml
+question_sets:
+  - name: cypher_qa
+    experiment_profile_path: cypher_qa_template.yaml
+    question_templates_path: cypher_qa_3dsg.yaml
+  - name: cypher_pddl
+    experiment_profile_path: cypher_pddl_template.yaml
+    question_templates_path: cypher_pddl_3dsg.yaml
+```
+
+The legacy singular `experiment_profile_path` and `question_templates_path`
+keys remain supported and are interpreted as one question set.
 
 Extract template values from the configured 3DSG scene:
 
@@ -166,6 +192,11 @@ docker/stack.sh main python scripts/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native
 ```
+
+Splitting is stratified by task family and query type. Normalized-equivalent
+Cypher queries shared by different families are consolidated into the same
+split to avoid cross-family leakage. Split and workflow reports include counts
+by task family.
 
 To optimize the student dataset by pruning failed repair attempts during
 split/render output and adding rejected `invalid_answer_format` traces that can

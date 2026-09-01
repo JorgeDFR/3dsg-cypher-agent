@@ -1,6 +1,8 @@
 from cypher_3dsg_agent_distillation.experiment_profiles import (
     SUPPORTED_TOOL_INTERFACES,
+    experiment_profile_for_seed,
     load_experiment_profile,
+    load_experiment_profiles_from_config,
     render_profile_messages,
 )
 
@@ -117,3 +119,61 @@ def test_profile_rejects_unconfigured_tool_interface():
         assert "not enabled" in str(exc)
     else:
         raise AssertionError("Expected disabled tool interface error")
+
+
+def test_mixed_config_resolves_profile_per_seed():
+    profiles = load_experiment_profiles_from_config(
+        {
+            "scene_id": "scene",
+            "scene_path": "scene.json",
+            "question_sets": [
+                {
+                    "name": "qa",
+                    "question_templates_path": "configs/question_templates/cypher_qa_3dsg.yaml",
+                    "experiment_profile_path": (
+                        "configs/experiment_profiles/cypher_qa_template.yaml"
+                    ),
+                },
+                {
+                    "name": "pddl",
+                    "question_templates_path": "configs/question_templates/cypher_pddl_3dsg.yaml",
+                    "experiment_profile_path": (
+                        "configs/experiment_profiles/cypher_pddl_template.yaml"
+                    ),
+                },
+            ],
+        }
+    )
+
+    profile = experiment_profile_for_seed(
+        {
+            "uid": "pddl",
+            "task_family": "cypher_pddl",
+            "output_type": "PDDL",
+            "experiment_profile": "cypher_pddl_template",
+        },
+        profiles,
+    )
+
+    assert profile.name == "cypher_pddl_template"
+
+
+def test_multiple_question_sets_may_share_one_profile():
+    profiles = load_experiment_profiles_from_config(
+        {
+            "scene_id": "scene",
+            "scene_path": "scene.json",
+            "question_sets": [
+                {
+                    "name": name,
+                    "question_templates_path": f"{name}.yaml",
+                    "experiment_profile_path": (
+                        "configs/experiment_profiles/cypher_qa_template.yaml"
+                    ),
+                }
+                for name in ("qa_core", "qa_spatial")
+            ],
+        }
+    )
+
+    assert list(profiles) == ["cypher_qa_template"]

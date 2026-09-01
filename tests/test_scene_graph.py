@@ -17,7 +17,7 @@ from cypher_3dsg_agent_distillation.scene_graph import (
     top_k_with_ties_validation,
 )
 
-SCENE_PATH = Path("data/scenes/3dsg_uhumans2.json")
+SCENE_PATH = Path("data/scenes/uhumans2_office.json")
 
 
 def test_node_symbol_matches_spark_dsg_encoding():
@@ -68,11 +68,11 @@ def test_extract_scene_values_from_spark_dsg():
 def test_extract_graph_records_from_spark_dsg():
     nodes, relationships = extract_graph_records(SCENE_PATH)
     assert {label: len(items) for label, items in nodes.items()} == {
-        "Object": 255,
-        "Place": 1338,
-        "MeshPlace": 2191,
-        "Room": 0,
-        "Building": 0,
+        "Object": 213,
+        "Place": 1130,
+        "MeshPlace": 1494,
+        "Room": 8,
+        "Building": 1,
     }
     assert {
         (relationship["from_label"], relationship["type"], relationship["to_label"])
@@ -86,7 +86,7 @@ def test_extract_graph_records_from_spark_dsg():
 
 def test_heracles_labelspace_uses_embedded_spark_dsg_labels(tmp_path):
     graph = spark_dsg.DynamicSceneGraph.load(str(SCENE_PATH))
-    labelspace = labelspace_from_metadata(graph, ["_l2p0", "_l3p1", "mesh"])
+    labelspace = labelspace_from_metadata(graph, ["_l2p0", "_l3p1", "mesh", "_l4p0"])
     output = tmp_path / "labelspace.yaml"
 
     write_heracles_labelspace(labelspace, output)
@@ -132,6 +132,25 @@ def test_object_class_inventory_uses_object_labels_only():
 
     assert "light" in inventory
     assert "floor" not in inventory
+
+
+def test_room_pddl_solutions_support_class_and_object_containment_references():
+    index = SceneIndex(SCENE_PATH)
+
+    assert [node_symbol(node.id) for node in index.containing_rooms("O0")] == ["R0"]
+    assert index.solution_for("pddl_visit_room_containing_object", {"object": "O0"}) == [
+        "R0"
+    ]
+    assert index.solution_for("pddl_end_in_room_class", {"room_class": "lounge"}) == [
+        "R0",
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+    ]
 
 
 def test_curated_cases_include_empty_and_non_empty_solutions():

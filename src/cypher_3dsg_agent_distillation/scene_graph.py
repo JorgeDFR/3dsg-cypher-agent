@@ -559,6 +559,28 @@ class SceneIndex:
         nodes = [self.graph.get_node(node_id) for node_id in place_ids]
         return sorted(nodes, key=lambda node: symbol_sort_key(node_symbol(node.id)))
 
+    def containing_rooms(self, object_symbol: str) -> list[spark_dsg.SceneGraphNode]:
+        obj = self.nodes_by_symbol.get(object_symbol)
+        if obj is None:
+            return []
+        rooms: dict[int, spark_dsg.SceneGraphNode] = {}
+        visited: set[int] = {node_id_value(obj)}
+        queue = deque(int(parent_id) for parent_id in obj.parents())
+        while queue:
+            parent_id = queue.popleft()
+            if parent_id in visited:
+                continue
+            visited.add(parent_id)
+            parent = self.graph.get_node(parent_id)
+            if self.node_labels_by_id.get(parent_id) == "Room":
+                rooms[parent_id] = parent
+                continue
+            queue.extend(int(grandparent_id) for grandparent_id in parent.parents())
+        return sorted(
+            rooms.values(),
+            key=lambda node: symbol_sort_key(node_symbol(node.id)),
+        )
+
     def hop_symbols(self, start_symbol: str, label: str, max_hops: int) -> list[str]:
         start = self.nodes_by_symbol.get(start_symbol)
         if start is None:
@@ -587,6 +609,108 @@ class SceneIndex:
         query_type: str,
         variables: dict[str, Any],
     ) -> Any:
+        if query_type in {
+            "pddl_visit_object_symbol",
+            "pddl_end_at_object_symbol",
+            "pddl_inspect_object_symbol",
+            "pddl_hold_object_symbol",
+            "pddl_not_holding_object_symbol",
+            "pddl_visit_object_without_holding",
+        }:
+            symbol = str(template_value(variables, "object"))
+            return symbol if symbol in self.nodes_by_symbol else None
+        if query_type in {
+            "pddl_visit_object_class",
+            "pddl_end_at_object_class",
+            "pddl_inspect_object_class",
+            "pddl_hold_object_class",
+            "pddl_not_holding_object_class",
+        }:
+            return [
+                node_symbol(node.id)
+                for node in self.objects_with_class(str(template_value(variables, "class")))
+            ]
+        if query_type in {"pddl_inspect_nearest_object", "pddl_end_at_nearest_object"}:
+            return self.solution_for("nearest_object_to_object", variables)
+        if query_type in {"pddl_visit_place_symbol", "pddl_end_at_place_symbol"}:
+            symbol = str(template_value(variables, "place"))
+            return symbol if symbol in self.nodes_by_symbol else None
+        if query_type in {
+            "pddl_visit_mesh_place_symbol",
+            "pddl_end_at_mesh_place_symbol",
+        }:
+            symbol = str(template_value(variables, "mesh_place"))
+            return symbol if symbol in self.nodes_by_symbol else None
+        if query_type in {"pddl_visit_room_symbol", "pddl_end_in_room_symbol"}:
+            symbol = str(template_value(variables, "room"))
+            return symbol if symbol in self.nodes_by_symbol else None
+        if query_type in {"pddl_visit_room_class", "pddl_end_in_room_class"}:
+            return [
+                node_symbol(node.id)
+                for node in self.rooms_with_class(
+                    str(template_value(variables, "room_class"))
+                )
+            ]
+        if query_type in {
+            "pddl_visit_room_containing_object",
+            "pddl_end_in_room_containing_object",
+        }:
+            return [
+                node_symbol(node.id)
+                for node in self.containing_rooms(str(template_value(variables, "object")))
+            ]
+        if query_type == "pddl_inspect_object_and_end_at_place":
+            object_symbol = str(template_value(variables, "object"))
+            place_symbol = str(template_value(variables, "place"))
+            if (
+                object_symbol not in self.nodes_by_symbol
+                or place_symbol not in self.nodes_by_symbol
+            ):
+                return None
+            return {"object": object_symbol, "place": place_symbol}
+        if query_type == "pddl_visit_object_and_end_at_object":
+            waypoint = str(template_value(variables, "waypoint_object"))
+            destination = str(template_value(variables, "destination_object"))
+            if (
+                waypoint == destination
+                or waypoint not in self.nodes_by_symbol
+                or destination not in self.nodes_by_symbol
+            ):
+                return None
+            return {"waypoint": waypoint, "destination": destination}
+        if query_type == "pddl_visit_place_and_end_in_room":
+            place_symbol = str(template_value(variables, "place"))
+            room_symbol = str(template_value(variables, "room"))
+            if (
+                place_symbol not in self.nodes_by_symbol
+                or room_symbol not in self.nodes_by_symbol
+            ):
+                return None
+            return {"place": place_symbol, "room": room_symbol}
+        if query_type == "pddl_object_not_in_place":
+            object_symbol = str(template_value(variables, "object"))
+            place_symbol = str(template_value(variables, "place"))
+            if (
+                object_symbol not in self.nodes_by_symbol
+                or place_symbol not in self.nodes_by_symbol
+            ):
+                return None
+            return {"object": object_symbol, "place": place_symbol}
+        if query_type == "pddl_move_object_to_place":
+            object_symbol = str(template_value(variables, "object"))
+            place_symbol = str(template_value(variables, "place"))
+            if (
+                object_symbol not in self.nodes_by_symbol
+                or place_symbol not in self.nodes_by_symbol
+            ):
+                return None
+            return {"object": object_symbol, "place": place_symbol}
+        if query_type == "pddl_ordered_places":
+            first = str(template_value(variables, "first"))
+            second = str(template_value(variables, "second"))
+            if first not in self.nodes_by_symbol or second not in self.nodes_by_symbol:
+                return None
+            return {"first": first, "second": second}
         if query_type == "object_class_inventory":
             class_names = sorted(
                 {

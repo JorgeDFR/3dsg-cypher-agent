@@ -106,9 +106,9 @@ def test_benchmark_compose_requires_gpu_and_owns_ollama():
     services = compose["services"]
 
     assert services["ollama"]["gpus"] == "all"
-    assert services["benchmark-ollama"]["gpus"] == "all"
+    assert services["main"]["gpus"] == "all"
     assert compose["x-benchmark-common"]["image"].endswith(
-        "3dsg-heracles-benchmark-benchmark-ollama:latest}"
+        "3dsg-heracles-benchmark-main:latest}"
     )
     assert services["ollama"]["container_name"] == "3dsg-heracles-benchmark-ollama"
     assert "ports" not in services["ollama"]

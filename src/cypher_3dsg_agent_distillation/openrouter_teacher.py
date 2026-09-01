@@ -37,7 +37,8 @@ from cypher_3dsg_agent_distillation.evaluation import (
 from cypher_3dsg_agent_distillation.experiment_profiles import (
     ExperimentProfile,
     ToolInterface,
-    load_experiment_profile_from_config,
+    experiment_profile_for_seed,
+    load_experiment_profiles_from_config,
     render_profile_messages,
 )
 from cypher_3dsg_agent_distillation.heracles_validation import answer_matches_with_heracles
@@ -53,6 +54,7 @@ from cypher_3dsg_agent_distillation.neo4j_validation import (
     schema_policy,
     static_checks,
 )
+from cypher_3dsg_agent_distillation.pddl_goals import validate_grounding_rows
 
 DEFAULT_MAX_TOOL_CALLS = 3
 TeacherProvider = Literal["openrouter", "synthetic"]
@@ -340,17 +342,22 @@ def build_candidate_trace(
         scene_id=seed.get("scene_id"),
         question=str(candidate.get("question") or seed["question"]),
         query_type=seed.get("query_type", "unknown"),
+        task_family=seed.get("task_family", "cypher_qa"),
+        output_type=seed.get("output_type", "SLDP"),
+        experiment_profile=seed.get("experiment_profile"),
         messages=candidate["messages"],
         gold_cypher=cypher,
         expected_solution=real_solution,
         real_solution=real_solution,
         solution_formats=seed.get("solution_formats", []),
         answer_validation=seed.get("answer_validation"),
+        grounding=seed.get("grounding"),
         final_answer=final_answer_from_messages(candidate["messages"]),
         split_group=split_group_for_record(
             seed.get("scene_id"),
             seed.get("query_type", "unknown"),
             cypher,
+            seed.get("task_family", "cypher_qa"),
         ),
         teacher_model=teacher_model,
         read_only=bool(seed.get("read_only", True)),
@@ -400,18 +407,23 @@ def build_interaction_trace(
         scene_id=seed.get("scene_id"),
         question=str(seed["question"]),
         query_type=seed.get("query_type", "unknown"),
+        task_family=seed.get("task_family", "cypher_qa"),
+        output_type=seed.get("output_type", "SLDP"),
+        experiment_profile=seed.get("experiment_profile"),
         messages=messages,
         gold_cypher=cypher,
         expected_solution=real_solution,
         real_solution=real_solution,
         solution_formats=seed.get("solution_formats", []),
         answer_validation=seed.get("answer_validation"),
+        grounding=seed.get("grounding"),
         cypher_solution=cypher_solution,
         final_answer=final_answer_from_messages(messages),
         split_group=split_group_for_record(
             seed.get("scene_id"),
             seed.get("query_type", "unknown"),
             seed_cypher,
+            seed.get("task_family", "cypher_qa"),
         ),
         teacher_model=teacher_model,
         validation=validation,
@@ -506,24 +518,32 @@ def evaluate_candidate_trace(
             {**candidate, "validation": validation},
         )
 
-    try:
-        cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
-    except ResultShapeError as exc:
-        record.validation.error = str(exc)
-        return TraceDecision(
-            False,
-            record,
-            "result_shape_error",
-            {**candidate, "cypher_solution": None, "validation": validation},
+    task_family = str(seed.get("task_family") or "cypher_qa")
+    if task_family == "cypher_pddl":
+        cypher_matches_real, cypher_solution, _actual_grounding = validate_grounding_rows(
+            validation.get("rows", []), seed.get("grounding")
+        )
+        valid_cypher_format = True
+    else:
+        try:
+            cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
+        except ResultShapeError as exc:
+            record.validation.error = str(exc)
+            return TraceDecision(
+                False,
+                record,
+                "result_shape_error",
+                {**candidate, "cypher_solution": None, "validation": validation},
+            )
+        valid_cypher_format, cypher_matches_real = answer_matches_with_heracles(
+            cypher_solution,
+            str(real_solution),
+            output_type,
+            answer_validation=seed.get("answer_validation"),
         )
     record.cypher_solution = cypher_solution
-    valid_cypher_format, cypher_matches_real = answer_matches_with_heracles(
-        cypher_solution,
-        str(real_solution),
-        output_type,
-        answer_validation=seed.get("answer_validation"),
-    )
     record.validation.cypher_solution_match = cypher_matches_real
+    record.validation.tool_result_match = cypher_matches_real
     cypher_checked_validation = validation_with_solution_checks(
         validation,
         cypher_solution_match=cypher_matches_real,
@@ -566,13 +586,20 @@ def evaluate_candidate_trace(
         output_type,
         answer_validation=seed.get("answer_validation"),
     )
-    valid_consistency_format, final_matches_cypher = answer_matches_with_heracles(
-        inner_answer,
-        cypher_solution,
-        output_type,
-    )
+    if task_family == "cypher_qa":
+        valid_consistency_format, final_matches_cypher = answer_matches_with_heracles(
+            inner_answer,
+            str(cypher_solution),
+            output_type,
+        )
+    else:
+        valid_consistency_format = True
+        final_matches_cypher = cypher_matches_real and final_matches_real
     record.validation.final_answer_match = final_matches_real
     record.validation.final_answer_cypher_match = final_matches_cypher
+    record.validation.final_answer_format_valid = valid_final_format
+    record.validation.final_answer_domain_valid = valid_final_format
+    record.validation.answer_grounded = final_matches_cypher
     record.validation.solution_match = bool(
         cypher_matches_real and final_matches_real and final_matches_cypher
     )
@@ -795,6 +822,34 @@ def run_teacher_interaction(
                         )
                     )
                     continue
+            elif task_family == "cypher_pddl":
+                grounding_match, cypher_solution, _actual_grounding = validate_grounding_rows(
+                    validation.get("rows", []), seed.get("grounding")
+                )
+                if not grounding_match:
+                    last_failure_reason = "grounding_mismatch"
+                    validation = {**validation, "grounding_mismatch": True}
+                    if tool_call_count >= max_tool_calls:
+                        return rejected(
+                            "max_tool_calls_exceeded",
+                            messages=messages,
+                            cypher=cypher,
+                            validation=validation_with_solution_checks(
+                                validation, cypher_solution_match=False
+                            ),
+                            cypher_solution=cypher_solution,
+                            extra={"last_failure_reason": last_failure_reason},
+                        )
+                    messages.append(
+                        build_tool_result_message(
+                            tool_call_id,
+                            tool_error_content(
+                                "grounding_mismatch",
+                                ["The query did not retrieve the required grounded entities."],
+                            ),
+                        )
+                    )
+                    continue
             messages.append(
                 build_tool_result_message(
                     tool_call_id,
@@ -862,6 +917,11 @@ def run_teacher_interaction(
                     cypher_solution=cypher_solution,
                     final_answer=final_answer,
                 )
+        elif task_family == "cypher_pddl":
+            # The successful tool call was already checked against the seed's
+            # grounding contract before its rows were added to the conversation.
+            cypher_solution_match = True
+            final_answer_cypher_match = None
         valid_final_format, final_matches = answer_matches_with_heracles(
             inner_answer,
             str(real_solution),
@@ -873,6 +933,14 @@ def run_teacher_interaction(
             cypher_solution_match=cypher_solution_match,
             final_answer_match=final_matches,
             final_answer_cypher_match=final_answer_cypher_match,
+        )
+        checked_validation.update(
+            {
+                "tool_result_match": cypher_solution_match,
+                "final_answer_format_valid": valid_final_format,
+                "final_answer_domain_valid": valid_final_format,
+                "answer_grounded": bool(cypher_solution_match and final_matches),
+            }
         )
         if not valid_final_format:
             return rejected(
@@ -907,16 +975,12 @@ def run_teacher_interaction(
             messages=messages,
             teacher_model=teacher_model,
             cypher=final_successful_cypher,
-            validation=validation_with_solution_checks(
-                {
-                    "static_valid": True,
-                    "executable": True,
-                    "error": None,
-                },
-                cypher_solution_match=cypher_solution_match,
-                final_answer_match=final_matches,
-                final_answer_cypher_match=final_answer_cypher_match,
-            ),
+            validation={
+                **checked_validation,
+                "static_valid": True,
+                "executable": True,
+                "error": None,
+            },
             max_tool_calls=max_tool_calls,
             tool_call_count=tool_call_count,
             successful_tool_call_index=successful_tool_call_index,
@@ -1072,6 +1136,21 @@ def run_synthetic_teacher_interaction(
                 cypher_solution=cypher_solution,
             )
         final_answer_cypher_match = True
+    elif task_family == "cypher_pddl":
+        cypher_solution_match, cypher_solution, _actual_grounding = validate_grounding_rows(
+            validation.get("rows", []), seed.get("grounding")
+        )
+        if not cypher_solution_match:
+            return rejected(
+                "grounding_mismatch",
+                messages=messages,
+                cypher=cypher,
+                validation=validation_with_solution_checks(
+                    validation,
+                    cypher_solution_match=False,
+                ),
+                cypher_solution=cypher_solution,
+            )
 
     final_answer = str(real_solution).strip()
     valid_final_format, final_answer_match = answer_matches_with_heracles(
@@ -1095,6 +1174,14 @@ def run_synthetic_teacher_interaction(
         cypher_solution_match=cypher_solution_match,
         final_answer_match=final_answer_match,
         final_answer_cypher_match=final_answer_cypher_match,
+    )
+    checked_validation.update(
+        {
+            "tool_result_match": cypher_solution_match,
+            "final_answer_format_valid": valid_final_format,
+            "final_answer_domain_valid": valid_final_format,
+            "answer_grounded": bool(cypher_solution_match and final_answer_match),
+        }
     )
     record = build_interaction_trace(
         seed,
@@ -1172,11 +1259,16 @@ def debug_trace_record(
         "seed_uid": seed.get("uid"),
         "scene_id": record_json.get("scene_id") or seed.get("scene_id"),
         "query_type": record_json.get("task_type") or seed.get("query_type", "unknown"),
+        "task_family": record_json.get("task_family") or seed.get("task_family", "cypher_qa"),
+        "output_type": record_json.get("output_type") or seed.get("output_type", "SLDP"),
+        "experiment_profile": record_json.get("experiment_profile")
+        or seed.get("experiment_profile"),
         "question": record_json.get("question") or seed.get("question"),
         "cypher": payload.get("cypher") or record_json.get("gold_cypher"),
         "real_solution": seed_real_solution(seed),
         "solution_formats": seed.get("solution_formats", []),
         "answer_validation": seed.get("answer_validation"),
+        "grounding": seed.get("grounding"),
         "cypher_solution": cypher_solution,
         "final_answer": final_answer,
         "validation": payload.get("validation") or record_json.get("validation"),
@@ -1197,18 +1289,16 @@ def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
     provider = configured_teacher_provider(teacher_config)
     data_config = load_data_config(args.data_config)
-    profile = load_experiment_profile_from_config(data_config)
-    if profile is None:
+    profiles = load_experiment_profiles_from_config(data_config)
+    if not profiles:
         raise ValueError(
-            "Teacher trace generation requires a valid `experiment_profile_path` "
-            "in the data config. Schema-only generation is no longer supported."
+            "Teacher trace generation requires at least one experiment profile."
         )
     model = (
         args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
         if provider == "openrouter"
         else None
     )
-    max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
     traces_per_seed = int(
         args.traces_per_seed
         if args.traces_per_seed is not None
@@ -1267,6 +1357,10 @@ def generate_command(args: argparse.Namespace) -> None:
                     total=total_attempts,
                 )
                 for seed_index, seed in enumerate(seeds, start=1):
+                    profile = experiment_profile_for_seed(seed, profiles)
+                    max_tool_calls = configured_max_tool_calls(
+                        args, teacher_config, profile
+                    )
                     for _ in range(traces_per_seed):
                         progress.update(
                             task_id,
@@ -1349,7 +1443,12 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
             ("Acceptance rate", f"{acceptance_rate:.1%}"),
-            ("Max tool calls", max_tool_calls),
+            (
+                "Max tool calls",
+                args.max_tool_calls
+                if args.max_tool_calls is not None
+                else teacher_config.get("max_tool_calls", "per profile"),
+            ),
             ("Training traces", teacher_traces_path),
             ("Accepted debug", data_config["accepted_traces_path"]),
             ("Rejected debug", data_config["rejected_traces_path"]),

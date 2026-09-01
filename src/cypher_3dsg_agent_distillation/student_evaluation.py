@@ -552,6 +552,11 @@ def record_output_type(record: dict[str, Any]) -> str:
     return str(record.get("output_type") or metadata.get("output_type") or "SLDP")
 
 
+def record_task_family(record: dict[str, Any]) -> str:
+    metadata = record.get("metadata") or {}
+    return str(record.get("task_family") or metadata.get("task_family") or "cypher_qa")
+
+
 def record_query_type(record: dict[str, Any]) -> str:
     return str(record.get("query_type") or record.get("task_type") or "")
 
@@ -984,6 +989,7 @@ def score_final_answer_generation(
         "final_answer_generated": bool(generated_text.strip()),
         "final_answer_has_tags": answer is not None,
         "final_answer_format_valid": format_valid,
+        "final_answer_domain_valid": format_valid,
         "final_answer_match": answer_match,
     }
 
@@ -1094,6 +1100,7 @@ def score_tool_call_generation(
         answer_matches_with_heracles,
     )
     from cypher_3dsg_agent_distillation.neo4j_validation import result_hash, static_checks
+    from cypher_3dsg_agent_distillation.pddl_goals import validate_grounding_rows
 
     parsed = parse_generated_tool_calls(generated_text)
     base = {
@@ -1187,28 +1194,38 @@ def score_tool_call_generation(
     if not validation.get("executable"):
         return {**base, "status": "execution_error"}
 
-    try:
-        cypher_solution = rows_to_solution_text(record_for_solution_conversion(record), rows)
-    except ResultShapeError as exc:
-        return {**base, "status": "result_shape_error", "result_shape_error": str(exc)}
-
     expected_solution = record_expected_solution(record)
-    format_valid = False
-    cypher_solution_match = False
-    if expected_solution is not None:
-        format_valid, cypher_solution_match = answer_matches_with_heracles(
-            str(cypher_solution),
-            str(expected_solution),
-            record_output_type(record),
-            answer_validation=record.get("answer_validation"),
+    if record_task_family(record) == "cypher_pddl":
+        cypher_solution_match, cypher_solution, actual_grounding = validate_grounding_rows(
+            rows, record.get("grounding")
         )
+        format_valid = True
+        base["actual_grounding"] = actual_grounding
+    else:
+        try:
+            cypher_solution = rows_to_solution_text(record_for_solution_conversion(record), rows)
+        except ResultShapeError as exc:
+            return {**base, "status": "result_shape_error", "result_shape_error": str(exc)}
+        format_valid = False
+        cypher_solution_match = False
+        if expected_solution is not None:
+            format_valid, cypher_solution_match = answer_matches_with_heracles(
+                str(cypher_solution),
+                str(expected_solution),
+                record_output_type(record),
+                answer_validation=record.get("answer_validation"),
+            )
     status = "pass"
     if expected_solution is None:
         status = "missing_expected_solution"
     elif not format_valid:
         status = "invalid_cypher_solution_format"
     elif not cypher_solution_match:
-        status = "cypher_solution_mismatch"
+        status = (
+            "grounding_mismatch"
+            if record_task_family(record) == "cypher_pddl"
+            else "cypher_solution_mismatch"
+        )
 
     return {
         **base,
@@ -1248,7 +1265,7 @@ def summarize_raw_section(
 
 
 def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+    summary = {
         "examples": len(records),
         FINAL_ANSWER_CHECK: summarize_raw_section(
             records,
@@ -1275,6 +1292,25 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
             ),
         ),
     }
+    by_family = {}
+    for family in sorted({record.get("task_family", "cypher_qa") for record in records}):
+        family_records = [
+            record for record in records if record.get("task_family", "cypher_qa") == family
+        ]
+        by_family[family] = {
+            FINAL_ANSWER_CHECK: summarize_raw_section(
+                family_records,
+                FINAL_ANSWER_CHECK,
+                ("final_answer_format_valid", "final_answer_match"),
+            ),
+            TOOL_CALL_CHECK: summarize_raw_section(
+                family_records,
+                TOOL_CALL_CHECK,
+                ("static_valid", "executable", "cypher_solution_match"),
+            ),
+        }
+    summary["by_task_family"] = by_family
+    return summary
 
 
 def raw_generation_progress_context(show_progress: bool):
@@ -1469,6 +1505,8 @@ def evaluate_raw_generation(
                 {
                     "uid": record.get("uid"),
                     "query_type": record_query_type(record),
+                    "task_family": record_task_family(record),
+                    "output_type": record_output_type(record),
                     "question": record.get("question"),
                     "expected": {
                         "cypher": record_gold_cypher(record),

@@ -35,6 +35,8 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
     return {
         "uid": record.uid,
         "task_type": record.task_type,
+        "task_family": record.task_family,
+        "output_type": record.output_type,
         "split_group": record.split_group,
         "native_tool_call_parse_success": native_tool_call_parse_success,
         "correct_tool_name": correct_tool_name,
@@ -52,9 +54,12 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
 def build_agent_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     counters = Counter()
     by_task: dict[str, Counter] = {}
+    by_family: dict[str, Counter] = {}
     for record in records:
         task_type = record.get("task_type") or "unknown"
+        task_family = record.get("task_family") or "cypher_qa"
         by_task.setdefault(task_type, Counter())
+        by_family.setdefault(task_family, Counter())
         for key in [
             "native_tool_call_parse_success",
             "correct_tool_name",
@@ -69,8 +74,10 @@ def build_agent_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             if record.get(key):
                 counters[key] += 1
                 by_task[task_type][key] += 1
+                by_family[task_family][key] += 1
         counters["n_tool_calls"] += int(record.get("n_tool_calls", 0))
         by_task[task_type]["n_tool_calls"] += int(record.get("n_tool_calls", 0))
+        by_family[task_family]["n_tool_calls"] += int(record.get("n_tool_calls", 0))
 
     total = len(records)
     return {
@@ -96,6 +103,17 @@ def build_agent_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "metrics": dict(counter),
             }
             for task_type, counter in sorted(by_task.items())
+        },
+        "by_task_family": {
+            task_family: {
+                "total": sum(
+                    1
+                    for record in records
+                    if (record.get("task_family") or "cypher_qa") == task_family
+                ),
+                "metrics": dict(counter),
+            }
+            for task_family, counter in sorted(by_family.items())
         },
     }
 

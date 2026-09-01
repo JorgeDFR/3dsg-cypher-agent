@@ -1,9 +1,14 @@
-scene_id: uhumans2
-scene_path: data/scenes/3dsg_uhumans2.json
+scene_id: uhumans2_office
+scene_path: data/scenes/uhumans2_office.json
 
 schema_path: schema_3dsg.yaml
-experiment_profile_path: cypher_qa_template.yaml
-question_templates_path: cypher_qa_3dsg.yaml
+question_sets:
+  - name: cypher_qa
+    experiment_profile_path: cypher_qa_template.yaml
+    question_templates_path: cypher_qa_3dsg.yaml
+  - name: cypher_pddl
+    experiment_profile_path: cypher_pddl_template.yaml
+    question_templates_path: cypher_pddl_3dsg.yaml
 max_per_task_type: null
 optimize_student_traces: false
 
@@ -16,6 +21,9 @@ split:
     - nearest_object_to_object
     - place_hops
     - objects_in_place_symbol
+    - pddl_inspect_object_class
+    - pddl_object_not_in_place
+    - pddl_visit_place_and_end_in_room
 
 ollama_export:
   model_name: qwen3.5-4b-finetune

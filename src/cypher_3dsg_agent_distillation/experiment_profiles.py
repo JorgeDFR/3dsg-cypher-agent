@@ -96,6 +96,54 @@ def load_experiment_profile_from_config(data_config: dict[str, Any]) -> Experime
     return load_experiment_profile(profile_path)
 
 
+def load_experiment_profiles_from_config(
+    data_config: dict[str, Any],
+) -> dict[str, ExperimentProfile]:
+    profiles: dict[str, ExperimentProfile] = {}
+    for question_set in data_paths_from_config(data_config).question_sets:
+        profile = load_experiment_profile(question_set.experiment_profile_path)
+        if profile.name in profiles and profiles[profile.name] != profile:
+            raise ValueError(f"Duplicate experiment profile name `{profile.name}`.")
+        profiles[profile.name] = profile
+    return profiles
+
+
+def experiment_profile_for_seed(
+    seed: dict[str, Any],
+    profiles: dict[str, ExperimentProfile],
+) -> ExperimentProfile:
+    metadata = seed.get("metadata") or {}
+    requested = seed.get("experiment_profile") or metadata.get("experiment_profile")
+    if requested:
+        try:
+            profile = profiles[str(requested)]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown experiment profile `{requested}` on seed {seed.get('uid')}."
+            ) from exc
+    elif len(profiles) == 1:
+        profile = next(iter(profiles.values()))
+    else:
+        task_family = str(seed.get("task_family") or "")
+        candidates = [
+            profile for profile in profiles.values() if profile.task_family == task_family
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Seed {seed.get('uid')} does not identify one experiment profile."
+            )
+        profile = candidates[0]
+
+    seed_task_family = str(seed.get("task_family") or profile.task_family)
+    seed_output_type = str(seed.get("output_type") or profile.output_type)
+    if (seed_task_family, seed_output_type) != (profile.task_family, profile.output_type):
+        raise ValueError(
+            f"Seed {seed.get('uid')} declares {seed_task_family}/{seed_output_type}, but "
+            f"profile `{profile.name}` declares {profile.task_family}/{profile.output_type}."
+        )
+    return profile
+
+
 def profile_seed_defaults(profile: ExperimentProfile | None) -> dict[str, Any]:
     if profile is None:
         return {}

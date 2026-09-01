@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 import cypher_3dsg_agent_distillation.templates as templates_module
@@ -208,3 +210,313 @@ def test_write_refusal_template_has_ten_unique_question_variants():
     assert len(records) == 10
     assert len({record["question"] for record in records}) == 10
     assert {record["query_type"] for record in records} == {"write_refusal"}
+
+
+def test_pddl_template_generates_goal_and_grounding_contract(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, _variables):
+            return ["O2", "O1"]
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {"source_3dsg": "unused.json", "values": {"classes": ["chair"]}},
+        question_templates_config={
+            "templates": [
+                {
+                    "query_type": "pddl_hold_object_class",
+                    "target_questions": 1,
+                    "variables": {"class": "classes"},
+                    "cypher": "RETURN '{class}' AS object",
+                    "grounding": {
+                        "fields": {
+                            "object": {
+                                "source": "value",
+                                "aliases": ["object"],
+                                "symbol_type": "Object",
+                                "cardinality": "set",
+                            }
+                        }
+                    },
+                    "goal": {
+                        "fact": "holding",
+                        "arguments": [{"result": "object"}],
+                        "multiple": "or",
+                    },
+                    "questions": ["Pick up a {class}."],
+                }
+            ]
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+        experiment_profile="cypher_pddl_template",
+        question_set="pddl",
+    )
+
+    assert records[0]["solution"] == "(or (holding O1) (holding O2))"
+    assert records[0]["grounding"]["expected"] == {"object": ["O1", "O2"]}
+    assert records[0]["task_family"] == "cypher_pddl"
+
+
+def test_qa_stable_uid_remains_backward_compatible():
+    query_type = "object_count"
+    question = "How many chairs?"
+    cypher = "MATCH (o:Object) RETURN count(o) AS count"
+    expected = hashlib.sha1(f"{query_type}\n{question}\n{cypher}".encode()).hexdigest()
+
+    assert templates_module.stable_uid(query_type, question, cypher) == (
+        f"tpl_{expected[:12]}"
+    )
+
+
+def test_pddl_template_without_scene_grounding_does_not_emit_invalid_goal():
+    records = generate_records(
+        {"values": {"objects": ["O1"]}},
+        question_templates_config={
+            "templates": [
+                {
+                    "query_type": "pddl_visit_object_symbol",
+                    "variables": {"object": "objects"},
+                    "cypher": "RETURN '{object}' AS object",
+                    "grounding": {
+                        "fields": {
+                            "object": {"source": "value", "aliases": ["object"]}
+                        }
+                    },
+                    "goal": {
+                        "fact": "visited-object",
+                        "arguments": [{"result": "object"}],
+                    },
+                    "questions": ["Visit {object}."],
+                }
+            ]
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert records == []
+
+
+def test_pddl_template_rejects_missing_grounding_contract():
+    with pytest.raises(KeyError, match="must define grounding fields"):
+        generate_records(
+            {"values": {}},
+            question_templates_config={
+                "templates": [
+                    {
+                        "query_type": "pddl_invalid",
+                        "cypher": "RETURN 'O1' AS object",
+                        "goal": {
+                            "fact": "visited-object",
+                            "arguments": [{"result": "object"}],
+                        },
+                        "questions": ["Visit the object."],
+                    }
+                ]
+            },
+            task_family="cypher_pddl",
+            output_type="PDDL",
+        )
+
+
+def test_pddl_templates_have_multiple_distinct_instruction_variants():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+
+    assert all(len(template["questions"]) >= 6 for template in templates)
+    assert all(
+        len(template["questions"]) == len(set(template["questions"]))
+        for template in templates
+    )
+
+
+def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, query_type, _variables):
+            if query_type.endswith("_room_class"):
+                return ["R2", "R1"]
+            if query_type.endswith("_room_containing_object"):
+                return ["R3"]
+            return "R0"
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    room_query_types = {
+        "pddl_visit_room_symbol",
+        "pddl_end_in_room_symbol",
+        "pddl_visit_room_class",
+        "pddl_end_in_room_class",
+        "pddl_visit_room_containing_object",
+        "pddl_end_in_room_containing_object",
+    }
+    room_templates = [
+        template for template in templates if template["query_type"] in room_query_types
+    ]
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "room_symbols": ["R0"],
+                "room_classes": ["office"],
+                "object_symbols": ["O1"],
+            },
+        },
+        question_templates_config={"templates": room_templates},
+        limit_per_template=1,
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    goals = {record["query_type"]: record["solution"] for record in records}
+    assert goals == {
+        "pddl_visit_room_symbol": "(visited-region R0)",
+        "pddl_end_in_room_symbol": "(in-region R0)",
+        "pddl_visit_room_class": "(or (visited-region R1) (visited-region R2))",
+        "pddl_end_in_room_class": "(or (in-region R1) (in-region R2))",
+        "pddl_visit_room_containing_object": "(visited-region R3)",
+        "pddl_end_in_room_containing_object": "(in-region R3)",
+    }
+
+
+def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, query_type, _variables):
+            if query_type == "pddl_end_at_object_class":
+                return ["O2", "O1"]
+            if query_type == "pddl_end_at_nearest_object":
+                return "O3"
+            if query_type == "pddl_end_at_place_symbol":
+                return "p4"
+            if query_type == "pddl_end_at_mesh_place_symbol":
+                return "P5"
+            return "O0"
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    at_query_types = {
+        "pddl_end_at_object_symbol",
+        "pddl_end_at_object_class",
+        "pddl_end_at_nearest_object",
+        "pddl_end_at_place_symbol",
+        "pddl_end_at_mesh_place_symbol",
+    }
+    at_templates = [
+        template for template in templates if template["query_type"] in at_query_types
+    ]
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "object_symbols": ["O0"],
+                "object_classes": ["chair"],
+                "nearest_object_cases": [{"object": "O8", "class": "chair"}],
+                "place_symbols": ["p4"],
+                "mesh_place_symbols": ["P5"],
+            },
+        },
+        question_templates_config={"templates": at_templates},
+        limit_per_template=1,
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert {record["query_type"]: record["solution"] for record in records} == {
+        "pddl_end_at_object_symbol": "(at-object O0)",
+        "pddl_end_at_object_class": "(or (at-object O1) (at-object O2))",
+        "pddl_end_at_nearest_object": "(at-object O3)",
+        "pddl_end_at_place_symbol": "(at-place p4)",
+        "pddl_end_at_mesh_place_symbol": "(at-place P5)",
+    }
+
+
+def test_pddl_navigation_template_tags_distinguish_waypoints_from_destinations():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+
+    for template in templates:
+        fact = template["goal"].get("fact")
+        tags = set(template.get("tags", []))
+        if fact in {"visited-object", "visited-place", "visited-region"}:
+            assert "waypoint" in tags, template["query_type"]
+            assert "destination" not in tags, template["query_type"]
+        elif fact in {"at-object", "at-place", "in-region"}:
+            assert "destination" in tags, template["query_type"]
+            assert "waypoint" not in tags, template["query_type"]
+
+
+def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, query_type, _variables):
+            if query_type == "pddl_inspect_object_and_end_at_place":
+                return {"object": "O0", "place": "p4"}
+            if query_type == "pddl_visit_object_and_end_at_object":
+                return {"waypoint": "O1", "destination": "O2"}
+            if query_type == "pddl_visit_place_and_end_in_room":
+                return {"place": "p4", "room": "R1"}
+            if query_type == "pddl_not_holding_object_class":
+                return ["O2", "O1"]
+            if query_type == "pddl_object_not_in_place":
+                return {"object": "O0", "place": "p4"}
+            return "O0"
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    compound_query_types = {
+        "pddl_inspect_object_and_end_at_place",
+        "pddl_visit_object_and_end_at_object",
+        "pddl_visit_place_and_end_in_room",
+        "pddl_not_holding_object_symbol",
+        "pddl_not_holding_object_class",
+        "pddl_object_not_in_place",
+        "pddl_visit_object_without_holding",
+    }
+    compound_templates = [
+        template
+        for template in templates
+        if template["query_type"] in compound_query_types
+    ]
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "object_symbols": ["O0", "O1", "O2"],
+                "object_classes": ["chair"],
+                "place_symbols": ["p4"],
+                "room_symbols": ["R1"],
+            },
+        },
+        question_templates_config={"templates": compound_templates},
+        limit_per_template=1,
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert {record["query_type"]: record["solution"] for record in records} == {
+        "pddl_inspect_object_and_end_at_place": (
+            "(and (safe O0) (at-place p4))"
+        ),
+        "pddl_visit_object_and_end_at_object": (
+            "(and (visited-object O1) (at-object O2))"
+        ),
+        "pddl_visit_place_and_end_in_room": (
+            "(and (visited-place p4) (in-region R1))"
+        ),
+        "pddl_not_holding_object_symbol": "(not (holding O0))",
+        "pddl_not_holding_object_class": (
+            "(not (or (holding O1) (holding O2)))"
+        ),
+        "pddl_object_not_in_place": "(not (object-in-place O0 p4))",
+        "pddl_visit_object_without_holding": (
+            "(and (visited-object O0) (not (holding O0)))"
+        ),
+    }
