@@ -248,27 +248,67 @@ class Neo4jValidator:
         if self.driver is not None:
             self.driver.close()
 
-    def validate(self, cypher: str, execute: bool) -> dict[str, Any]:
+    def validate(
+        self,
+        cypher: str,
+        execute: bool,
+        max_rows: int | None = None,
+        compute_result_hash: bool = True,
+    ) -> dict[str, Any]:
         if self.driver is None:
             raise RuntimeError("Neo4j validator is not connected.")
+        if max_rows is not None and max_rows <= 0:
+            raise ValueError("max_rows must be greater than zero when provided.")
         started = time.perf_counter()
         query_text = cypher if execute else f"EXPLAIN\n{cypher}"
         try:
-            records, summary, _ = self.driver.execute_query(
-                Query(query_text, timeout=self.timeout),
-                database_=self.database,
-            )
+            rows_truncated = False
+            if execute and max_rows is not None:
+                # ``Driver.execute_query`` eagerly materializes the complete result.
+                # Stream at most max_rows + 1 records instead so an accidentally broad
+                # model query cannot exhaust host memory before it can be rejected.
+                rows = []
+                notifications = []
+                with self.driver.session(
+                    database=self.database,
+                    fetch_size=max_rows + 1,
+                ) as session:
+                    result = session.run(Query(query_text, timeout=self.timeout))
+                    for record in result:
+                        if len(rows) >= max_rows:
+                            rows_truncated = True
+                            break
+                        rows.append(record.data())
+                    if not rows_truncated:
+                        summary = result.consume()
+                        notifications = [
+                            str(item) for item in (summary.notifications or [])
+                        ]
+                records_present = bool(rows) or rows_truncated
+            else:
+                records, summary, _ = self.driver.execute_query(
+                    Query(query_text, timeout=self.timeout),
+                    database_=self.database,
+                )
+                rows = [record.data() for record in records] if execute else []
+                notifications = [str(item) for item in (summary.notifications or [])]
+                records_present = bool(records)
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-            rows = [record.data() for record in records] if execute else []
             return {
                 "syntax_error": False,
                 "timeout": False,
                 "executable": True,
-                "returns_results": bool(records),
+                "returns_results": records_present,
                 "elapsed_ms": elapsed_ms,
-                "notifications": [str(item) for item in (summary.notifications or [])],
+                "notifications": notifications,
                 "rows": rows,
-                "result_hash": result_hash(rows) if execute else None,
+                "rows_truncated": rows_truncated,
+                "row_limit": max_rows,
+                "result_hash": (
+                    result_hash(rows)
+                    if execute and not rows_truncated and compute_result_hash
+                    else None
+                ),
                 "error": None,
             }
         except Neo4jError as exc:
@@ -282,6 +322,8 @@ class Neo4jValidator:
                 "elapsed_ms": elapsed_ms,
                 "notifications": [],
                 "rows": [],
+                "rows_truncated": False,
+                "row_limit": max_rows,
                 "result_hash": None,
                 "error": f"{code}: {exc}",
             }

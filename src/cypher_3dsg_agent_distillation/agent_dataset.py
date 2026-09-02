@@ -47,6 +47,11 @@ def record_task_key(record: AgentTraceRecord) -> str:
     return f"{record.task_family}/{record.task_type}"
 
 
+def record_stratum_key(record: AgentTraceRecord) -> str:
+    """Identify the family/type stratum used for balancing and leakage rules."""
+    return f"{record.task_family}/{record.task_type}"
+
+
 def cap_by_task_type(
     records: list[AgentTraceRecord],
     max_per_task_type: int | None,
@@ -421,72 +426,336 @@ def grouped_split_records(
     split_sizes = {"train": train_size, "eval": eval_size, "test": test_size}
     records_by_task_type: dict[str, list[AgentTraceRecord]] = defaultdict(list)
     for record in main_records:
-        records_by_task_type[record_task_key(record)].append(record)
+        records_by_task_type[record_stratum_key(record)].append(record)
 
     record_level_task_types: set[str] = set()
-    for task_type in sorted(records_by_task_type):
-        task_records = records_by_task_type[task_type]
-        task_groups: dict[str, list[AgentTraceRecord]] = defaultdict(list)
-        for record in task_records:
-            task_groups[record.split_group or "unknown"].append(record)
-
-        rng = random.Random(f"{seed}:{task_type}")
-        group_items = list(task_groups.values())
-        rng.shuffle(group_items)
-        active_split_count = sum(size > 0 for size in split_sizes.values())
-
-        if len(group_items) >= active_split_count:
-            target_counts = stratified_split_counts(len(task_records), split_sizes)
-            assignments = balanced_group_assignments(group_items, target_counts, split_sizes)
-            task_splits = {"train": [], "eval": [], "test": []}
-            for group_records, split_name in zip(group_items, assignments, strict=True):
-                task_splits[split_name].extend(group_records)
-            if rebalance_task_splits(task_splits, target_counts):
-                record_level_task_types.add(task_type)
-                warnings.warn(
-                    f"Task type `{task_type}` cannot reach the exact "
-                    f"{train_size:.3g}/{eval_size:.3g}/{test_size:.3g} split while "
-                    "keeping every Cypher-equivalent group intact. Moving the minimum "
-                    "number of question variants needed to meet the exact per-type counts.",
-                    UserWarning,
-                    stacklevel=2,
+    for task_types in cross_task_components(records_by_task_type):
+        if len(task_types) > 1:
+            component_records = [
+                record
+                for task_type in task_types
+                for record in records_by_task_type[task_type]
+            ]
+            target_counts = {
+                task_type: stratified_split_counts(
+                    len(records_by_task_type[task_type]), split_sizes
                 )
-            for split_name in ("train", "eval", "test"):
-                split_lists[split_name].extend(task_splits[split_name])
-            continue
+                for task_type in task_types
+            }
+            grouped_assignments = joint_cypher_group_assignments(
+                component_records,
+                task_types=task_types,
+                target_counts=target_counts,
+                split_sizes=split_sizes,
+                seed=seed,
+            )
+            if grouped_assignments is not None:
+                for group_records, split_name in grouped_assignments:
+                    split_lists[split_name].extend(group_records)
+                continue
 
-        # A task such as a no-variable template can have several wordings but only
-        # one Cypher group. Split those wordings so the task is still measurable in
-        # eval and test, and explicitly exempt only that task from group/Cypher checks.
-        shuffled_records = list(task_records)
-        rng.shuffle(shuffled_records)
-        record_counts = stratified_split_counts(len(shuffled_records), split_sizes)
-        if sum(count > 0 for count in record_counts.values()) > len(group_items):
-            record_level_task_types.add(task_type)
             warnings.warn(
-                f"Task type `{task_type}` has {len(shuffled_records)} questions but only "
-                f"{len(group_items)} leakage-safe group(s). Splitting question variants "
-                "across train/eval/test so this low-count task remains represented.",
+                "Cypher-equivalent groups shared by task types "
+                f"{', '.join(task_types)} cannot reach the exact "
+                f"{train_size:.3g}/{eval_size:.3g}/{test_size:.3g} split while "
+                "remaining intact. Falling back to exact per-type counts and "
+                "allowing the minimum necessary shared-query leakage.",
                 UserWarning,
                 stacklevel=2,
             )
-        offset = 0
-        for split_name in ("train", "eval", "test"):
-            count = record_counts[split_name]
-            split_lists[split_name].extend(shuffled_records[offset : offset + count])
-            offset += count
+            component_splits = {"train": [], "eval": [], "test": []}
+            for task_type in task_types:
+                task_splits, used_record_level_split = split_one_task_type(
+                    task_type,
+                    records_by_task_type[task_type],
+                    split_sizes=split_sizes,
+                    seed=seed,
+                    warn=False,
+                )
+                if used_record_level_split:
+                    record_level_task_types.add(task_type)
+                for split_name in component_splits:
+                    component_splits[split_name].extend(task_splits[split_name])
+            consolidate_cross_task_cypher(component_splits)
+            rebalance_task_types_after_consolidation(
+                component_splits,
+                records_by_task_type={
+                    task_type: records_by_task_type[task_type]
+                    for task_type in task_types
+                },
+                split_sizes=split_sizes,
+                leakage_exemptions=record_level_task_types,
+            )
+            for split_name in split_lists:
+                split_lists[split_name].extend(component_splits[split_name])
+            continue
+
+        task_type = task_types[0]
+        task_splits, used_record_level_split = split_one_task_type(
+            task_type,
+            records_by_task_type[task_type],
+            split_sizes=split_sizes,
+            seed=seed,
+        )
+        if used_record_level_split:
+            record_level_task_types.add(task_type)
+        for split_name in split_lists:
+            split_lists[split_name].extend(task_splits[split_name])
 
     output_rng = random.Random(seed)
     for split_records in split_lists.values():
         output_rng.shuffle(split_records)
-
-    consolidate_cross_task_cypher(split_lists)
 
     assert_no_split_leakage(
         split_lists,
         allow_group_leakage_task_types=record_level_task_types,
     )
     return train, eval_records, test, challenge
+
+
+def split_one_task_type(
+    task_type: str,
+    task_records: list[AgentTraceRecord],
+    *,
+    split_sizes: dict[str, float],
+    seed: int,
+    warn: bool = True,
+) -> tuple[dict[str, list[AgentTraceRecord]], bool]:
+    """Split one task type exactly, breaking groups only when unavoidable."""
+    task_splits: dict[str, list[AgentTraceRecord]] = {
+        "train": [],
+        "eval": [],
+        "test": [],
+    }
+    task_groups: dict[str, list[AgentTraceRecord]] = defaultdict(list)
+    for record in task_records:
+        task_groups[record.split_group or "unknown"].append(record)
+
+    rng = random.Random(f"{seed}:{task_type}")
+    group_items = list(task_groups.values())
+    rng.shuffle(group_items)
+    active_split_count = sum(size > 0 for size in split_sizes.values())
+
+    if len(group_items) >= active_split_count:
+        target_counts = stratified_split_counts(len(task_records), split_sizes)
+        assignments = balanced_group_assignments(group_items, target_counts, split_sizes)
+        for group_records, split_name in zip(group_items, assignments, strict=True):
+            task_splits[split_name].extend(group_records)
+        used_record_level_split = rebalance_task_splits(task_splits, target_counts)
+        if used_record_level_split and warn:
+            warnings.warn(
+                f"Task type `{task_type}` cannot reach the exact "
+                f"{split_sizes['train']:.3g}/{split_sizes['eval']:.3g}/"
+                f"{split_sizes['test']:.3g} split while keeping every "
+                "Cypher-equivalent group intact. Moving the minimum number of "
+                "question variants needed to meet the exact per-type counts.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return task_splits, used_record_level_split
+
+    # A task such as a no-variable template can have several wordings but only
+    # one Cypher group. Split those wordings so the task is still measurable in
+    # eval and test, and explicitly exempt only that task from group/Cypher checks.
+    shuffled_records = list(task_records)
+    rng.shuffle(shuffled_records)
+    record_counts = stratified_split_counts(len(shuffled_records), split_sizes)
+    used_record_level_split = (
+        sum(count > 0 for count in record_counts.values()) > len(group_items)
+    )
+    if used_record_level_split and warn:
+        warnings.warn(
+            f"Task type `{task_type}` has {len(shuffled_records)} questions but only "
+            f"{len(group_items)} leakage-safe group(s). Splitting question variants "
+            "across train/eval/test so this low-count task remains represented.",
+            UserWarning,
+            stacklevel=2,
+        )
+    offset = 0
+    for split_name in ("train", "eval", "test"):
+        count = record_counts[split_name]
+        task_splits[split_name].extend(shuffled_records[offset : offset + count])
+        offset += count
+    return task_splits, used_record_level_split
+
+
+def cross_task_components(
+    records_by_task_type: dict[str, list[AgentTraceRecord]],
+) -> list[tuple[str, ...]]:
+    """Return task components connected by normalized-equivalent Cypher."""
+    neighbors = {task_type: set() for task_type in records_by_task_type}
+    tasks_by_cypher: dict[str, set[str]] = defaultdict(set)
+    for task_type, records in records_by_task_type.items():
+        for record in records:
+            tasks_by_cypher[normalize_cypher(record.gold_cypher)].add(task_type)
+    for task_types in tasks_by_cypher.values():
+        for task_type in task_types:
+            neighbors[task_type].update(task_types - {task_type})
+
+    components = []
+    remaining = set(neighbors)
+    while remaining:
+        root = min(remaining)
+        stack = [root]
+        remaining.remove(root)
+        component = []
+        while stack:
+            task_type = stack.pop()
+            component.append(task_type)
+            new_neighbors = sorted(neighbors[task_type] & remaining, reverse=True)
+            stack.extend(new_neighbors)
+            remaining.difference_update(new_neighbors)
+        components.append(tuple(sorted(component)))
+    return sorted(components)
+
+
+def joint_cypher_group_assignments(
+    records: list[AgentTraceRecord],
+    *,
+    task_types: tuple[str, ...],
+    target_counts: dict[str, dict[str, int]],
+    split_sizes: dict[str, float],
+    seed: int,
+) -> list[tuple[list[AgentTraceRecord], str]] | None:
+    """Assign shared Cypher groups while meeting every per-task split target."""
+    task_index = {task_type: index for index, task_type in enumerate(task_types)}
+    groups_by_cypher: dict[str, list[AgentTraceRecord]] = defaultdict(list)
+    for record in records:
+        groups_by_cypher[normalize_cypher(record.gold_cypher)].append(record)
+
+    groups = list(groups_by_cypher.values())
+    rng = random.Random(f"{seed}:{':'.join(task_types)}")
+    rng.shuffle(groups)
+    # Processing the most strongly coupled groups first keeps the DP state small.
+    groups.sort(
+        key=lambda group: len({record_stratum_key(record) for record in group}),
+        reverse=True,
+    )
+    vectors = []
+    for group in groups:
+        vector = [0] * len(task_types)
+        for record in group:
+            vector[task_index[record_stratum_key(record)]] += 1
+        vectors.append(tuple(vector))
+
+    active_splits = tuple(
+        split_name
+        for split_name in ("train", "eval", "test")
+        if split_sizes[split_name] > 0
+    )
+    if not active_splits:
+        return None
+    base_split = max(
+        active_splits,
+        key=lambda split_name: sum(
+            target_counts[task_type][split_name] for task_type in task_types
+        ),
+    )
+    tracked_splits = tuple(
+        split_name for split_name in active_splits if split_name != base_split
+    )
+    width = len(task_types)
+    zero_state = (0,) * (len(tracked_splits) * width)
+    states: dict[tuple[int, ...], int] = {zero_state: 0}
+    processed = [0] * width
+    totals = [sum(vector[index] for vector in vectors) for index in range(width)]
+    radix = len(active_splits)
+    max_states = 250_000
+
+    for vector in vectors:
+        processed = [
+            count + increment
+            for count, increment in zip(processed, vector, strict=True)
+        ]
+        remaining = [
+            total - count for total, count in zip(totals, processed, strict=True)
+        ]
+        next_states: dict[tuple[int, ...], int] = {}
+        for state, code in states.items():
+            for choice_index, split_name in enumerate(active_splits):
+                candidate = list(state)
+                if split_name != base_split:
+                    split_offset = tracked_splits.index(split_name) * width
+                    for index, increment in enumerate(vector):
+                        candidate[split_offset + index] += increment
+
+                possible = True
+                for index, task_type in enumerate(task_types):
+                    tracked_total = 0
+                    for tracked_index, tracked_split in enumerate(tracked_splits):
+                        count = candidate[tracked_index * width + index]
+                        target = target_counts[task_type][tracked_split]
+                        if count > target or count + remaining[index] < target:
+                            possible = False
+                            break
+                        tracked_total += count
+                    if not possible:
+                        break
+                    base_count = processed[index] - tracked_total
+                    base_target = target_counts[task_type][base_split]
+                    if (
+                        base_count > base_target
+                        or base_count + remaining[index] < base_target
+                    ):
+                        possible = False
+                        break
+                if possible:
+                    candidate_state = tuple(candidate)
+                    next_states.setdefault(
+                        candidate_state,
+                        code * radix + choice_index,
+                    )
+                    if len(next_states) > max_states:
+                        return None
+        states = next_states
+        if not states:
+            return None
+
+    goal_state = tuple(
+        target_counts[task_type][split_name]
+        for split_name in tracked_splits
+        for task_type in task_types
+    )
+    code = states.get(goal_state)
+    if code is None:
+        return None
+    assignments = []
+    for _group in reversed(groups):
+        choice_index = code % radix
+        assignments.append(active_splits[choice_index])
+        code //= radix
+    assignments.reverse()
+    return list(zip(groups, assignments, strict=True))
+
+
+def rebalance_task_types_after_consolidation(
+    splits: dict[str, list[AgentTraceRecord]],
+    *,
+    records_by_task_type: dict[str, list[AgentTraceRecord]],
+    split_sizes: dict[str, float],
+    leakage_exemptions: set[str],
+) -> None:
+    """Restore exact per-task counts after the grouped fallback consolidation."""
+    for task_type, task_records in records_by_task_type.items():
+        task_splits = {
+            split_name: [
+                record
+                for record in split_records
+                if record_stratum_key(record) == task_type
+            ]
+            for split_name, split_records in splits.items()
+        }
+        target_counts = stratified_split_counts(len(task_records), split_sizes)
+        if not rebalance_task_splits(task_splits, target_counts):
+            continue
+        leakage_exemptions.add(task_type)
+        for split_name in splits:
+            splits[split_name][:] = [
+                record
+                for record in splits[split_name]
+                if record_stratum_key(record) != task_type
+            ]
+            splits[split_name].extend(task_splits[split_name])
 
 
 def consolidate_cross_task_cypher(
@@ -501,7 +770,7 @@ def consolidate_cross_task_cypher(
         for record in records:
             key = normalize_cypher(record.gold_cypher)
             locations[key][split_name].append(record)
-            task_keys[key].add(record_task_key(record))
+            task_keys[key].add(record_stratum_key(record))
 
     priority = {"train": 2, "eval": 1, "test": 0}
     for cypher, by_split in locations.items():
@@ -643,7 +912,7 @@ def values_by(
     excluded_task_types = excluded_task_types or set()
     values = set()
     for record in records:
-        if field != "uid" and record_task_key(record) in excluded_task_types:
+        if field != "uid" and record_stratum_key(record) in excluded_task_types:
             continue
         if field == "uid":
             values.add(record.uid)

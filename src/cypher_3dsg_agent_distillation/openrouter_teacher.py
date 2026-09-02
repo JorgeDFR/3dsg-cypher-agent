@@ -1242,10 +1242,18 @@ def debug_trace_record(
     messages = payload.get("messages") or record_json.get("messages") or []
     cypher_solution = payload.get("cypher_solution")
     if cypher_solution is None:
-        cypher_solution = record_json.get("cypher_solution") or metadata.get("cypher_solution")
+        cypher_solution = (
+            record_json["cypher_solution"]
+            if record_json.get("cypher_solution") is not None
+            else metadata.get("cypher_solution")
+        )
     final_answer = payload.get("final_answer")
     if final_answer is None:
-        final_answer = record_json.get("final_answer") or final_answer_from_messages(messages)
+        final_answer = (
+            record_json["final_answer"]
+            if record_json.get("final_answer") is not None
+            else final_answer_from_messages(messages)
+        )
 
     standard_payload_keys = {
         "messages",

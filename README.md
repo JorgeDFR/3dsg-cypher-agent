@@ -193,10 +193,10 @@ docker/stack.sh main python scripts/prepare_dataset.py split \
   --render-view ollama_native
 ```
 
-Splitting is stratified by task family and query type. Normalized-equivalent
-Cypher queries shared by different families are consolidated into the same
-split to avoid cross-family leakage. Split and workflow reports include counts
-by task family.
+Splitting is stratified by task family and query type. Task types that share
+normalized-equivalent Cypher queries are assigned jointly, preserving the
+configured per-type proportions while keeping each equivalent query in one
+split. Split and workflow reports include counts by task family.
 
 To optimize the student dataset by pruning failed repair attempts during
 split/render output and adding rejected `invalid_answer_format` traces that can

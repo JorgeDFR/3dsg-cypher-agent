@@ -6,6 +6,7 @@ system: |
   Unless otherwise specified, return node symbols for objects, places, mesh places, rooms, or buildings requested by the question.
   Node symbols must not have parentheses or quotes.
   Do not return more information than explicitly requested.
+  If the database has no answer, return the appropriate empty value rather than an error token.
   For write requests, do not call tools; answer WRITE_QUERY_NOT_ALLOWED.
 novel_instruction_preamble: "Now, use Cypher queries to answer this question:"
 novel_instruction_template: "{question}"

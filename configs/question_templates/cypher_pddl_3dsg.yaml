@@ -254,6 +254,7 @@ templates:
     questions:
       - Pass through place {place} before heading elsewhere.
       - Put {place} on the itinerary as a waypoint.
+      - Include {place} as a temporary waypoint, not the final stop.
       - Visit place {place}; the route may finish at another location.
       - Make sure the robot reaches {place} at least once during the mission.
       - Detour through place {place}, then carry on with the remaining work.
@@ -281,6 +282,7 @@ templates:
     questions:
       - Finish at place {place}.
       - Treat {place} as the destination and remain there.
+      - Make {place} the last location on the route.
       - After completing everything else, stop at place {place}.
       - The robot's final position must be {place}.
       - Travel to place {place} last; do not leave it afterward.
@@ -307,6 +309,7 @@ templates:
       multiple: or
     questions:
       - Cross mesh place {mesh_place} during the route.
+      - Put {mesh_place} on the itinerary as a waypoint.
       - Include {mesh_place} as a temporary waypoint, not the final stop.
       - At some stage, visit mesh location {mesh_place} and then move on.
       - Route the robot through {mesh_place} before it completes the mission.
@@ -334,6 +337,7 @@ templates:
       multiple: or
     questions:
       - End at mesh place {mesh_place}.
+      - Treat {mesh_place} as the destination and remain there.
       - Make {mesh_place} the last location on the route.
       - Once the robot reaches mesh place {mesh_place}, it should remain there.
       - Complete the mission positioned at {mesh_place}.
@@ -705,7 +709,6 @@ templates:
       - The route must reach object {object}, and the final state must leave it unheld.
       - Check in at {object}; if you pick it up, release it again before completion.
       - Make contact with object {object} as a waypoint while ensuring it is not carried at the end.
-      - Object {object} needs a visit, not possession.
 
   - query_type: pddl_inspect_object_class
     target_questions: 10
@@ -768,7 +771,6 @@ templates:
       - Place {place} must not contain object {object} in the final state.
       - Keep {object} somewhere other than {place}.
       - By the end, object {object} should be outside place {place}.
-      - Make the relationship between {object} and {place} one of non-containment.
 
   - query_type: pddl_visit_place_and_end_in_room
     target_questions: 10

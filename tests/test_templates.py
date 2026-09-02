@@ -176,6 +176,103 @@ def test_non_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
     assert sum(str(record["solution"]).strip() != "<>" for record in records) >= 9
 
 
+def test_invalid_inputs_use_empty_answers_with_template_non_empty_ratio(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            return None if variables["object"].startswith("O9") else variables["object"]
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "objects": ["O1", "O2", "O3", "O4", "O90", "O91"],
+                "invalid_values": ["O90", "O91"],
+            },
+        },
+        question_templates_config={
+            "sampling": {"non_empty_ratio": 0.9},
+            "templates": [
+                {
+                    "query_type": "lookup",
+                    "target_questions": 10,
+                    "non_empty_ratio": 0.8,
+                    "solution_formats": ["set[str]"],
+                    "variables": {"object": "objects"},
+                    "cypher": "RETURN '{object}' AS object",
+                    "questions": ["Find {object}.", "Locate {object}."],
+                }
+            ],
+        },
+    )
+
+    invalid_records = [record for record in records if "invalid_input" in record["tags"]]
+    assert len(records) == 10
+    assert len(invalid_records) == 2
+    assert {str(record["solution"]).strip() for record in invalid_records} == {"<>"}
+    assert all("empty_result_feedback" not in record for record in invalid_records)
+
+
+def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            return None if variables["object"].startswith("O9") else variables["object"]
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "objects": ["O1", "O2", "O3", "O4", "O5", "O6", "O7", "O90", "O91", "O92"],
+                "invalid_values": ["O90", "O91", "O92"],
+            },
+        },
+        question_templates_config={
+            "sampling": {"non_empty_ratio": 0.7},
+            "templates": [
+                {
+                    "query_type": "pddl_visit_object_symbol",
+                    "target_questions": 10,
+                    "variables": {"object": "objects"},
+                    "cypher": (
+                        "MATCH (o:Object {nodeSymbol: '{object}'}) "
+                        "RETURN o.nodeSymbol AS object"
+                    ),
+                    "grounding": {
+                        "fields": {
+                            "object": {
+                                "source": "value",
+                                "aliases": ["object"],
+                                "symbol_type": "Object",
+                            }
+                        }
+                    },
+                    "goal": {
+                        "fact": "visited-object",
+                        "arguments": [{"result": "object"}],
+                    },
+                    "questions": ["Visit {object}."],
+                }
+            ],
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    invalid_records = [record for record in records if "invalid_input" in record["tags"]]
+    assert len(records) == 10
+    assert len(invalid_records) == 3
+    assert all(record["solution"] == "" for record in invalid_records)
+    assert all(record["grounding"]["expected"] == {"object": []} for record in invalid_records)
+    assert all("empty_result_feedback" not in record for record in invalid_records)
+
+
 def test_empty_sampling_prioritizes_distinct_variables(monkeypatch):
     class FakeSceneIndex:
         def __init__(self, _path):
@@ -359,6 +456,40 @@ def test_pddl_templates_have_multiple_distinct_instruction_variants():
         len(template["questions"]) == len(set(template["questions"]))
         for template in templates
     )
+
+
+def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    by_query_type = {template["query_type"]: template for template in templates}
+
+    pairs = (
+        ("pddl_visit_place_symbol", "pddl_visit_mesh_place_symbol"),
+        ("pddl_end_at_place_symbol", "pddl_end_at_mesh_place_symbol"),
+    )
+    for place_query_type, mesh_query_type in pairs:
+        place_questions = {
+            question.replace("{place}", "{symbol}")
+            for question in by_query_type[place_query_type]["questions"]
+        }
+        mesh_questions = {
+            question.replace("{mesh_place}", "{symbol}")
+            for question in by_query_type[mesh_query_type]["questions"]
+        }
+
+        assert len(place_questions & mesh_questions) >= 2
+
+    qa_templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    qa_by_query_type = {template["query_type"]: template for template in qa_templates}
+    place_hop_questions = {
+        question.replace("{case.place}", "{case.symbol}")
+        for question in qa_by_query_type["place_hops"]["questions"]
+    }
+    mesh_hop_questions = {
+        question.replace("{case.mesh_place}", "{case.symbol}")
+        for question in qa_by_query_type["mesh_place_hops"]["questions"]
+    }
+
+    assert len(place_hop_questions & mesh_hop_questions) >= 2
 
 
 def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkeypatch):

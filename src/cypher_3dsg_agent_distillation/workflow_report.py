@@ -20,12 +20,16 @@ from cypher_3dsg_agent_distillation.config import (
     load_yaml,
     resolve_project_path,
 )
+from cypher_3dsg_agent_distillation.cypher_match_diagnostics import (
+    result_match_diagnostics,
+)
 from cypher_3dsg_agent_distillation.io import read_jsonl
 
 SPLITS = ("train", "eval", "test", "challenge")
 DEFAULT_REPORT_NAME = "workflow_report.html"
 FINAL_ANSWER_CHECK = "final_answer_from_trace"
 TOOL_CALL_CHECK = "tool_call_from_prompt"
+END_TO_END_CHECK = "end_to_end_final_answer"
 SCENE_CLASS_LABELS = ("Object", "MeshPlace", "Room")
 LABEL_OVERRIDES = {
     "id": "ID",
@@ -40,7 +44,7 @@ LABEL_OVERRIDES = {
     "url": "URL",
     "utc": "UTC",
 }
-NEGATIVE_BOOLEAN_KEYS = {"rejected"}
+NEGATIVE_BOOLEAN_KEYS = {"rejected", "potential_hidden_false_positive"}
 CLEAN_DETAIL_FIELD_TOKENS = ("answer", "cypher", "solution")
 PRE_TABLE_KEYS = {"gold_cypher", "model_cypher", "sample", "solution"}
 
@@ -219,11 +223,10 @@ def record_model_cypher(record: dict[str, Any]) -> Any:
 
 
 def record_solution(record: dict[str, Any]) -> Any:
-    return (
-        record.get("expected_solution")
-        or record.get("real_solution")
-        or record.get("solution")
-    )
+    for key in ("expected_solution", "real_solution", "solution"):
+        if key in record and record[key] is not None:
+            return record[key]
+    return None
 
 
 def bool_or_none(value: Any) -> bool | Any:
@@ -272,8 +275,10 @@ def compact_question_record(record: dict[str, Any], split: str | None = None) ->
 def expected_output_blocks(record: dict[str, Any]) -> dict[str, Any]:
     solution = record_solution(record)
     if is_pddl_record(record):
+        empty_answer = solution is not None and not str(solution).strip()
         return {
-            "expected_pddl_goal": solution,
+            "expected_pddl_goal": None if empty_answer else solution,
+            "expected_empty_answer": empty_answer,
             "expected_grounding": record.get("grounding"),
         }
     return {"solution": solution}
@@ -1102,11 +1107,31 @@ def render_detail_blocks(blocks: dict[str, Any], *, include_empty: bool = False)
     )
 
 
+def render_detail_group(group: dict[str, Any]) -> str:
+    title = group.get("title") or humanize_label(group.get("name") or "Details")
+    blocks = group.get("blocks") or {}
+    sections = group.get("sections") or {}
+    content = render_detail_blocks(
+        blocks,
+        include_empty=bool(group.get("show_empty_blocks")),
+    ) + "".join(
+        render_detail_section(name, payload) for name, payload in sections.items()
+    )
+    open_attribute = " open" if group.get("open") else ""
+    return (
+        f'<details class="validation-detail-group"{open_attribute}>'
+        f"<summary>{escape(str(title))}</summary>"
+        f'<div class="validation-detail-group-body">{content}</div>'
+        "</details>"
+    )
+
+
 def render_record_detail(detail: dict[str, Any]) -> str:
     title = detail.get("title") or "Record"
     fields = detail.get("fields") or {}
     blocks = detail.get("blocks") or {}
     sections = detail.get("sections") or {}
+    groups = detail.get("groups") or []
     show_empty_blocks = bool(detail.get("show_empty_blocks"))
     section_html = []
     for name, payload in sections.items():
@@ -1116,6 +1141,7 @@ def render_record_detail(detail: dict[str, Any]) -> str:
         + render_kv(fields)
         + render_detail_blocks(blocks, include_empty=show_empty_blocks)
         + "".join(section_html)
+        + "".join(render_detail_group(group) for group in groups)
     )
 
 
@@ -1385,7 +1411,6 @@ def render_generated_questions_tab(data: dict[str, Any]) -> str:
             headers=[
                 ("uid", "uid"),
                 ("task_family", "task_family"),
-                ("output_type", "output_type"),
                 ("task_type", "task_type"),
                 ("tags", "tags"),
                 ("question", "question"),
@@ -1621,6 +1646,55 @@ def bool_rate_first(
     return sum(1 for value in evaluated if bool(value)) / len(evaluated)
 
 
+def record_hidden_false_positive_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
+    tool_call = record.get(TOOL_CALL_CHECK) or {}
+    existing = tool_call.get("potential_hidden_false_positive")
+    if existing is not None:
+        return {
+            "potential_hidden_false_positive": bool_or_none(existing),
+            "hidden_false_positive_reasons": tool_call.get(
+                "hidden_false_positive_reasons"
+            )
+            or [],
+        }
+
+    expected = record.get("expected") or {}
+    generated = record.get("generated") or {}
+    pddl = task_family(record) == "cypher_pddl"
+    solution_match = tool_call.get(
+        "grounding_match" if pddl else "cypher_solution_match",
+        tool_call.get("tool_result_match", tool_call.get("cypher_solution_match")),
+    )
+    return result_match_diagnostics(
+        generated_cypher=str(
+            generated.get("cypher") or tool_call.get("generated_cypher") or ""
+        ),
+        gold_cypher=str(expected.get("cypher") or tool_call.get("gold_cypher") or ""),
+        cypher_exact_match=bool(tool_call.get("cypher_exact_match")),
+        solution_match=bool(solution_match),
+        rows=(
+            generated.get("cypher_tool_output")
+            or (tool_call.get("validation") or {}).get("rows")
+            or []
+        ),
+        expected_solution=expected.get(
+            "cypher_solution", tool_call.get("expected_solution")
+        ),
+    )
+
+
+def hidden_false_positive_rate(records: list[dict[str, Any]]) -> float | None:
+    if not records:
+        return None
+    return sum(
+        1
+        for record in records
+        if record_hidden_false_positive_diagnostics(record)[
+            "potential_hidden_false_positive"
+        ]
+    ) / len(records)
+
+
 def raw_generation_summary_fallback_row(
     report: dict[str, Any],
     task_family_name: str,
@@ -1630,6 +1704,7 @@ def raw_generation_summary_fallback_row(
     summary_section = family_summary or summary
     final_answer = summary_section.get(FINAL_ANSWER_CHECK) or {}
     tool_call = summary_section.get(TOOL_CALL_CHECK) or {}
+    end_to_end = summary_section.get(END_TO_END_CHECK) or {}
     match_key = "grounding_match" if task_family_name == "cypher_pddl" else "cypher_solution_match"
     result_match = rate_value(tool_call, "rates", match_key)
     if result_match is None:
@@ -1643,11 +1718,17 @@ def raw_generation_summary_fallback_row(
             final_answer.get("total", summary.get("examples")),
         ),
         "final_answer_match": rate_value(final_answer, "rates", "final_answer_match"),
+        "end_to_end_match": rate_value(
+            end_to_end, "rates", "final_answer_match"
+        ),
         "final_answer_domain_valid": rate_value(
             final_answer, "rates", "final_answer_domain_valid"
         ),
         "tool_call_executable": rate_value(tool_call, "rates", "executable"),
         "result_match": result_match,
+        "potential_hidden_false_positive": rate_value(
+            tool_call, "rates", "potential_hidden_false_positive"
+        ),
     }
 
 
@@ -1678,6 +1759,11 @@ def raw_generation_task_type_rows(
                     FINAL_ANSWER_CHECK,
                     "final_answer_match",
                 ),
+                "end_to_end_match": bool_rate(
+                    task_records,
+                    END_TO_END_CHECK,
+                    "final_answer_match",
+                ),
                 "final_answer_domain_valid": bool_rate(
                     task_records,
                     FINAL_ANSWER_CHECK,
@@ -1699,6 +1785,9 @@ def raw_generation_task_type_rows(
                         "cypher_solution_match",
                     ),
                 ),
+                "potential_hidden_false_positive": hidden_false_positive_rate(
+                    task_records
+                ),
             }
         )
     return rows[:1] + sorted(rows[1:], key=lambda row: str(row["task_type"]))
@@ -1719,6 +1808,8 @@ def validation_example_rows(
             pddl = family == "cypher_pddl"
             final_answer = record.get(FINAL_ANSWER_CHECK) or {}
             tool_call = record.get(TOOL_CALL_CHECK) or {}
+            end_to_end = record.get(END_TO_END_CHECK) or {}
+            hidden_false_positive = record_hidden_false_positive_diagnostics(record)
             result_match = bool_or_none(
                 tool_call.get(
                     "grounding_match" if pddl else "cypher_solution_match",
@@ -1742,11 +1833,17 @@ def validation_example_rows(
                 "tool_call_executable": bool_or_none(tool_call.get("executable")),
                 "cypher_solution_match": None if pddl else result_match,
                 "grounding_match": result_match if pddl else None,
+                "potential_hidden_false_positive": bool_or_none(
+                    hidden_false_positive["potential_hidden_false_positive"]
+                ),
                 "final_answer_domain_valid": bool_or_none(
                     final_answer.get("final_answer_domain_valid")
                 ),
                 "final_answer_match": bool_or_none(
                     final_answer.get("final_answer_match")
+                ),
+                "end_to_end_match": bool_or_none(
+                    end_to_end.get("final_answer_match")
                 ),
             }
             rows.append(row)
@@ -1767,8 +1864,14 @@ def validation_example_rows(
             if pddl:
                 expected = {
                     **expected,
-                    "pddl_goal": expected.get("pddl_goal")
-                    or expected.get("cypher_solution"),
+                    "pddl_goal": (
+                        expected.get("pddl_goal")
+                        or (
+                            expected.get("cypher_solution")
+                            if str(expected.get("cypher_solution") or "").strip()
+                            else None
+                        )
+                    ),
                     "grounding": expected.get("grounding")
                     or tool_call.get("expected_grounding"),
                 }
@@ -1782,6 +1885,9 @@ def validation_example_rows(
             final_answer_generation = (
                 generation_debug.get("final_answer_generation") or {}
             )
+            end_to_end_generation = (
+                generation_debug.get("end_to_end_generation") or {}
+            )
             # Read the previous report shape only for prompt/completion compatibility.
             legacy_conversations = record.get("conversations") or {}
             if not cypher_generation:
@@ -1789,6 +1895,10 @@ def validation_example_rows(
             if not final_answer_generation:
                 final_answer_generation = (
                     legacy_conversations.get("final_answer_generation") or {}
+                )
+            if not end_to_end_generation:
+                end_to_end_generation = (
+                    legacy_conversations.get("end_to_end_generation") or {}
                 )
             cypher_validation_issues = {
                 key: value
@@ -1798,6 +1908,9 @@ def validation_example_rows(
                     "execution_error": tool_call.get("execution_error"),
                     "result_shape_error": tool_call.get("result_shape_error"),
                     "generation_error": tool_call.get("generation_error"),
+                    "hidden_false_positive_reasons": hidden_false_positive[
+                        "hidden_false_positive_reasons"
+                    ],
                 }.items()
                 if value not in (None, "", [], {})
             }
@@ -1809,18 +1922,26 @@ def validation_example_rows(
                 }.items()
                 if value not in (None, "", [], {})
             }
-            detail_blocks = {
-                "question": record.get("question"),
+            end_to_end_validation_issues = {
+                key: value
+                for key, value in {
+                    "last_failure_reason": end_to_end.get("last_failure_reason"),
+                    "generation_error": end_to_end.get("generation_error"),
+                }.items()
+                if value not in (None, "", [], {})
+            }
+            cypher_blocks = {
                 "expected_cypher": expected.get("cypher"),
                 "generated_cypher": generated.get("cypher"),
                 "cypher_tool_output": generated.get("cypher_tool_output"),
             }
             if pddl:
-                detail_blocks.update(
+                cypher_blocks.update(
                     {
                         "expected_pddl_goal": expected.get("pddl_goal"),
                         "expected_grounding": expected.get("grounding"),
                         "actual_grounding": generated.get("actual_grounding"),
+                        "cypher_validation_issues": cypher_validation_issues,
                         "grounding_validation_issues": {
                             "status": tool_call.get("status"),
                             "grounding_match": result_match,
@@ -1830,42 +1951,92 @@ def validation_example_rows(
                     }
                 )
             else:
-                detail_blocks.update(
+                cypher_blocks.update(
                     {
                         "expected_cypher_solution": expected.get("cypher_solution"),
                         "generated_cypher_solution": generated.get("cypher_solution"),
+                        "cypher_validation_issues": cypher_validation_issues,
                     }
                 )
-            detail_blocks.update(
-                {
-                    "cypher_validation_issues": cypher_validation_issues,
-                    "expected_final_answer": expected.get("final_answer"),
-                    "generated_final_answer": generated.get("final_answer"),
-                    "final_answer_validation_issues": final_answer_validation_issues,
-                }
-            )
+            end_to_end_turns = end_to_end_generation.get("turns") or []
+            end_to_end_sections = {}
+            for turn_index, turn in enumerate(end_to_end_turns, start=1):
+                if not isinstance(turn, dict):
+                    continue
+                turn_number = turn.get("turn") or turn_index
+                end_to_end_sections.update(
+                    {
+                        f"turn_{turn_number}_rendered_prompt": turn.get(
+                            "rendered_prompt"
+                        ),
+                        f"turn_{turn_number}_raw_completion": turn.get(
+                            "raw_completion"
+                        ),
+                    }
+                )
             details.append(
                 {
                     "title": detail_title,
                     "fields": {
                         key: value for key, value in row.items() if key != "question"
                     },
-                    "blocks": detail_blocks,
+                    "blocks": {"question": record.get("question")},
                     "show_empty_blocks": True,
-                    "sections": {
-                        "cypher_generation_rendered_prompt": cypher_generation.get(
-                            "rendered_prompt"
-                        ),
-                        "cypher_generation_raw_completion": cypher_generation.get(
-                            "raw_completion"
-                        ),
-                        "final_answer_generation_rendered_prompt": (
-                            final_answer_generation.get("rendered_prompt")
-                        ),
-                        "final_answer_generation_raw_completion": (
-                            final_answer_generation.get("raw_completion")
-                        ),
-                    },
+                    "groups": [
+                        {
+                            "name": "cypher_validation",
+                            "title": "Cypher Validation",
+                            "blocks": cypher_blocks,
+                            "show_empty_blocks": True,
+                            "sections": {
+                                "cypher_generation_rendered_prompt": (
+                                    cypher_generation.get("rendered_prompt")
+                                ),
+                                "cypher_generation_raw_completion": (
+                                    cypher_generation.get("raw_completion")
+                                ),
+                            },
+                        },
+                        {
+                            "name": "final_answer_validation",
+                            "title": "Final Answer Validation",
+                            "blocks": {
+                                "expected_final_answer": expected.get("final_answer"),
+                                "generated_final_answer": generated.get("final_answer"),
+                                "final_answer_validation_issues": (
+                                    final_answer_validation_issues
+                                ),
+                            },
+                            "show_empty_blocks": True,
+                            "sections": {
+                                "final_answer_generation_rendered_prompt": (
+                                    final_answer_generation.get("rendered_prompt")
+                                ),
+                                "final_answer_generation_raw_completion": (
+                                    final_answer_generation.get("raw_completion")
+                                ),
+                            },
+                        },
+                        {
+                            "name": "end_to_end_validation",
+                            "title": "End-to-End Validation",
+                            "blocks": {
+                                "expected_end_to_end_final_answer": expected.get(
+                                    "final_answer"
+                                ),
+                                "generated_end_to_end_final_answer": generated.get(
+                                    "end_to_end_final_answer"
+                                )
+                                or end_to_end.get("generated_text"),
+                                "end_to_end_validation_issues": (
+                                    end_to_end_validation_issues
+                                ),
+                                "end_to_end_attempts": end_to_end.get("attempts"),
+                            },
+                            "show_empty_blocks": True,
+                            "sections": end_to_end_sections,
+                        },
+                    ],
                 }
             )
     return rows, details
@@ -1916,9 +2087,10 @@ def render_raw_generation_tab(
                     [
                         ("task_type", "task_type"),
                         ("examples", "examples"),
-                        ("final_answer_match", "final_answer_match"),
                         ("tool_call_executable", "tool_call_executable"),
                         ("result_match", result_label),
+                        ("final_answer_match", "final_answer_match"),
+                        ("end_to_end_match", "end_to_end_match"),
                     ],
                     rows,
                     table_class="equal-columns",
@@ -1938,17 +2110,13 @@ def render_raw_generation_tab(
                 ("uid", "uid"),
                 ("split", "split"),
                 ("task_family", "task_family"),
-                ("output_type", "output_type"),
                 ("task_type", "task_type"),
                 ("question", "question"),
-                ("tool_call_status", "tool_call_status"),
-                ("final_answer_status", "final_answer_status"),
-                ("tool_call_parse_success", "tool_call_parse_success"),
                 ("tool_call_executable", "tool_call_executable"),
                 ("cypher_solution_match", "cypher_solution_match"),
                 ("grounding_match", "grounding_match"),
-                ("final_answer_domain_valid", "final_answer_domain_valid"),
                 ("final_answer_match", "final_answer_match"),
+                ("end_to_end_match", "end_to_end_match"),
             ],
             rows=example_rows,
             details=example_details,
@@ -2283,6 +2451,17 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       margin: 14px 0;
     }}
     summary {{ cursor: pointer; font-weight: 650; }}
+    .validation-detail-group {{ margin: 10px 0; }}
+    .validation-detail-group > summary {{
+      color: var(--accent);
+      font-size: 14px;
+    }}
+    .validation-detail-group-body {{
+      border-top: 1px solid var(--line);
+      margin-top: 10px;
+      padding-top: 2px;
+    }}
+    .validation-detail-group-body > details {{ margin: 10px 0; }}
     .empty {{ color: var(--muted); }}
     @media (max-width: 980px) {{
       .record-grid {{ grid-template-columns: 1fr; }}

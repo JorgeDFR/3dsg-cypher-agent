@@ -10,6 +10,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 DEFAULT_AGENT_TOOL = "run_cypher_query"
 DEFAULT_TEACHER_MODEL = "openai/gpt-oss-120b"
 WRITE_REFUSAL_ANSWER = "WRITE_QUERY_NOT_ALLOWED"
+FEEDBACK_ANSWERS = frozenset({WRITE_REFUSAL_ANSWER})
+
+
+def feedback_answer(value: Any) -> str | None:
+    normalized = str(value).strip()
+    return normalized if normalized in FEEDBACK_ANSWERS else None
 
 
 def normalize_cypher(cypher: str) -> str:

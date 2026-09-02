@@ -117,3 +117,96 @@ def test_room_grounding_accepts_region_result_alias():
 
     assert matches
     assert actual == {"room": ["R3"]}
+
+
+def test_grounding_validation_infers_fields_from_unambiguous_symbol_patterns():
+    contract = {
+        "expected": {"object": ["O1"], "place": ["p38"], "room": ["R4"]},
+        "fields": {
+            "object": {
+                "aliases": ["object"],
+                "symbol_type": "Object",
+                "cardinality": "set",
+            },
+            "place": {
+                "aliases": ["place"],
+                "symbol_type": "Place",
+                "cardinality": "set",
+            },
+            "room": {
+                "aliases": ["room"],
+                "symbol_type": "Room",
+                "cardinality": "set",
+            },
+        },
+        "match": "exact",
+    }
+
+    matches, _rendered, actual = validate_grounding_rows(
+        [{"subject": "O1", "waypoint": "p38", "destination": "R4"}],
+        contract,
+    )
+
+    assert matches
+    assert actual == {"object": ["O1"], "place": ["p38"], "room": ["R4"]}
+
+
+def test_grounding_pattern_inference_preserves_place_symbol_case():
+    contract = {
+        "expected": {"place": ["p1"], "mesh_place": ["P1"]},
+        "fields": {
+            "place": {"symbol_type": "Place", "cardinality": "set"},
+            "mesh_place": {"symbol_type": "MeshPlace", "cardinality": "set"},
+        },
+        "match": "exact",
+    }
+
+    matches, _rendered, actual = validate_grounding_rows(
+        [{"first": "p1", "second": "P1"}], contract
+    )
+
+    assert matches
+    assert actual == {"place": ["p1"], "mesh_place": ["P1"]}
+
+
+def test_grounding_pattern_inference_does_not_guess_counts_or_ambiguous_fields():
+    contract = {
+        "expected": {"source": [], "target": [], "count": ["2"]},
+        "fields": {
+            "source": {"symbol_type": "Object", "cardinality": "set"},
+            "target": {"symbol_type": "Object", "cardinality": "set"},
+            "count": {
+                "aliases": ["count"],
+                "symbol_type": "Count",
+                "cardinality": "set",
+            },
+        },
+        "match": "exact",
+    }
+
+    matches, _rendered, actual = validate_grounding_rows(
+        [{"left": "O1", "right": "O2", "count": 2}], contract
+    )
+
+    assert matches
+    assert actual == {"source": [], "target": [], "count": ["2"]}
+
+
+def test_empty_grounding_renders_empty_answer():
+    contract = {
+        "expected": {"object": []},
+        "fields": {
+            "object": {
+                "aliases": ["object"],
+                "symbol_type": "Object",
+                "cardinality": "set",
+            }
+        },
+        "match": "exact",
+    }
+
+    matches, rendered, actual = validate_grounding_rows([], contract)
+
+    assert matches
+    assert rendered == ""
+    assert actual == {"object": []}

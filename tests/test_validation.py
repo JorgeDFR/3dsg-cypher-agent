@@ -191,6 +191,61 @@ def test_neo4j_validator_falls_back_to_host_uri(monkeypatch):
     ]
 
 
+def test_neo4j_validator_streams_only_bounded_rows():
+    data_calls = []
+
+    class Record:
+        def __init__(self, value):
+            self.value = value
+
+        def data(self):
+            data_calls.append(self.value)
+            return {"value": self.value}
+
+    class Result:
+        def __iter__(self):
+            return iter(Record(value) for value in range(10))
+
+        def consume(self):
+            raise AssertionError("a truncated result must not be drained")
+
+    class Session:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+
+        def run(self, _query):
+            return Result()
+
+    session = Session()
+
+    class Driver:
+        def session(self, database, fetch_size):
+            assert database == "neo4j"
+            assert fetch_size == 4
+            return session
+
+        def execute_query(self, *_args, **_kwargs):
+            raise AssertionError("bounded validation must not eagerly execute")
+
+    validator = object.__new__(validation.Neo4jValidator)
+    validator.driver = Driver()
+    validator.database = "neo4j"
+    validator.timeout = 10.0
+
+    result = validator.validate("MATCH (n) RETURN n", execute=True, max_rows=3)
+
+    assert result["rows"] == [{"value": 0}, {"value": 1}, {"value": 2}]
+    assert result["rows_truncated"] is True
+    assert result["row_limit"] == 3
+    assert data_calls == [0, 1, 2]
+    assert session.closed is True
+
+
 def test_suppress_neo4j_notification_logs_sets_logger_to_error():
     logger = logging.getLogger(NEO4J_NOTIFICATION_LOGGER)
     previous_level = logger.level

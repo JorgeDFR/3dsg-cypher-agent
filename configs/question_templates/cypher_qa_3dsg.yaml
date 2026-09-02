@@ -75,20 +75,24 @@ templates:
       - What objects are inside room {room}?
       - List everything contained in {room}.
       - Which objects can be found in room {room}?
+      - Give me the object symbols located within {room}.
+      - Inspect region {room}'s contents and report its objects.
+      - What does room {room} contain at the object layer?
 
-  - query_type: objects_in_room_class
+  - query_type: objects_in_place_symbol
     target_questions: 50
     tags: [hierarchy]
     solution_formats: ["set[str]"]
     variables:
-      room_class: room_classes
+      case: place_object_cases
     cypher: |
-      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object)
-      RETURN DISTINCT o.nodeSymbol AS object, o.class AS class
+      MATCH (p:Place {nodeSymbol: "{case.place}"})-[:CONTAINS]->(o:Object)
+      RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
       ORDER BY object
     questions:
-      - Which objects are in the {room_class}?
-      - List the objects contained in the {room_class}.
+      - What objects are directly contained in place {case.place}?
+      - List the objects attached to place {case.place}.
+      - Which objects are in place {case.place}?
 
   - query_type: object_place_lookup
     target_questions: 50
@@ -170,6 +174,8 @@ templates:
     questions:
       - Which mesh places are within {case.hops} hops of {case.mesh_place}?
       - Get all mesh places reachable from {case.mesh_place} in at most {case.hops} steps.
+      - Which locations are within {case.hops} hops of {case.mesh_place}?
+      - Get all locations reachable from {case.mesh_place} in at most {case.hops} steps.
 
   - query_type: room_adjacency_count
     target_questions: 50
@@ -184,6 +190,10 @@ templates:
     questions:
       - How many rooms are adjacent to {room}?
       - Count the neighboring rooms connected to {room}.
+      - What is the degree of room {room} in the room-connectivity graph?
+      - Report the number of regions directly linked to {room}.
+      - How many distinct room neighbors does {room} have?
+      - Determine {room}'s immediate room adjacency count.
 
   - query_type: write_refusal
     tags: [safety, read_only]
@@ -202,21 +212,6 @@ templates:
       - Rename room R1 to R2.
       - Update every object's center coordinates to the origin.
       - Merge all places into a single place.
-
-  - query_type: objects_in_place_symbol
-    target_questions: 10
-    tags: [hierarchy]
-    solution_formats: ["set[str]"]
-    variables:
-      case: place_object_cases
-    cypher: |
-      MATCH (p:Place {nodeSymbol: "{case.place}"})-[:CONTAINS]->(o:Object)
-      RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
-      ORDER BY object
-    questions:
-      - What objects are directly contained in place {case.place}?
-      - List the objects attached to place {case.place}.
-      - Which objects are in place {case.place}?
 
   - query_type: nearest_object_to_object
     target_questions: 10
@@ -251,3 +246,24 @@ templates:
     questions:
       - Which places are within {case.hops} hops of {case.place}?
       - Get all 3D places reachable from {case.place} in at most {case.hops} steps.
+      - Which locations are within {case.hops} hops of {case.place}?
+      - Get all locations reachable from {case.place} in at most {case.hops} steps.
+
+  - query_type: objects_in_room_class
+    target_questions: 10
+    tags: [hierarchy]
+    solution_formats: ["set[str]"]
+    variables:
+      room_class: room_classes
+    cypher: |
+      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object)
+      RETURN DISTINCT o.nodeSymbol AS object, o.class AS class
+      ORDER BY object
+    questions:
+      - Which objects are in the {room_class}?
+      - List the objects contained in the {room_class}.
+      - Find every object located in a room classified as {room_class}.
+      - What object symbols occur inside {room_class} rooms?
+      - Show me the contents of all regions whose class is {room_class}.
+      - Search the {room_class} areas and return the objects they contain.
+      - Which scene objects belong to a {room_class} room?

@@ -34,3 +34,19 @@ def test_agent_trace_record_rejects_refusal_with_tool_call():
 
     with pytest.raises(ValueError, match="Refusal traces"):
         AgentTraceRecord.model_validate(payload)
+
+
+def test_invalid_input_empty_answer_remains_a_tool_using_trace():
+    payload = answerable_trace()
+    payload.update(
+        {
+            "expected_solution": "",
+            "tags": ["invalid_input"],
+        }
+    )
+    payload["messages"][-1]["content"] = "<answer></answer>"
+
+    record = AgentTraceRecord.model_validate(payload)
+
+    assert not record.is_refusal
+    assert record.first_cypher_argument is not None

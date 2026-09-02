@@ -127,6 +127,38 @@ def solution_is_empty(value: Any) -> bool:
     return False
 
 
+def invalid_values_in_value(
+    value: Any,
+    invalid_values: set[str],
+) -> list[str]:
+    if isinstance(value, dict):
+        return [
+            invalid_value
+            for child in value.values()
+            for invalid_value in invalid_values_in_value(child, invalid_values)
+        ]
+    if isinstance(value, list | tuple | set):
+        return [
+            invalid_value
+            for child in value
+            for invalid_value in invalid_values_in_value(child, invalid_values)
+        ]
+    normalized = str(value)
+    return [normalized] if normalized in invalid_values else []
+
+
+def empty_solution_value(solution_formats: Any) -> Any:
+    """Return an empty value that renders in the task's declared SLDP shape."""
+    normalized_formats = normalize_solution_formats(solution_formats)
+    for solution_format in normalized_formats:
+        collection_kind = collection_format_kind(solution_format)
+        if collection_kind == "set":
+            return set()
+        if collection_kind == "list":
+            return []
+    return ""
+
+
 def requested_question_count(template: dict[str, Any]) -> int | None:
     value = template.get("target_questions")
     if value is None:
@@ -550,6 +582,12 @@ def generate_records(
     if not isinstance(sampling_config, dict):
         raise TypeError("sampling must be a mapping.")
     sampling_seed = int(seed if seed is not None else sampling_config.get("seed", 42))
+    invalid_values = {str(value) for value in (values.get("invalid_values") or [])}
+    # Accept previously extracted value files as input, but ignore their legacy
+    # typed feedback values. Invalid inputs now have ordinary empty answers.
+    invalid_values.update(
+        str(value) for value in (values.get("invalid_value_feedback") or {})
+    )
     scene_index = SceneIndex(config["source_3dsg"]) if config.get("source_3dsg") else None
     records: list[dict[str, Any]] = []
     for template in templates:
@@ -589,6 +627,14 @@ def generate_records(
         candidates: list[QuestionCandidate] = []
         seen_questions: set[str] = set()
         for variables in variable_combinations:
+            matched_invalid_values = invalid_values_in_value(
+                variables,
+                invalid_values,
+            )
+            # Avoid ambiguous examples with two independently invalid references.
+            if len(matched_invalid_values) > 1:
+                continue
+            invalid_input = bool(matched_invalid_values)
             cypher = format_nested(template["cypher"], variables).strip()
             raw_solution = scene_index.solution_for(query_type, variables) if scene_index else None
             record_grounding = None
@@ -598,12 +644,13 @@ def generate_records(
                     template.get("grounding") or {},
                     variables,
                 )
-                solution = (
-                    render_pddl_solution(template["goal"], record_grounding)
-                    if grounding_is_non_empty(record_grounding)
-                    else None
-                )
-                if solution is not None:
+                if invalid_input:
+                    solution = ""
+                elif grounding_is_non_empty(record_grounding):
+                    solution = render_pddl_solution(template["goal"], record_grounding)
+                else:
+                    solution = None
+                if solution:
                     valid_goal, _parsed_goal, goal_issues = validate_pddl_goal(solution)
                     if not valid_goal:
                         raise ValueError(
@@ -611,7 +658,11 @@ def generate_records(
                             + "; ".join(goal_issues)
                         )
             else:
-                solution = raw_solution
+                solution = (
+                    empty_solution_value(solution_formats)
+                    if invalid_input
+                    else raw_solution
+                )
             answer_validation_for = getattr(scene_index, "answer_validation_for", None)
             answer_validation = (
                 answer_validation_for(query_type, variables)
@@ -627,7 +678,9 @@ def generate_records(
             )
             sampling_group_key = None
             sampling_group = template.get("sampling_group")
-            if sampling_group is not None:
+            if invalid_input:
+                sampling_group_key = json.dumps("invalid_input")
+            elif sampling_group is not None:
                 flattened_variables = flatten_mapping(variables)
                 if str(sampling_group) not in flattened_variables:
                     raise KeyError(
@@ -646,6 +699,7 @@ def generate_records(
                 if question in seen_questions:
                     continue
                 seen_questions.add(question)
+                record_solution_formats = deepcopy(solution_formats)
                 record = {
                     "uid": stable_uid(query_type, question, cypher, task_family),
                     "query_type": query_type,
@@ -654,19 +708,21 @@ def generate_records(
                     "experiment_profile": experiment_profile,
                     "question": question,
                     "gold_cypher": LiteralString(f"{cypher}\n"),
-                    "solution_formats": deepcopy(solution_formats),
+                    "solution_formats": record_solution_formats,
                     "solution": (
                         str(solution)
                         if task_family == "cypher_pddl" and solution is not None
                         else format_solution_field(
                             deepcopy(solution),
-                            solution_formats=solution_formats,
+                            solution_formats=record_solution_formats,
                         )
                     ),
                     "scene_id": config.get("scene_id"),
                     "read_only": bool(template.get("read_only", True)),
                     "tags": deepcopy(template.get("tags", [])),
                 }
+                if invalid_input:
+                    record["tags"].append("invalid_input")
                 if answer_validation is not None:
                     record["answer_validation"] = deepcopy(answer_validation)
                 if record_grounding is not None:
@@ -681,9 +737,12 @@ def generate_records(
                     QuestionCandidate(
                         record=record,
                         has_solution=(
-                            grounding_is_non_empty(record_grounding)
-                            if record_grounding is not None
-                            else scene_index is None or not solution_is_empty(solution)
+                            not invalid_input
+                            and (
+                                grounding_is_non_empty(record_grounding)
+                                if record_grounding is not None
+                                else scene_index is None or not solution_is_empty(solution)
+                            )
                         ),
                         variable_key=variable_key,
                         sampling_group_key=sampling_group_key,
@@ -692,7 +751,12 @@ def generate_records(
                 )
 
         if task_family == "cypher_pddl":
-            candidates = [candidate for candidate in candidates if candidate.has_solution]
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.has_solution
+                or "invalid_input" in candidate.record.get("tags", [])
+            ]
 
         if has_variables and target is not None:
             if len(candidates) < target and len(candidates) < raw_capacity:

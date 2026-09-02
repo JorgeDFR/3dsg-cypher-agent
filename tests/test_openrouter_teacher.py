@@ -207,6 +207,64 @@ def test_synthetic_teacher_constructs_trace_from_gold_and_database_rows():
     assert decision.record.metadata["generation_mode"] == "synthetic_gold_cypher"
 
 
+def test_synthetic_teacher_accepts_empty_qa_answer_for_invalid_input():
+    validator = FakeValidator(
+        [{"executable": True, "rows": [{"count": 0}], "error": None}]
+    )
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            solution="",
+            solution_formats=["int"],
+            tags=["invalid_input"],
+            task_family="cypher_qa",
+            output_type="SLDP",
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert decision.accepted
+    assert decision.record.cypher_solution == ""
+    assert decision.record.expected_solution == ""
+    assert decision.record.messages[-1].content == "<answer></answer>"
+
+
+def test_synthetic_teacher_accepts_empty_pddl_answer_for_invalid_input():
+    validator = FakeValidator([{"executable": True, "rows": [], "error": None}])
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            solution="",
+            tags=["invalid_input"],
+            task_family="cypher_pddl",
+            output_type="PDDL",
+            grounding={
+                "expected": {"object": []},
+                "fields": {
+                    "object": {
+                        "aliases": ["object"],
+                        "symbol_type": "Object",
+                        "cardinality": "set",
+                    }
+                },
+                "match": "exact",
+            },
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_pddl_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert decision.accepted
+    assert decision.record.cypher_solution == ""
+    assert decision.record.expected_solution == ""
+    assert decision.record.messages[-1].content == "<answer></answer>"
+
+
 def test_synthetic_teacher_rejects_database_result_that_disagrees_with_gold():
     validator = FakeValidator(
         [{"executable": True, "rows": [{"count": 4}], "error": None}]

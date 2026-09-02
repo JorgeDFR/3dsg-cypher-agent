@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import gc
 import json
 import math
 import re
@@ -30,6 +31,15 @@ SPLIT_CHOICES = (*SUPPORTED_SPLITS, ALL_SPLITS)
 DEFAULT_ENTROPY_CHUNK_SIZE = 32
 FINAL_ANSWER_CHECK = "final_answer_from_trace"
 TOOL_CALL_CHECK = "tool_call_from_prompt"
+END_TO_END_CHECK = "end_to_end_final_answer"
+DEFAULT_MAX_QUERY_RETRIES = 1
+DEFAULT_E2E_MAX_TOOL_ROWS = 128
+DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS = 16384
+DEFAULT_E2E_MAX_QUERY_CHARS = 4096
+E2E_REPAIR_MESSAGE = (
+    "The query was not executed successfully. Return one corrected "
+    "run_cypher_query tool call."
+)
 GENERATION_CONFIG_REPORT_KEYS = (
     "max_length",
     "max_new_tokens",
@@ -781,7 +791,7 @@ def generate_assistant_response(
     if progress is not None and progress_task_id is not None:
         progress.update(progress_task_id, completed=generated_tokens)
     raw_text = tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
-    return GenerationResult(
+    result = GenerationResult(
         text=clean_generated_text(raw_text),
         raw_text=raw_text,
         prompt=prompt,
@@ -790,6 +800,10 @@ def generate_assistant_response(
         max_new_tokens=max_new_tokens,
         token_budget=token_budget,
     )
+    # Do not keep GPU input/output tensors alive while the caller scores or stores
+    # string-only generation results. This matters most for multi-turn retries.
+    del generated_ids, generated, encoded
+    return result
 
 
 def generate_assistant_text(
@@ -1008,6 +1022,385 @@ def final_answer_generation_error(record: dict[str, Any], exc: Exception) -> dic
     }
 
 
+def release_generation_memory() -> None:
+    """Release per-record objects and unused CUDA allocator blocks."""
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    cuda = getattr(torch, "cuda", None)
+    if cuda is not None and cuda.is_available():
+        cuda.empty_cache()
+
+
+def bounded_text(value: Any, max_chars: int) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    marker = "...[truncated]"
+    return f"{text[: max(0, max_chars - len(marker))]}{marker}"
+
+
+def end_to_end_error_content(
+    error_type: str,
+    issues: list[Any],
+    *,
+    max_chars: int,
+) -> str:
+    """Build small retry feedback without copying arbitrary database errors."""
+    payload = {
+        "ok": False,
+        "error_type": error_type,
+        "issues": [bounded_text(issue, 512) for issue in issues[:3]],
+        "message": E2E_REPAIR_MESSAGE,
+    }
+    content = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(content) <= max_chars:
+        return content
+    # max_chars is validated to be >= 256, so this compact payload remains valid
+    # JSON instead of slicing JSON at an arbitrary byte/character boundary.
+    return json.dumps(
+        {
+            "ok": False,
+            "error_type": bounded_text(error_type, 64),
+            "message": "Return one corrected run_cypher_query tool call.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def bounded_tool_success_content(
+    rows: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> str | None:
+    """Serialize tool rows incrementally and stop before an oversized copy is built."""
+    encoder = json.JSONEncoder(ensure_ascii=False, default=str)
+    chunks = []
+    length = 0
+    for chunk in encoder.iterencode({"ok": True, "rows": rows}):
+        length += len(chunk)
+        if length > max_chars:
+            return None
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
+def end_to_end_skipped_result(reason: str) -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "skip_reason": reason,
+        "final_answer_match": False,
+        "generated_text": None,
+        "generated_answer": None,
+        "query_attempts": 0,
+        "retries_used": 0,
+        "attempts": [],
+    }
+
+
+def end_to_end_failure_result(
+    record: dict[str, Any],
+    *,
+    status: str,
+    query_attempts: int,
+    max_query_retries: int,
+    attempts: list[dict[str, Any]],
+    last_failure_reason: str | None = None,
+    generation_error: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "status": status,
+        "final_answer_match": False,
+        "generated_text": None,
+        "generated_answer": None,
+        "expected_solution": record_expected_solution(record),
+        "query_attempts": query_attempts,
+        "retries_used": max(0, query_attempts - 1),
+        "max_query_retries": max_query_retries,
+        "attempts": attempts,
+    }
+    if last_failure_reason is not None:
+        result["last_failure_reason"] = last_failure_reason
+    if generation_error is not None:
+        result["generation_error"] = generation_error
+    return result
+
+
+def append_end_to_end_retry_feedback(
+    messages: list[dict[str, Any]],
+    *,
+    generated_text: str,
+    tool_call: dict[str, Any] | None,
+    feedback: str,
+    max_query_chars: int,
+) -> None:
+    from cypher_3dsg_agent_distillation.openrouter_teacher import (
+        build_tool_result_message,
+    )
+
+    if tool_call is not None:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [tool_call],
+            }
+        )
+        tool_call_id = tool_call.get("id") or tool_call.get("tool_call_id")
+        messages.append(build_tool_result_message(tool_call_id, feedback))
+        return
+
+    # An unparseable or wrongly named call cannot be followed by a valid tool-role
+    # message. Keep only a bounded preview and provide corrective user feedback.
+    messages.append(
+        {
+            "role": "assistant",
+            "content": bounded_text(generated_text, max_query_chars),
+        }
+    )
+    messages.append({"role": "user", "content": feedback})
+
+
+def evaluate_end_to_end_record(
+    record: dict[str, Any],
+    *,
+    model,
+    tokenizer,
+    validator,
+    policy: dict[str, Any] | None,
+    tool_schemas: list[dict[str, Any]],
+    max_new_tokens: int | None,
+    enable_thinking: bool,
+    max_query_retries: int = DEFAULT_MAX_QUERY_RETRIES,
+    max_tool_rows: int = DEFAULT_E2E_MAX_TOOL_ROWS,
+    max_tool_response_chars: int = DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
+    max_query_chars: int = DEFAULT_E2E_MAX_QUERY_CHARS,
+    progress=None,
+    progress_task_id=None,
+    progress_description: str | None = None,
+    generation_debug_turns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run one bounded query/tool/final-answer interaction.
+
+    Query failures receive compact feedback and may be retried. The only quality
+    metric produced by this interaction is ``final_answer_match``; query fields are
+    operational diagnostics for understanding retries and resource guards.
+    """
+    from cypher_3dsg_agent_distillation.agent_records import DEFAULT_AGENT_TOOL
+    from cypher_3dsg_agent_distillation.neo4j_validation import static_checks
+
+    if max_query_retries < 0:
+        raise ValueError("max_query_retries must be zero or greater.")
+    if max_tool_rows <= 0:
+        raise ValueError("max_tool_rows must be greater than zero.")
+    if max_tool_response_chars < 256:
+        raise ValueError("max_tool_response_chars must be at least 256.")
+    if max_query_chars < 256:
+        raise ValueError("max_query_chars must be at least 256.")
+
+    base_messages = initial_prompt_messages(record)
+    messages = list(base_messages)
+    attempts: list[dict[str, Any]] = []
+    query_attempts = 0
+    max_query_attempts = max_query_retries + 1
+
+    while True:
+        try:
+            generation = generate_assistant_response(
+                model,
+                tokenizer,
+                messages,
+                max_new_tokens=max_new_tokens,
+                enable_thinking=enable_thinking,
+                tools=tool_schemas,
+                progress=progress,
+                progress_task_id=progress_task_id,
+                progress_description=progress_description,
+            )
+        except Exception as exc:
+            return end_to_end_failure_result(
+                record,
+                status="generation_error",
+                query_attempts=query_attempts,
+                max_query_retries=max_query_retries,
+                attempts=attempts,
+                generation_error=bounded_text(f"{type(exc).__name__}: {exc}", 1024),
+            )
+
+        generated_text = generation.text
+        parsed = parse_generated_tool_calls(generated_text)
+        if generation_debug_turns is not None:
+            generation_debug_turns.append(
+                {
+                    "turn": len(generation_debug_turns) + 1,
+                    **generation_debug_report(generation),
+                }
+            )
+        attempt = {
+            "turn": len(attempts) + 1,
+            "completion_preview": bounded_text(generated_text, 1024),
+            **generation_report_fields(generation),
+        }
+        attempts.append(attempt)
+
+        if not parsed.tool_calls and not parsed.tool_call_generated:
+            score = score_final_answer_generation(record, generated_text)
+            attempt["status"] = score["status"]
+            return {
+                **score,
+                "query_attempts": query_attempts,
+                "retries_used": max(0, query_attempts - 1),
+                "max_query_retries": max_query_retries,
+                "attempts": attempts,
+            }
+
+        if query_attempts >= max_query_attempts:
+            attempt["status"] = "query_retry_limit_reached"
+            return end_to_end_failure_result(
+                record,
+                status="query_retries_exhausted",
+                query_attempts=query_attempts,
+                max_query_retries=max_query_retries,
+                attempts=attempts,
+                last_failure_reason="query_retry_limit_reached",
+            )
+
+        query_attempts += 1
+        retry_tool_call = None
+        failure_reason = None
+        failure_issues: list[Any] = []
+        validation = None
+        tool_content = None
+
+        if not parsed.tool_calls:
+            failure_reason = "tool_call_parse_failed"
+            failure_issues = [parsed.error or "The tool call could not be parsed."]
+        elif len(parsed.tool_calls) != 1:
+            failure_reason = "multiple_tool_calls"
+            failure_issues = ["Return exactly one run_cypher_query tool call."]
+        else:
+            tool_call = parsed.tool_calls[0]
+            function = tool_call.get("function") or {}
+            arguments = function.get("arguments") or {}
+            tool_name = function.get("name")
+            cypher = str(arguments.get("cypher_string") or "").strip()
+            attempt["tool_name"] = tool_name
+            attempt["generated_cypher"] = bounded_text(cypher, max_query_chars)
+
+            if tool_name != DEFAULT_AGENT_TOOL:
+                failure_reason = "wrong_tool_name"
+                failure_issues = [f"Expected tool {DEFAULT_AGENT_TOOL}."]
+            else:
+                retry_tool_call = tool_call
+                if not cypher:
+                    failure_reason = "missing_cypher_argument"
+                    failure_issues = ["cypher_string must be a non-empty query."]
+                elif len(cypher) > max_query_chars:
+                    retry_tool_call = None
+                    failure_reason = "query_too_large"
+                    failure_issues = [
+                        f"Query exceeded the {max_query_chars}-character safety limit."
+                    ]
+                else:
+                    static_issues = static_checks(
+                        cypher,
+                        allow_writes=not bool(record.get("read_only", True)),
+                        policy=policy,
+                    )
+                    if static_issues:
+                        failure_reason = "static_error"
+                        failure_issues = static_issues
+                    else:
+                        try:
+                            validation = validator.validate(
+                                cypher,
+                                execute=True,
+                                max_rows=max_tool_rows,
+                                compute_result_hash=False,
+                            )
+                        except Exception as exc:
+                            failure_reason = "execution_error"
+                            failure_issues = [f"{type(exc).__name__}: {exc}"]
+                        else:
+                            attempt["executable"] = bool(validation.get("executable"))
+                            attempt["elapsed_ms"] = validation.get("elapsed_ms")
+                            rows = validation.get("rows") or []
+                            attempt["row_count"] = len(rows)
+                            attempt["rows_truncated"] = bool(
+                                validation.get("rows_truncated")
+                            )
+                            if not validation.get("executable"):
+                                failure_reason = "execution_error"
+                                failure_issues = [
+                                    validation.get("error") or "Query execution failed."
+                                ]
+                            elif validation.get("rows_truncated"):
+                                failure_reason = "result_too_large"
+                                failure_issues = [
+                                    f"Result exceeded the {max_tool_rows}-row safety limit."
+                                ]
+                            else:
+                                candidate_content = bounded_tool_success_content(
+                                    rows,
+                                    max_chars=max_tool_response_chars,
+                                )
+                                if candidate_content is None:
+                                    failure_reason = "result_too_large"
+                                    failure_issues = [
+                                        "Serialized result exceeded the "
+                                        f"{max_tool_response_chars}-character safety limit."
+                                    ]
+                                else:
+                                    attempt["tool_response_chars"] = len(
+                                        candidate_content
+                                    )
+                                    tool_content = candidate_content
+
+        if tool_content is not None and retry_tool_call is not None:
+            attempt["status"] = "tool_success"
+            # Keep the initial prompt plus only the most recent tool exchange. Old
+            # failed/incorrect outputs must not grow the next GPU input each retry.
+            messages = list(base_messages)
+            append_end_to_end_retry_feedback(
+                messages,
+                generated_text=generated_text,
+                tool_call=retry_tool_call,
+                feedback=tool_content,
+                max_query_chars=max_query_chars,
+            )
+            del generation, validation, tool_content
+            continue
+
+        failure_reason = failure_reason or "query_failed"
+        attempt["status"] = failure_reason
+        feedback = end_to_end_error_content(
+            failure_reason,
+            failure_issues,
+            max_chars=max_tool_response_chars,
+        )
+        attempt["tool_response_chars"] = len(feedback)
+        if query_attempts >= max_query_attempts:
+            return end_to_end_failure_result(
+                record,
+                status="query_retries_exhausted",
+                query_attempts=query_attempts,
+                max_query_retries=max_query_retries,
+                attempts=attempts,
+                last_failure_reason=failure_reason,
+            )
+        messages = list(base_messages)
+        append_end_to_end_retry_feedback(
+            messages,
+            generated_text=generated_text,
+            tool_call=retry_tool_call,
+            feedback=feedback,
+            max_query_chars=max_query_chars,
+        )
+        del generation, validation, feedback
+
+
 def skipped_tool_call_result(reason: str) -> dict[str, Any]:
     return {
         "status": "skipped",
@@ -1022,6 +1415,9 @@ def skipped_tool_call_result(reason: str) -> dict[str, Any]:
         "executable": False,
         "cypher_solution_match": False,
         "tool_result_match": False,
+        "result_match_without_exact_cypher_match": False,
+        "potential_hidden_false_positive": False,
+        "hidden_false_positive_reasons": [],
     }
 
 
@@ -1041,6 +1437,9 @@ def tool_call_generation_error(record: dict[str, Any], exc: Exception) -> dict[s
         "expected_solution": record_expected_solution(record),
         "cypher_solution_match": False,
         "tool_result_match": False,
+        "result_match_without_exact_cypher_match": False,
+        "potential_hidden_false_positive": False,
+        "hidden_false_positive_reasons": [],
     }
 
 
@@ -1081,6 +1480,9 @@ def score_refusal_tool_generation(
         "cypher_solution": WRITE_REFUSAL_ANSWER if refusal_match else None,
         "cypher_solution_match": refusal_match,
         "tool_result_match": refusal_match,
+        "result_match_without_exact_cypher_match": False,
+        "potential_hidden_false_positive": False,
+        "hidden_false_positive_reasons": [],
     }
 
 
@@ -1090,10 +1492,15 @@ def score_tool_call_generation(
     *,
     validator,
     policy: dict[str, Any] | None,
+    max_rows: int | None = None,
+    max_result_chars: int | None = None,
 ) -> dict[str, Any]:
     from cypher_3dsg_agent_distillation.agent_records import (
         DEFAULT_AGENT_TOOL,
         normalize_cypher,
+    )
+    from cypher_3dsg_agent_distillation.cypher_match_diagnostics import (
+        result_match_diagnostics,
     )
     from cypher_3dsg_agent_distillation.evaluation import (
         ResultShapeError,
@@ -1131,6 +1538,9 @@ def score_tool_call_generation(
         "cypher_solution_format_valid": False,
         "cypher_solution_match": False,
         "tool_result_match": False,
+        "result_match_without_exact_cypher_match": False,
+        "potential_hidden_false_positive": False,
+        "hidden_false_positive_reasons": [],
     }
 
     if record_is_refusal(record):
@@ -1175,7 +1585,16 @@ def score_tool_call_generation(
         return {**base, "status": "static_error"}
 
     try:
-        validation = validator.validate(cypher, execute=True)
+        validation = (
+            validator.validate(
+                cypher,
+                execute=True,
+                max_rows=max_rows,
+                compute_result_hash=False,
+            )
+            if max_rows is not None
+            else validator.validate(cypher, execute=True)
+        )
     except Exception as exc:
         return {
             **base,
@@ -1183,9 +1602,21 @@ def score_tool_call_generation(
             "execution_error": f"{type(exc).__name__}: {exc}",
         }
     rows = validation.get("rows", [])
+    result_too_large = bool(validation.get("rows_truncated"))
+    if (
+        not result_too_large
+        and max_result_chars is not None
+        and bounded_tool_success_content(rows, max_chars=max_result_chars) is None
+    ):
+        result_too_large = True
+    report_validation = (
+        {**validation, "rows": [], "rows_omitted": True}
+        if result_too_large
+        else validation
+    )
     base.update(
         {
-            "validation": jsonable(validation),
+            "validation": jsonable(report_validation),
             "executable": bool(validation.get("executable")),
             "syntax_error": bool(validation.get("syntax_error")),
             "timeout": bool(validation.get("timeout")),
@@ -1197,6 +1628,8 @@ def score_tool_call_generation(
     )
     if not validation.get("executable"):
         return {**base, "status": "execution_error"}
+    if result_too_large:
+        return {**base, "status": "result_too_large"}
 
     expected_solution = record_expected_solution(record)
     is_pddl = record_task_family(record) == "cypher_pddl"
@@ -1234,8 +1667,18 @@ def score_tool_call_generation(
             else "cypher_solution_mismatch"
         )
 
+    match_diagnostics = result_match_diagnostics(
+        generated_cypher=cypher,
+        gold_cypher=record_gold_cypher(record),
+        cypher_exact_match=bool(base["cypher_exact_match"]),
+        solution_match=bool(cypher_solution_match),
+        rows=rows,
+        expected_solution=expected_solution,
+    )
+
     return {
         **base,
+        **match_diagnostics,
         "status": status,
         "cypher_solution": cypher_solution,
         "cypher_solution_format_valid": format_valid,
@@ -1250,7 +1693,9 @@ def summarize_raw_section(
     metric_keys: tuple[str, ...],
 ) -> dict[str, Any]:
     total = len(records)
-    section_records = [record[section] for record in records]
+    section_records = [
+        record.get(section) or {"status": "skipped"} for record in records
+    ]
     status_counts = Counter(str(record.get("status") or "unknown") for record in section_records)
     skipped = status_counts.get("skipped", 0)
     evaluated = total - skipped
@@ -1298,7 +1743,14 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
                 "executable",
                 "cypher_solution_match",
                 "tool_result_match",
+                "result_match_without_exact_cypher_match",
+                "potential_hidden_false_positive",
             ),
+        ),
+        END_TO_END_CHECK: summarize_raw_section(
+            records,
+            END_TO_END_CHECK,
+            ("final_answer_match",),
         ),
     }
     by_family = {}
@@ -1306,7 +1758,12 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
         family_records = [
             record for record in records if record.get("task_family", "cypher_qa") == family
         ]
-        family_tool_metrics = ["static_valid", "executable", "tool_result_match"]
+        family_tool_metrics = [
+            "static_valid",
+            "executable",
+            "tool_result_match",
+            "potential_hidden_false_positive",
+        ]
         if family == "cypher_pddl":
             family_tool_metrics.append("grounding_match")
         else:
@@ -1326,6 +1783,11 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
                 family_records,
                 TOOL_CALL_CHECK,
                 tuple(family_tool_metrics),
+            ),
+            END_TO_END_CHECK: summarize_raw_section(
+                family_records,
+                END_TO_END_CHECK,
+                ("final_answer_match",),
             ),
         }
     summary["by_task_family"] = by_family
@@ -1372,6 +1834,8 @@ def raw_generation_progress_description(
         "final-answer tokens": "Generating final answer",
         "tool-call": "Validating tool call",
         "tool-call tokens": "Generating tool call",
+        "end-to-end": "Validating end to end",
+        "end-to-end tokens": "Generating end-to-end response",
         "done": "Validating records",
     }
     return f"{phase_labels[phase]} · {split_display_name(split)}"
@@ -1384,6 +1848,8 @@ def raw_generation_report_record(
     tool_call_result: dict[str, Any],
     final_generation_debug: dict[str, Any],
     tool_generation_debug: dict[str, Any],
+    end_to_end_result: dict[str, Any] | None = None,
+    end_to_end_generation_debug: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one raw-generation report record with task-aware result fields."""
     family = record_task_family(record)
@@ -1399,11 +1865,14 @@ def raw_generation_report_record(
         "final_answer": final_answer_result.get("generated_text"),
         "final_answer_value": final_answer_result.get("generated_answer"),
         "cypher_tool_output": (tool_call_result.get("validation") or {}).get("rows"),
+        "end_to_end_final_answer": (end_to_end_result or {}).get("generated_text"),
     }
     if family == "cypher_pddl":
+        empty_answer = expected_solution is not None and not str(expected_solution).strip()
         expected.update(
             {
-                "pddl_goal": expected_solution,
+                "pddl_goal": None if empty_answer else expected_solution,
+                "empty_answer": empty_answer,
                 "grounding": record.get("grounding"),
             }
         )
@@ -1420,9 +1889,13 @@ def raw_generation_report_record(
         "generation_debug": {
             "cypher_generation": tool_generation_debug,
             "final_answer_generation": final_generation_debug,
+            "end_to_end_generation": end_to_end_generation_debug or {"turns": []},
         },
         FINAL_ANSWER_CHECK: final_answer_result,
         TOOL_CALL_CHECK: tool_call_result,
+        END_TO_END_CHECK: end_to_end_result or end_to_end_skipped_result(
+            "end-to-end validation was not run"
+        ),
     }
 
 
@@ -1440,6 +1913,10 @@ def evaluate_raw_generation(
     policy: dict[str, Any] | None,
     show_progress: bool,
     enable_thinking: bool,
+    max_query_retries: int = DEFAULT_MAX_QUERY_RETRIES,
+    max_tool_rows: int = DEFAULT_E2E_MAX_TOOL_ROWS,
+    max_tool_response_chars: int = DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
+    max_query_chars: int = DEFAULT_E2E_MAX_QUERY_CHARS,
     baseline: bool = False,
 ) -> dict[str, Any]:
     from cypher_3dsg_agent_distillation.agent_prompts import run_cypher_tool_schema
@@ -1447,6 +1924,14 @@ def evaluate_raw_generation(
 
     if limit is not None and limit <= 0:
         raise ValueError("limit must be greater than zero when provided.")
+    if max_query_retries < 0:
+        raise ValueError("max_query_retries must be zero or greater.")
+    if max_tool_rows <= 0:
+        raise ValueError("max_tool_rows must be greater than zero.")
+    if max_tool_response_chars < 256:
+        raise ValueError("max_tool_response_chars must be at least 256.")
+    if max_query_chars < 256:
+        raise ValueError("max_query_chars must be at least 256.")
     if tool_call_skip_reason is None and validator is None:
         raise ValueError("validator is required when tool-call evaluation is not skipped.")
 
@@ -1555,6 +2040,8 @@ def evaluate_raw_generation(
                         tool_generation.text,
                         validator=validator,
                         policy=policy,
+                        max_rows=max_tool_rows,
+                        max_result_chars=max_tool_response_chars,
                     )
                     add_raw_generation_debug_fields(tool_call_result, tool_generation)
                     tool_call_result["generation"] = generation_report_fields(
@@ -1569,6 +2056,52 @@ def evaluate_raw_generation(
                         None,
                     )
 
+            end_to_end_generation_debug: dict[str, Any] = {"turns": []}
+            if tool_call_skip_reason is not None:
+                end_to_end_result = end_to_end_skipped_result(tool_call_skip_reason)
+            else:
+                if progress is not None:
+                    progress.update(
+                        record_task_id,
+                        description=raw_generation_progress_description(
+                            split=split,
+                            phase="end-to-end",
+                        ),
+                    )
+                try:
+                    end_to_end_result = evaluate_end_to_end_record(
+                        record,
+                        model=model,
+                        tokenizer=tokenizer,
+                        validator=validator,
+                        policy=policy,
+                        tool_schemas=tool_schemas,
+                        max_new_tokens=max_new_tokens,
+                        enable_thinking=enable_thinking,
+                        max_query_retries=max_query_retries,
+                        max_tool_rows=max_tool_rows,
+                        max_tool_response_chars=max_tool_response_chars,
+                        max_query_chars=max_query_chars,
+                        progress=progress,
+                        progress_task_id=token_task_id,
+                        progress_description=raw_generation_progress_description(
+                            split=split,
+                            phase="end-to-end tokens",
+                        ),
+                        generation_debug_turns=end_to_end_generation_debug["turns"],
+                    )
+                except Exception as exc:
+                    end_to_end_result = end_to_end_failure_result(
+                        record,
+                        status="evaluation_error",
+                        query_attempts=0,
+                        max_query_retries=max_query_retries,
+                        attempts=[],
+                        generation_error=bounded_text(
+                            f"{type(exc).__name__}: {exc}", 1024
+                        ),
+                    )
+
             evaluated_records.append(
                 raw_generation_report_record(
                     record,
@@ -1576,8 +2109,11 @@ def evaluate_raw_generation(
                     tool_call_result=tool_call_result,
                     final_generation_debug=final_generation_debug,
                     tool_generation_debug=tool_generation_debug,
+                    end_to_end_result=end_to_end_result,
+                    end_to_end_generation_debug=end_to_end_generation_debug,
                 )
             )
+            release_generation_memory()
             if progress is not None:
                 progress.update(
                     record_task_id,
@@ -1703,6 +2239,17 @@ def connect_raw_generation_validator(args: argparse.Namespace) -> tuple[Any, dic
     return validator, metadata
 
 
+def configure_neo4j_notification_output(*, show_notifications: bool) -> None:
+    """Keep Neo4j notifications out of the terminal unless explicitly requested."""
+    if show_notifications:
+        return
+    from cypher_3dsg_agent_distillation.neo4j_validation import (
+        suppress_neo4j_notification_logs,
+    )
+
+    suppress_neo4j_notification_logs()
+
+
 def print_eval_loss_summary(
     *,
     split: str,
@@ -1787,6 +2334,7 @@ def print_raw_generation_summary(
 ) -> None:
     final_answer = summary[FINAL_ANSWER_CHECK]
     tool_call = summary[TOOL_CALL_CHECK]
+    end_to_end = summary[END_TO_END_CHECK]
     rows = [
         ("Split", split),
         ("Mode", mode),
@@ -1794,6 +2342,20 @@ def print_raw_generation_summary(
         ("Final-answer match", format_count_rate(final_answer, "final_answer_match")),
         ("Final-answer tags", format_count_rate(final_answer, "final_answer_has_tags")),
     ]
+    if end_to_end["skipped"] == end_to_end["total"]:
+        rows.append(
+            (
+                "End-to-end validation",
+                f"skipped {end_to_end['skipped']}/{end_to_end['total']}",
+            )
+        )
+    else:
+        rows.append(
+            (
+                "End-to-end final-answer match",
+                format_count_rate(end_to_end, "final_answer_match"),
+            )
+        )
     if tool_call["skipped"]:
         rows.append(
             ("Tool-call validation", f"skipped {tool_call['skipped']}/{tool_call['total']}")
@@ -1808,6 +2370,10 @@ def print_raw_generation_summary(
                 ("Static-valid Cypher", format_count_rate(tool_call, "static_valid")),
                 ("Executable Cypher", format_count_rate(tool_call, "executable")),
                 ("Cypher solution match", format_count_rate(tool_call, "cypher_solution_match")),
+                (
+                    "Potential hidden false positives",
+                    format_count_rate(tool_call, "potential_hidden_false_positive"),
+                ),
             ]
         )
     rows.append(("Report", output_path))
@@ -1876,6 +2442,11 @@ def command(args: argparse.Namespace) -> None:
             raise ValueError("raw-generation mode does not support `--split all`.")
         from cypher_3dsg_agent_distillation.neo4j_validation import schema_policy
 
+        show_db_notifications = bool(getattr(args, "show_db_notifications", False))
+        configure_neo4j_notification_output(
+            show_notifications=show_db_notifications,
+        )
+
         validator, neo4j_metadata = connect_raw_generation_validator(args)
         try:
             raw_generation = evaluate_raw_generation(
@@ -1891,6 +2462,10 @@ def command(args: argparse.Namespace) -> None:
                 policy=schema_policy(load_yaml(data_config["schema_path"])),
                 show_progress=not args.no_progress,
                 enable_thinking=args.enable_thinking,
+                max_query_retries=args.max_query_retries,
+                max_tool_rows=args.e2e_max_tool_rows,
+                max_tool_response_chars=args.e2e_max_tool_response_chars,
+                max_query_chars=args.e2e_max_query_chars,
                 baseline=args.baseline,
             )
         finally:
@@ -1900,14 +2475,20 @@ def command(args: argparse.Namespace) -> None:
         records = raw_generation["records"]
         extra_metadata = {
             "raw_generation": {
-                "checks": [FINAL_ANSWER_CHECK, TOOL_CALL_CHECK],
+                "checks": [FINAL_ANSWER_CHECK, TOOL_CALL_CHECK, END_TO_END_CHECK],
                 "limit": args.limit,
                 "max_new_tokens": args.max_new_tokens,
+                "max_query_retries": args.max_query_retries,
+                "max_query_attempts": args.max_query_retries + 1,
+                "e2e_max_tool_rows": args.e2e_max_tool_rows,
+                "e2e_max_tool_response_chars": args.e2e_max_tool_response_chars,
+                "e2e_max_query_chars": args.e2e_max_query_chars,
                 "enable_thinking": args.enable_thinking,
                 "progress": not args.no_progress,
                 "model_variant": "baseline" if args.baseline else "fine-tuned",
                 "generation_config": raw_generation["generation_config"],
                 "neo4j": neo4j_metadata,
+                "show_db_notifications": show_db_notifications,
             }
         }
 
@@ -1986,8 +2567,8 @@ def main() -> None:
         default=EVAL_LOSS_MODE,
         help=(
             "`eval-loss` computes held-out loss/perplexity. "
-            "`raw-generation` separately evaluates final-answer generation from a "
-            "gold tool trace and tool-call generation from the initial prompt."
+            "`raw-generation` evaluates the existing isolated checks plus a bounded "
+            "end-to-end query/tool/final-answer interaction."
         ),
     )
     parser.add_argument(
@@ -2047,6 +2628,39 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--max-query-retries",
+        type=int,
+        default=DEFAULT_MAX_QUERY_RETRIES,
+        help=(
+            "Maximum corrected query retries in end-to-end validation after the "
+            "initial query attempt (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--e2e-max-tool-rows",
+        type=int,
+        default=DEFAULT_E2E_MAX_TOOL_ROWS,
+        help=(
+            "Maximum rows streamed from an end-to-end query before it is retried "
+            f"(default: {DEFAULT_E2E_MAX_TOOL_ROWS})."
+        ),
+    )
+    parser.add_argument(
+        "--e2e-max-tool-response-chars",
+        type=int,
+        default=DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
+        help=(
+            "Maximum serialized tool-response characters fed back to the model "
+            f"(default: {DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS})."
+        ),
+    )
+    parser.add_argument(
+        "--e2e-max-query-chars",
+        type=int,
+        default=DEFAULT_E2E_MAX_QUERY_CHARS,
+        help="Maximum generated Cypher characters accepted for execution.",
+    )
+    parser.add_argument(
         "--enable-thinking",
         action="store_true",
         help=(
@@ -2095,6 +2709,14 @@ def main() -> None:
         type=float,
         default=3.0,
         help="Neo4j connection timeout in seconds for raw-generation mode.",
+    )
+    parser.add_argument(
+        "--show-db-notifications",
+        action="store_true",
+        help=(
+            "Show Neo4j DBMS notification warnings during raw-generation queries. "
+            "They are hidden by default but remain available in validation results."
+        ),
     )
     args = parser.parse_args()
     command(args)

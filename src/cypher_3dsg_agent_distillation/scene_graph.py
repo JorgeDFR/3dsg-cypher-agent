@@ -15,6 +15,36 @@ from cypher_3dsg_agent_distillation.config import ensure_parent, load_data_confi
 LOCAL_ID_MASK = (1 << 56) - 1
 HOP_COUNTS = (2, 3, 4)
 DEFAULT_MAX_HOP_SOLUTION_SIZE = 50
+DEFAULT_MAX_INVALID_VALUES = 10
+
+INVALID_OBJECT_CLASS_CANDIDATES = (
+    "toaster",
+    "refrigerator",
+    "microwave",
+    "bicycle",
+    "bathtub",
+    "piano",
+    "dishwasher",
+    "oven",
+    "television",
+    "bed",
+    "vacuum",
+    "fireplace",
+)
+INVALID_ROOM_CLASS_CANDIDATES = (
+    "kitchen",
+    "bedroom",
+    "bathroom",
+    "pantry",
+    "garage",
+    "classroom",
+    "laboratory",
+    "cafeteria",
+    "gymnasium",
+    "laundry",
+    "workshop",
+    "basement",
+)
 
 LAYER_SPECS = [
     ("Object", spark_dsg.DsgLayers.OBJECTS),
@@ -142,6 +172,39 @@ def sorted_symbols(nodes: list[spark_dsg.SceneGraphNode], limit: int) -> list[st
     return sorted(symbols, key=lambda value: (value[0], int(value[1:])))[:limit]
 
 
+def absent_symbols(existing: list[str], prefix: str, limit: int) -> list[str]:
+    """Return well-formed symbol IDs that are absent from the current scene."""
+    if limit <= 0:
+        return []
+    existing_set = set(existing)
+    missing = []
+    candidate_id = 0
+    while len(missing) < limit:
+        candidate = f"{prefix}{candidate_id}"
+        if candidate not in existing_set:
+            missing.append(candidate)
+        candidate_id += 1
+    return missing
+
+
+def absent_classes(
+    existing: list[str],
+    candidates: tuple[str, ...],
+    limit: int,
+    fallback_prefix: str,
+) -> list[str]:
+    """Choose plausible class names that do not occur in the current scene."""
+    existing_set = {value.lower() for value in existing}
+    missing = [value for value in candidates if value.lower() not in existing_set]
+    fallback_id = 0
+    while len(missing) < limit:
+        candidate = f"{fallback_prefix}{fallback_id}"
+        if candidate.lower() not in existing_set:
+            missing.append(candidate)
+        fallback_id += 1
+    return missing[:limit]
+
+
 def symbol_sort_key(value: str) -> tuple[str, int]:
     return (value[0], int(value[1:]))
 
@@ -182,6 +245,24 @@ def select_balanced_cases(
     if remaining > 0:
         selected.extend(empty[target_empty : target_empty + remaining])
     return selected
+
+
+def mix_invalid_cases(
+    valid: list[dict[str, Any]],
+    invalid: list[dict[str, Any]],
+    limit: int,
+    non_empty_ratio: float,
+) -> list[dict[str, Any]]:
+    """Reserve the configured empty-answer share for invalid-input cases."""
+    return select_balanced_cases(valid, invalid, limit, non_empty_ratio)
+
+
+def interleave_case_groups(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    cases = []
+    max_size = max((len(group) for group in groups), default=0)
+    for index in range(max_size):
+        cases.extend(group[index] for group in groups if index < len(group))
+    return cases
 
 
 def finite_positions(nodes: list[spark_dsg.SceneGraphNode]) -> list[dict[str, float]]:
@@ -328,7 +409,10 @@ def scene_values(
     place_hop_counts: tuple[int, ...] = HOP_COUNTS,
     max_place_hop_solution_size: int = DEFAULT_MAX_HOP_SOLUTION_SIZE,
     max_room_containing_object_cases: int = 50,
+    max_invalid_values: int = DEFAULT_MAX_INVALID_VALUES,
 ) -> dict[str, Any]:
+    if max_invalid_values < 0:
+        raise ValueError("max_invalid_values must be greater than or equal to zero.")
     for name, hop_values in (
         ("mesh_place_hop_counts", mesh_place_hop_counts),
         ("place_hop_counts", place_hop_counts),
@@ -370,21 +454,120 @@ def scene_values(
         max_classes,
         max_object_class_solution_size,
     )
+    room_classes = [
+        class_name for class_name, _ in room_class_counts.most_common(max_classes)
+    ]
+    object_symbols = sorted_symbols(by_label["Object"], max_object_symbols)
+    room_symbols = sorted_symbols(by_label["Room"], max_place_symbols)
+    place_symbols = sorted_symbols(by_label["Place"], max_place_symbols)
     mesh_place_symbols = sorted_symbols(by_label["MeshPlace"], max_mesh_place_symbols)
+    building_symbols = sorted_symbols(by_label["Building"], max_place_symbols)
+
+    invalid_object_symbols = absent_symbols(
+        [node_symbol(node.id) for node in by_label["Object"]],
+        "O",
+        max_invalid_values,
+    )
+    invalid_room_symbols = absent_symbols(
+        [node_symbol(node.id) for node in by_label["Room"]],
+        "R",
+        max_invalid_values,
+    )
+    invalid_place_symbols = absent_symbols(
+        [node_symbol(node.id) for node in by_label["Place"]],
+        "p",
+        max_invalid_values,
+    )
+    invalid_mesh_place_symbols = absent_symbols(
+        [node_symbol(node.id) for node in by_label["MeshPlace"]],
+        "P",
+        max_invalid_values,
+    )
+    invalid_building_symbols = absent_symbols(
+        [node_symbol(node.id) for node in by_label["Building"]],
+        "B",
+        max_invalid_values,
+    )
+    invalid_object_classes = absent_classes(
+        list(object_class_counts),
+        INVALID_OBJECT_CLASS_CANDIDATES,
+        max_invalid_values,
+        "objecttype",
+    )
+    invalid_room_classes = absent_classes(
+        list(room_class_counts),
+        INVALID_ROOM_CLASS_CANDIDATES,
+        max_invalid_values,
+        "roomtype",
+    )
+    invalid_values = [
+        *invalid_object_symbols,
+        *invalid_object_classes,
+        *invalid_place_symbols,
+        *invalid_mesh_place_symbols,
+        *invalid_room_symbols,
+        *invalid_room_classes,
+        *invalid_building_symbols,
+    ]
+
+    valid_room_object_cases = build_room_containing_object_cases(
+        index=index,
+        limit=max_room_containing_object_cases,
+    )
+    valid_place_object_cases = build_place_object_cases(
+        index=index,
+        limit=max_place_object_cases,
+        non_empty_ratio=1.0,
+    )
+    valid_radius_cases = build_object_radius_cases(
+        index=index,
+        object_classes=object_classes,
+        limit=max_radius_cases,
+        non_empty_ratio=1.0,
+    )
+    valid_nearest_mesh_cases = build_nearest_object_mesh_cases(
+        object_classes=object_classes,
+        mesh_place_symbols=mesh_place_symbols,
+        limit=max_nearest_mesh_cases,
+    )
+    valid_nearest_object_cases = build_nearest_object_cases(
+        index=index,
+        object_classes=object_classes,
+        limit=max_nearest_object_cases,
+    )
+    valid_mesh_hop_cases = build_hop_cases(
+        symbols=mesh_place_symbols,
+        hop_counts=list(mesh_place_hop_counts),
+        symbol_key="mesh_place",
+        limit=max_mesh_place_hop_cases,
+        index=index,
+        label="MeshPlace",
+        max_solution_size=max_mesh_place_hop_solution_size,
+    )
+    valid_place_hop_cases = build_hop_cases(
+        symbols=place_symbols,
+        hop_counts=list(place_hop_counts),
+        symbol_key="place",
+        limit=max_place_hop_cases,
+        index=index,
+        label="Place",
+        max_solution_size=max_place_hop_solution_size,
+    )
+    case_points = sample_points(object_points or all_points, max(max_points, 1))
+    fallback_point = case_points[0] if case_points else {"x": 0.0, "y": 0.0, "z": 0.0}
 
     return {
-        "object_classes": object_classes,
+        "invalid_values": invalid_values,
+        "object_classes": [*object_classes, *invalid_object_classes],
         "mesh_place_classes": [
             class_name for class_name, _ in mesh_class_counts.most_common(max_classes)
         ],
-        "room_classes": [
-            class_name for class_name, _ in room_class_counts.most_common(max_classes)
-        ],
-        "object_symbols": sorted_symbols(by_label["Object"], max_object_symbols),
-        "room_symbols": sorted_symbols(by_label["Room"], max_place_symbols),
-        "place_symbols": sorted_symbols(by_label["Place"], max_place_symbols),
-        "mesh_place_symbols": mesh_place_symbols,
-        "building_symbols": sorted_symbols(by_label["Building"], max_place_symbols),
+        "room_classes": [*room_classes, *invalid_room_classes],
+        "object_symbols": [*object_symbols, *invalid_object_symbols],
+        "room_symbols": [*room_symbols, *invalid_room_symbols],
+        "place_symbols": [*place_symbols, *invalid_place_symbols],
+        "mesh_place_symbols": [*mesh_place_symbols, *invalid_mesh_place_symbols],
+        "building_symbols": [*building_symbols, *invalid_building_symbols],
         "top_class_limits": list(range(1, len(object_class_counts) + 1)),
         "radii": [2, 5, 10],
         "hop_counts": list(HOP_COUNTS),
@@ -394,48 +577,69 @@ def scene_values(
             limit=max_bboxes,
             max_solution_size=max_bbox_solution_size,
         ),
-        "room_containing_object_cases": build_room_containing_object_cases(
-            index=index,
-            limit=max_room_containing_object_cases,
+        "room_containing_object_cases": mix_invalid_cases(
+            valid_room_object_cases,
+            [
+                {"object": value, "region": "invalid"}
+                for value in invalid_object_symbols
+            ],
+            max_room_containing_object_cases,
+            non_empty_ratio,
         ),
-        "place_object_cases": build_place_object_cases(
-            index=index,
-            limit=max_place_object_cases,
-            non_empty_ratio=non_empty_ratio,
+        "place_object_cases": mix_invalid_cases(
+            valid_place_object_cases,
+            [{"place": value} for value in invalid_place_symbols],
+            max_place_object_cases,
+            non_empty_ratio,
         ),
-        "object_radius_cases": build_object_radius_cases(
-            index=index,
-            object_classes=object_classes,
-            limit=max_radius_cases,
-            non_empty_ratio=non_empty_ratio,
+        "object_radius_cases": mix_invalid_cases(
+            valid_radius_cases,
+            [
+                {"class": value, "radius": 2, "point": fallback_point}
+                for value in invalid_object_classes
+            ],
+            max_radius_cases,
+            non_empty_ratio,
         ),
-        "nearest_object_mesh_cases": build_nearest_object_mesh_cases(
-            object_classes=object_classes,
-            mesh_place_symbols=mesh_place_symbols,
-            limit=max_nearest_mesh_cases,
+        "nearest_object_mesh_cases": mix_invalid_cases(
+            valid_nearest_mesh_cases,
+            build_invalid_nearest_mesh_cases(
+                object_classes,
+                mesh_place_symbols,
+                invalid_object_classes,
+                invalid_mesh_place_symbols,
+            ),
+            max_nearest_mesh_cases,
+            non_empty_ratio,
         ),
-        "nearest_object_cases": build_nearest_object_cases(
-            index=index,
-            object_classes=object_classes,
-            limit=max_nearest_object_cases,
+        "nearest_object_cases": mix_invalid_cases(
+            valid_nearest_object_cases,
+            build_invalid_nearest_object_cases(
+                object_symbols,
+                object_classes,
+                invalid_object_symbols,
+                invalid_object_classes,
+            ),
+            max_nearest_object_cases,
+            non_empty_ratio,
         ),
-        "mesh_place_hop_cases": build_hop_cases(
-            symbols=mesh_place_symbols,
-            hop_counts=list(mesh_place_hop_counts),
-            symbol_key="mesh_place",
-            limit=max_mesh_place_hop_cases,
-            index=index,
-            label="MeshPlace",
-            max_solution_size=max_mesh_place_hop_solution_size,
+        "mesh_place_hop_cases": mix_invalid_cases(
+            valid_mesh_hop_cases,
+            [
+                {"mesh_place": value, "hops": mesh_place_hop_counts[0]}
+                for value in invalid_mesh_place_symbols
+            ],
+            max_mesh_place_hop_cases,
+            non_empty_ratio,
         ),
-        "place_hop_cases": build_hop_cases(
-            symbols=sorted_symbols(by_label["Place"], max_place_symbols),
-            hop_counts=list(place_hop_counts),
-            symbol_key="place",
-            limit=max_place_hop_cases,
-            index=index,
-            label="Place",
-            max_solution_size=max_place_hop_solution_size,
+        "place_hop_cases": mix_invalid_cases(
+            valid_place_hop_cases,
+            [
+                {"place": value, "hops": place_hop_counts[0]}
+                for value in invalid_place_symbols
+            ],
+            max_place_hop_cases,
+            non_empty_ratio,
         ),
     }
 
@@ -1050,6 +1254,30 @@ def build_nearest_object_mesh_cases(
     return cases
 
 
+def build_invalid_nearest_mesh_cases(
+    object_classes: list[str],
+    mesh_place_symbols: list[str],
+    invalid_object_classes: list[str],
+    invalid_mesh_place_symbols: list[str],
+) -> list[dict[str, str]]:
+    invalid_class_cases = []
+    if mesh_place_symbols:
+        invalid_class_cases.extend(
+            {"class": class_name, "mesh_place": mesh_place_symbols[index % len(mesh_place_symbols)]}
+            for index, class_name in enumerate(invalid_object_classes)
+        )
+    invalid_mesh_place_cases = []
+    if object_classes:
+        invalid_mesh_place_cases.extend(
+            {
+                "class": object_classes[index % len(object_classes)],
+                "mesh_place": mesh_place,
+            }
+            for index, mesh_place in enumerate(invalid_mesh_place_symbols)
+        )
+    return interleave_case_groups(invalid_class_cases, invalid_mesh_place_cases)
+
+
 def build_nearest_object_cases(
     index: SceneIndex,
     object_classes: list[str],
@@ -1072,6 +1300,30 @@ def build_nearest_object_cases(
                 if len(cases) >= limit:
                     return cases
     return cases
+
+
+def build_invalid_nearest_object_cases(
+    object_symbols: list[str],
+    object_classes: list[str],
+    invalid_object_symbols: list[str],
+    invalid_object_classes: list[str],
+) -> list[dict[str, str]]:
+    invalid_object_cases = []
+    if object_classes:
+        invalid_object_cases.extend(
+            {"object": symbol, "class": object_classes[index % len(object_classes)]}
+            for index, symbol in enumerate(invalid_object_symbols)
+        )
+    invalid_class_cases = []
+    if object_symbols:
+        invalid_class_cases.extend(
+            {
+                "object": object_symbols[index % len(object_symbols)],
+                "class": class_name,
+            }
+            for index, class_name in enumerate(invalid_object_classes)
+        )
+    return interleave_case_groups(invalid_object_cases, invalid_class_cases)
 
 
 def build_hop_cases(
@@ -1136,6 +1388,7 @@ def build_template_config(
             max_mesh_place_hop_solution_size=limits.max_mesh_place_hop_solution_size,
             place_hop_counts=tuple(limits.place_hop_counts),
             max_place_hop_solution_size=limits.max_place_hop_solution_size,
+            max_invalid_values=limits.max_invalid_values,
         ),
     }
 
@@ -1178,6 +1431,12 @@ def main() -> None:
     parser.add_argument("--max-mesh-place-symbols", type=int, default=50)
     parser.add_argument("--max-points", type=int, default=50)
     parser.add_argument("--max-bboxes", type=int, default=50)
+    parser.add_argument(
+        "--max-invalid-values",
+        type=int,
+        default=DEFAULT_MAX_INVALID_VALUES,
+        help="Absent symbols/classes to expose to question sampling (default: 10).",
+    )
     parser.add_argument("--max-room-containing-object-cases", type=int, default=50)
     parser.add_argument("--max-place-object-cases", type=int, default=50)
     parser.add_argument("--max-radius-cases", type=int, default=50)

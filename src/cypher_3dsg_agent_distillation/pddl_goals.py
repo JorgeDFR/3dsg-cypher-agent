@@ -140,11 +140,52 @@ def _symbols_in_value(value: Any) -> Iterable[str]:
             yield from _symbols_in_value(child)
 
 
+def _grounding_values_in_value(value: Any) -> Iterable[str]:
+    if isinstance(value, str | int | float):
+        yield str(value)
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _grounding_values_in_value(child)
+    elif isinstance(value, list | tuple | set):
+        for child in value:
+            yield from _grounding_values_in_value(child)
+
+
+def _inferred_symbols_for_field(
+    row: dict[str, Any],
+    field_name: str,
+    fields: dict[str, Any],
+) -> list[str]:
+    """Infer an unaliased grounding field only from an unambiguous symbol pattern.
+
+    A row such as ``{"waypoint": "O1", "destination": "p2"}`` carries enough
+    type information to populate distinct Object and Place fields. Numeric values
+    such as counts have no symbol pattern and are never inferred. Likewise, when
+    two contract fields accept the same symbol (for example, two Object fields),
+    aliases remain required so that a symbol is not assigned to both fields.
+    """
+    inferred = []
+    for value in row.values():
+        for symbol in _symbols_in_value(value):
+            matching_fields = []
+            for candidate_name, candidate_spec in fields.items():
+                pattern = SYMBOL_PATTERNS.get(
+                    str(candidate_spec.get("symbol_type") or "")
+                )
+                if pattern is not None and pattern.fullmatch(symbol):
+                    matching_fields.append(str(candidate_name))
+            if matching_fields == [field_name]:
+                inferred.append(symbol)
+    return inferred
+
+
 def grounding_from_rows(
     rows: list[dict[str, Any]], contract: dict[str, Any]
 ) -> dict[str, list[str]]:
     extracted: dict[str, list[str]] = {}
-    for field_name, field_spec in (contract.get("fields") or {}).items():
+    fields = contract.get("fields") or {}
+    for field_name, field_spec in fields.items():
+        field_name = str(field_name)
         aliases = [str(alias) for alias in field_spec.get("aliases") or [field_name]]
         pattern = SYMBOL_PATTERNS.get(str(field_spec.get("symbol_type") or ""))
         values = []
@@ -153,11 +194,11 @@ def grounding_from_rows(
             for alias in aliases:
                 if alias not in row or row[alias] is None:
                     continue
-                values.extend(_symbols_in_value(row[alias]))
+                values.extend(_grounding_values_in_value(row[alias]))
                 matched = True
                 break
-            if not matched and len(row) == 1:
-                values.extend(_symbols_in_value(next(iter(row.values()))))
+            if not matched:
+                values.extend(_inferred_symbols_for_field(row, field_name, fields))
         if pattern is not None:
             values = [value for value in values if pattern.fullmatch(value)]
         cardinality = str(field_spec.get("cardinality") or "set")
@@ -188,5 +229,11 @@ def validate_grounding_rows(
         matches = all(set(actual.get(key, [])) == set(values) for key, values in expected.items())
     else:
         raise ValueError(f"Unsupported grounding match mode `{match_mode}`.")
-    rendered = json.dumps(actual, ensure_ascii=False, sort_keys=True)
+    expected_is_empty = bool(expected) and all(not values for values in expected.values())
+    actual_is_empty = bool(actual) and all(not values for values in actual.values())
+    rendered = (
+        ""
+        if expected_is_empty and actual_is_empty
+        else json.dumps(actual, ensure_ascii=False, sort_keys=True)
+    )
     return matches, rendered, actual

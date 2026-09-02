@@ -20,7 +20,7 @@ split:
   challenge_task_types:
     - nearest_object_to_object
     - place_hops
-    - objects_in_place_symbol
+    - objects_in_room_class
     - pddl_inspect_object_class
     - pddl_object_not_in_place
     - pddl_visit_place_and_end_in_room

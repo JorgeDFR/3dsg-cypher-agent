@@ -43,6 +43,7 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     assert text.index("<Labelspace Description>") < text.index("Labels in Database:")
     assert "Which object classes exist?" in text
     assert "SLDP Equality Language" in text
+    assert "return the empty value" in text
     assert "Your answer should be an SLDP set of strings" in text
     assert seed["gold_cypher"] not in text
     assert seed["solution"] not in text
@@ -64,6 +65,7 @@ def test_native_pddl_seed_prompt_rendering_includes_pddl_context_only():
     assert "PDDL Domain" in text
     assert "PDDL Examples" in text
     assert "PDDL goal language" in text
+    assert "leave the answer contents empty" in text
     assert "Grab a wastebin" in text
     assert seed["solution"] not in text
     assert "Your answer should be an SLDP" not in text

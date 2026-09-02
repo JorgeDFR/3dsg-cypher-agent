@@ -102,6 +102,19 @@ def test_pddl_mismatch_does_not_print_dependency_diagnostics(capsys):
     assert captured.err == ""
 
 
+def test_pddl_validation_accepts_empty_answer_for_empty_solution():
+    assert answer_matches_with_heracles("", "", "PDDL") == (True, True)
+    assert answer_matches_with_heracles("", "(visited-object O1)", "PDDL") == (
+        True,
+        False,
+    )
+    assert answer_matches_with_heracles(
+        "OBJECT_SYMBOL_NOT_VALID",
+        "",
+        "PDDL",
+    ) == (False, False)
+
+
 def test_pddl_domain_validation_rejects_unknown_predicate_wrong_arity_and_type():
     assert validate_pddl_goal("(teleported-object O1)")[0] is False
     assert validate_pddl_goal("(holding O1 O2)")[0] is False

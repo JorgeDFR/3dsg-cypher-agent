@@ -7,6 +7,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
 
+from cypher_3dsg_agent_distillation.agent_records import feedback_answer
+
 
 def ensure_heracles_agents_importable() -> None:
     try:
@@ -130,6 +132,22 @@ def answer_matches_with_heracles(
 ) -> tuple[bool, bool]:
     """Return (valid_format, correct) using Heracles answer comparators."""
     comparator = comparator_for_output_type(output_type)
+    normalized_answer = str(answer).strip()
+    normalized_solution = str(solution).strip()
+    if not normalized_solution:
+        if not normalized_answer:
+            return True, True
+        if comparator == "SLDP":
+            try:
+                lark_parse_sldp(normalized_answer)
+            except Exception:
+                return False, False
+            return True, False
+        valid_domain, _parsed_answer, _issues = validate_pddl_goal(normalized_answer)
+        return valid_domain, False
+    if not normalized_answer:
+        return True, False
+
     if comparator == "SLDP":
         try:
             parsed_answer = lark_parse_sldp(str(answer))
@@ -141,6 +159,14 @@ def answer_matches_with_heracles(
         if answer_validation.get("mode") == "top_k_with_ties":
             return True, top_k_with_ties_matches(parsed_answer, answer_validation)
         return True, False
+
+    answer_feedback = feedback_answer(answer)
+    solution_feedback = feedback_answer(solution)
+    if answer_feedback is not None:
+        return True, answer_feedback == solution_feedback
+    if solution_feedback is not None:
+        valid_domain, _parsed_answer, _issues = validate_pddl_goal(str(answer))
+        return valid_domain, False
 
     valid_domain, parsed_answer, _issues = validate_pddl_goal(str(answer))
     if not valid_domain or parsed_answer is None:
@@ -272,6 +298,10 @@ A point is written as POINT(x y z), with no commas.
 
 Format your final answer as an SLDP expression wrapped between <answer> and </answer>.
 Only a single pair of answer tags should appear.
+
+If the database query has no answer, return the empty value matching the requested
+shape. Use <> for an empty set, [] for an empty list, or leave the answer contents
+empty when the result has no collection representation.
 """
     if output_type == "PDDL":
         return """
@@ -282,7 +312,10 @@ provided PDDL domain.
 Use object, place, mesh place, and room/region symbols exactly as they appear in the scene graph.
 Do not include explanatory text inside the final answer.
 
-Format your final answer as a PDDL goal wrapped between <answer> and </answer>.
+If the database query returns no grounding, leave the answer contents empty instead
+of inventing a PDDL goal.
+
+Wrap the PDDL goal or empty answer between <answer> and </answer>.
 Only a single pair of answer tags should appear.
 """
     raise ValueError(f"Unsupported output type: {output_type}")

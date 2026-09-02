@@ -4,9 +4,8 @@ system: |
   If a query fails, revise the Cypher based on the tool feedback.
   When you have enough information, produce a concise final PDDL goal.
   Use object, place, mesh place, room/region, and building symbols exactly as they appear in the graph.
-  Use visited-* for required waypoints that the robot may leave; use at-object, at-place, or in-region only for a required final location.
-  Use and when every stated goal condition is required. Use not only for an explicitly prohibited final-state fact.
   Node symbols must not have parentheses or quotes.
+  If the query returns no grounding, return an empty answer instead of inventing a PDDL goal or emitting an error token.
   Robot commands such as moving, picking up, or placing objects are planning tasks, not database writes.
   Only refuse explicit requests to mutate the Neo4j scene-graph data; for those requests, do not call tools and answer WRITE_QUERY_NOT_ALLOWED.
 novel_instruction_preamble: "Now, use Cypher queries to generate a PDDL goal for this command:"

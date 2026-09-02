@@ -249,6 +249,7 @@ def write_minimal_artifacts(config):
                             "cypher_tool_output": [{"count": 2}],
                             "final_answer": "<answer>2</answer>",
                             "final_answer_value": "2",
+                            "end_to_end_final_answer": "<answer>2</answer>",
                         },
                         "generation_debug": {
                             "cypher_generation": {
@@ -262,6 +263,27 @@ def write_minimal_artifacts(config):
                                 "rendered_prompt": "<|im_start|>user\nHow many chairs?",
                                 "raw_completion": "<answer>2</answer><|im_end|>",
                             },
+                            "end_to_end_generation": {
+                                "turns": [
+                                    {
+                                        "turn": 1,
+                                        "rendered_prompt": (
+                                            "<|im_start|>user\nHow many chairs?"
+                                        ),
+                                        "raw_completion": "<tool_call>...</tool_call>",
+                                    },
+                                    {
+                                        "turn": 2,
+                                        "rendered_prompt": (
+                                            "<|im_start|>tool\n"
+                                            '{"ok": true, "rows": [{"count": 2}]}'
+                                        ),
+                                        "raw_completion": (
+                                            "<answer>2</answer><|im_end|>"
+                                        ),
+                                    },
+                                ]
+                            },
                         },
                         "final_answer_from_trace": {
                             "status": "pass",
@@ -272,6 +294,17 @@ def write_minimal_artifacts(config):
                             "tool_call_parse_success": True,
                             "executable": True,
                             "cypher_solution_match": "true",
+                        },
+                        "end_to_end_final_answer": {
+                            "status": "pass",
+                            "final_answer_match": True,
+                            "query_attempts": 1,
+                            "retries_used": 0,
+                            "max_query_retries": 1,
+                            "attempts": [
+                                {"turn": 1, "status": "tool_success"},
+                                {"turn": 2, "status": "pass"},
+                            ],
                         },
                     }
                 ],
@@ -305,15 +338,50 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     validation_record = data["validation"]["raw_generation_reports"]["test"][
         "records"
     ][0]
+    _validation_rows, validation_details = validation_example_rows(
+        data["validation"]["raw_generation_reports"]
+    )
     assert "conversations" not in validation_record
     assert set(validation_record["generation_debug"]) == {
         "cypher_generation",
+        "end_to_end_generation",
         "final_answer_generation",
     }
     assert set(validation_record["generation_debug"]["cypher_generation"]) == {
         "rendered_prompt",
         "raw_completion",
     }
+    assert len(
+        validation_record["generation_debug"]["end_to_end_generation"]["turns"]
+    ) == 2
+    assert list(validation_details[0]["fields"]) == [
+        "uid",
+        "split",
+        "task_family",
+        "output_type",
+        "task_type",
+        "tool_call_status",
+        "final_answer_status",
+        "tool_call_parse_success",
+        "tool_call_executable",
+        "cypher_solution_match",
+        "grounding_match",
+        "potential_hidden_false_positive",
+        "final_answer_domain_valid",
+        "final_answer_match",
+        "end_to_end_match",
+    ]
+    assert [group["title"] for group in validation_details[0]["groups"]] == [
+        "Cypher Validation",
+        "Final Answer Validation",
+        "End-to-End Validation",
+    ]
+    assert "cypher_validation_summary" not in validation_details[0]["groups"][0][
+        "blocks"
+    ]
+    assert "final_answer_validation_summary" not in validation_details[0]["groups"][1][
+        "blocks"
+    ]
     assert "3D Scene Graph" in html
     assert "Generated Questions" in html
     assert "Trace Outcomes" in html
@@ -381,6 +449,12 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Tool Schema" not in html
     assert "Cypher Generation Rendered Prompt" in html
     assert "Final Answer Generation Rendered Prompt" in html
+    assert "Turn 1 Rendered Prompt" in html
+    assert "Turn 2 Raw Completion" in html
+    assert "Cypher Validation</summary>" in html
+    assert "Final Answer Validation</summary>" in html
+    assert "End-to-End Validation</summary>" in html
+    assert html.count('class="validation-detail-group"') >= 6
     assert "<h3>How many chairs?</h3>" not in html
     assert "message-card" in html
     assert "Line one\nLine two" in html
@@ -407,7 +481,6 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     question_headers = [
         "UID",
         "Task Family",
-        "Output Type",
         "Task Type",
         "Tags",
         "Question",
@@ -445,6 +518,26 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     validation_section = html[
         html.index('<section id="validation"') : html.index('<section id="baseline"')
     ]
+    cypher_group_start = validation_section.index("<summary>Cypher Validation</summary>")
+    final_group_start = validation_section.index(
+        "<summary>Final Answer Validation</summary>"
+    )
+    end_to_end_group_start = validation_section.index(
+        "<summary>End-to-End Validation</summary>"
+    )
+    assert cypher_group_start < validation_section.index("<h4>Expected Cypher</h4>")
+    assert validation_section.index("<h4>Cypher Tool Output</h4>") < final_group_start
+    assert final_group_start < validation_section.index("<h4>Expected Final Answer</h4>")
+    assert (
+        validation_section.index("<h4>Final Answer Validation Issues</h4>")
+        < end_to_end_group_start
+    )
+    assert end_to_end_group_start < validation_section.index(
+        "<summary>Turn 1 Rendered Prompt</summary>"
+    )
+    assert end_to_end_group_start < validation_section.index(
+        "<h4>Turn 2 Raw Completion</h4>"
+    )
     assert "<h4>Test</h4>" in validation_section
     assert ">All</td>" in validation_section
     assert "Final Answer From Trace" not in validation_section
@@ -475,16 +568,11 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "UID",
         "Split",
         "Task Family",
-        "Output Type",
         "Task Type",
         "Question",
-        "Tool Call Status",
-        "Final Answer Status",
-        "Tool Call Parse Success",
         "Tool Call Executable",
         "Cypher Solution Match",
         "Grounding Match",
-        "Final Answer Domain Valid",
         "Final Answer Match",
     ]
     assert all(header in validation_examples_table for header in validation_headers)
@@ -647,6 +735,76 @@ def test_workflow_report_default_output_lives_in_reports_dir(tmp_path):
 
     assert workflow_report_output_path(config).name == "workflow_report.html"
     assert workflow_report_output_path(config).parent.name == "reports"
+
+
+def test_validation_details_surface_hidden_false_positive_diagnostics():
+    record = {
+        "uid": "risk1",
+        "query_type": "objects_in_place_symbol",
+        "task_family": "cypher_qa",
+        "question": "Which objects are in p1?",
+        "expected": {
+            "cypher": "MATCH (:Place)-[:CONTAINS]->(:Object) RETURN 1",
+            "cypher_solution": "<>",
+        },
+        "generated": {
+            "cypher": "MATCH (:Place)-[:CONTAINS*2..2]->(:Object) RETURN 1",
+            "cypher_solution": "<>",
+            "cypher_tool_output": [],
+        },
+        "final_answer_from_trace": {"status": "pass", "final_answer_match": True},
+        "tool_call_from_prompt": {
+            "status": "pass",
+            "executable": True,
+            "cypher_solution_match": True,
+            "potential_hidden_false_positive": True,
+            "hidden_false_positive_reasons": [
+                "non_exact_cypher_matched_empty_result",
+                "relationship_pattern_mismatch",
+            ],
+        },
+    }
+
+    rows, details = validation_example_rows({"test": {"records": [record]}})
+
+    assert rows[0]["potential_hidden_false_positive"] is True
+    assert details[0]["groups"][0]["blocks"]["cypher_validation_issues"][
+        "hidden_false_positive_reasons"
+    ] == [
+        "non_exact_cypher_matched_empty_result",
+        "relationship_pattern_mismatch",
+    ]
+
+
+def test_validation_details_backfill_hidden_false_positive_for_old_reports():
+    record = {
+        "uid": "legacy-risk",
+        "query_type": "objects_in_place_symbol",
+        "task_family": "cypher_qa",
+        "expected": {
+            "cypher": "MATCH (:Place)-[:CONTAINS]->(:Object) RETURN 1",
+            "cypher_solution": "<>",
+        },
+        "generated": {
+            "cypher": "MATCH (:Place)-[:CONTAINS*2..2]->(:Object) RETURN 1",
+            "cypher_solution": "<>",
+            "cypher_tool_output": [],
+        },
+        "final_answer_from_trace": {"status": "pass", "final_answer_match": True},
+        "tool_call_from_prompt": {
+            "status": "pass",
+            "cypher_exact_match": False,
+            "executable": True,
+            "cypher_solution_match": True,
+        },
+    }
+
+    rows, details = validation_example_rows({"test": {"records": [record]}})
+
+    assert rows[0]["potential_hidden_false_positive"] is True
+    assert "relationship_pattern_mismatch" in details[0]["groups"][0]["blocks"][
+        "cypher_validation_issues"
+    ]["hidden_false_positive_reasons"]
 
 
 def test_scene_template_sample_renders_comma_separated_dictionaries():

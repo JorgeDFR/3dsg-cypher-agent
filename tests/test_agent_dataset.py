@@ -133,7 +133,7 @@ def test_assert_no_split_leakage_rejects_repeated_cypher():
 def test_cross_family_equivalent_cypher_is_consolidated_into_one_split():
     cypher = "MATCH (o:Object) RETURN o.nodeSymbol AS object"
     qa_record = make_record("qa", "object_lookup", cypher)
-    pddl_record = make_record("pddl", "pddl_visit_object", cypher).model_copy(
+    pddl_record = make_record("pddl", "object_lookup", cypher).model_copy(
         update={"task_family": "cypher_pddl", "output_type": "PDDL"}
     )
     splits = {"train": [qa_record], "eval": [], "test": [pddl_record]}
@@ -207,6 +207,42 @@ def test_grouped_split_is_balanced_by_task_type():
     assert Counter(record.task_type for record in train) == {"count": 40, "lookup": 40}
     assert Counter(record.task_type for record in eval_records) == {"count": 5, "lookup": 5}
     assert Counter(record.task_type for record in test) == {"count": 5, "lookup": 5}
+
+
+def test_grouped_split_balances_pddl_types_that_share_cypher_queries():
+    records = [
+        make_record(
+            f"{task_type}-{index}",
+            task_type,
+            f"MATCH (o:Object {{nodeSymbol: 'O{index}'}}) RETURN o.nodeSymbol AS object",
+        ).model_copy(update={"task_family": "cypher_pddl", "output_type": "PDDL"})
+        for task_type in ("pddl_visit_object_symbol", "pddl_end_at_object_symbol")
+        for index in range(24)
+    ]
+
+    train, eval_records, test, _challenge = grouped_split_records(
+        records,
+        train_size=0.8,
+        eval_size=0.1,
+        test_size=0.1,
+        seed=42,
+    )
+
+    assert Counter(record.task_type for record in train) == {
+        "pddl_visit_object_symbol": 19,
+        "pddl_end_at_object_symbol": 19,
+    }
+    assert Counter(record.task_type for record in eval_records) == {
+        "pddl_visit_object_symbol": 3,
+        "pddl_end_at_object_symbol": 3,
+    }
+    assert Counter(record.task_type for record in test) == {
+        "pddl_visit_object_symbol": 2,
+        "pddl_end_at_object_symbol": 2,
+    }
+    assert_no_split_leakage(
+        {"train": train, "eval": eval_records, "test": test}
+    )
 
 
 def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test():

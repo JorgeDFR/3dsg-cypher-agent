@@ -47,6 +47,7 @@ def test_extract_scene_values_from_spark_dsg():
     assert values["object_symbols"][:3] == ["O0", "O1", "O3"]
     assert values["place_symbols"][:3] == ["p0", "p1", "p4"]
     assert values["mesh_place_symbols"][:3] == ["P5670", "P5671", "P5672"]
+    assert {"O2", "R8", "p2", "P0"} <= set(values["invalid_values"])
     index = SceneIndex(SCENE_PATH)
     assert len(values["bboxes"]) == 50
     assert len(values["room_containing_object_cases"]) == 50
@@ -60,6 +61,10 @@ def test_extract_scene_values_from_spark_dsg():
     assert len(values["nearest_object_cases"]) == 50
     assert len(values["mesh_place_hop_cases"]) == 50
     assert len(values["place_hop_cases"]) == 50
+    assert sum(
+        case["object"] in values["invalid_values"]
+        for case in values["room_containing_object_cases"]
+    ) == 5
     assert {case["hops"] for case in values["mesh_place_hop_cases"]} <= {2, 3, 4}
     assert {case["hops"] for case in values["place_hop_cases"]} <= {2, 3, 4}
     assert all(

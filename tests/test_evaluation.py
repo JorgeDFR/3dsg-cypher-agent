@@ -109,6 +109,22 @@ def test_room_adjacency_count_accepts_gold_and_generated_count_aliases():
         record,
         [{"room": "R1", "adjacent_rooms": 3}],
     ) == "3"
+
+
+def test_invalid_input_query_results_convert_to_empty_answer():
+    record = {
+        "query_type": "object_class_count",
+        "solution": "",
+        "solution_formats": ["int"],
+        "tags": ["invalid_input"],
+    }
+
+    assert rows_to_solution_text(record, []) == ""
+    assert rows_to_solution_text(record, [{"count": 0}]) == ""
+    assert rows_to_solution_text(
+        record,
+        [{"class": "missing", "object_count": 0}],
+    ) == ""
     assert rows_to_solution_text(
         record,
         [{"room": "R1", "neighbor_count": 3}],

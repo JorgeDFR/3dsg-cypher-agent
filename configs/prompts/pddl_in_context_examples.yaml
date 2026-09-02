@@ -18,7 +18,7 @@ in_context_examples: |
     Instruction: Pick up the box.
     Answer: <answer>(holding O120)</answer>
 
-    Instruction: Move the box to mesh place 11.
+    Instruction: Move the box to mesh place P11.
     Answer: <answer>(object-in-place O120 P11)</answer>
 
     Instruction: Be holding the box and finish beside the trash.

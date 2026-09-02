@@ -385,6 +385,38 @@ def row_count_value(
     raise ResultShapeError(f"missing numeric `count` in returned columns: {columns}")
 
 
+def rows_indicate_no_match(rows: list[dict[str, Any]]) -> bool:
+    if not rows:
+        return True
+
+    count_values = [
+        value
+        for row in rows
+        for key, value in row.items()
+        if (
+            key.lower().startswith("count(")
+            or re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_").endswith("count")
+        )
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+    ]
+    if count_values and all(value == 0 for value in count_values):
+        return True
+
+    def empty_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int | float):
+            return value == 0
+        if isinstance(value, list | tuple | set | dict):
+            return len(value) == 0
+        return False
+
+    return all(empty_value(value) for row in rows for value in row.values())
+
+
 def rows_to_solution_value(
     query_type: str,
     rows: list[dict[str, Any]],
@@ -505,6 +537,16 @@ def rows_to_solution_value(
 
 
 def rows_to_solution_text(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    if "invalid_input" in (record.get("tags") or []) and rows_indicate_no_match(rows):
+        expected = next(
+            (
+                record[key]
+                for key in ("expected_solution", "real_solution", "solution")
+                if key in record and record[key] is not None
+            ),
+            "",
+        )
+        return str(expected).strip()
     value = rows_to_solution_value(record.get("query_type", ""), rows)
     solution_formats = solution_formats_for_record(record)
     return rendered_solution(value, solution_formats=solution_formats)
