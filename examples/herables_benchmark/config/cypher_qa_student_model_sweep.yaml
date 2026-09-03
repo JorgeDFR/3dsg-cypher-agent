@@ -1,6 +1,6 @@
 metadata:
   benchmark_family: 3dsg_student_ollama_model_sweep
-  task: pddl
+  task: cypher
   local_metrics:
     enabled: true
     target_provider: ollama
@@ -13,11 +13,11 @@ metadata:
     baseline_adjust_gpu: true
 
 model_sweeps:
-  ollama-pddl-students:
+  ollama-cypher-qa-students:
     provider: ollama
     phase: main
-    configuration_name_template: agentic-cypher-pddl-{alias}
-    result_configuration_name: agentic-cypher-pddl
+    configuration_name_template: agentic-cypher-qa-{alias}
+    result_configuration_name: agentic-cypher-qa
     models_path: $HERACLES_AGENTS_PATH/examples/experiments/ollama/model_lists/students.yaml
     template:
       dsg_interface:
@@ -32,8 +32,9 @@ model_sweeps:
             seed: 123
           agent_info:
             prompt_settings:
-              base_prompt: $HERACLES_AGENTS_PATH/examples/prompts/cypher/pddl_agentic_cypher_prompt.yaml
-              output_type: PDDL
+              base_prompt: $HERACLES_AGENTS_PATH/examples/prompts/cypher/qa_agentic_cypher_prompt.yaml
+              output_type: SLDP
+              answer_type_hint: true
             tools:
               - name: run_cypher_query
                 bound_args:
@@ -42,6 +43,6 @@ model_sweeps:
                     uri: $HERACLES_NEO4J_URI
             tool_interface: ollama
             max_iterations: 5
-      questions: $HERACLES_AGENTS_PATH/examples/questions/pddl_questions.yaml
+      questions: $HERACLES_AGENTS_PATH/examples/questions/qa_questions.yaml
 
 configurations: {}

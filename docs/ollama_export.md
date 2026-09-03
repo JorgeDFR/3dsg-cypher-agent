@@ -23,7 +23,6 @@ Export a trained Qwen adapter:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages all
@@ -39,7 +38,6 @@ Export the exact base model configured in the same student YAML:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-baseline \
   --stages all \
@@ -91,8 +89,9 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
   --quantizations Q4_K_M Q5_K_M
 ```
 
-The first configured quantization is selected for `Modelfile` unless
-`--selected-quantization` is passed.
+`modelfile_quantization` selects the artifact referenced by `Modelfile`. When
+it is omitted, the first configured quantization is used. The
+`--modelfile-gguf` argument overrides the configured value.
 
 Use `--modelfile-gguf` to select a quantization independently of the conversion
 and quantization settings. It accepts unquantized types (`bf16`, `f16`, `f32`),
@@ -116,26 +115,26 @@ without performing a merge, conversion, quantization, or write.
 
 ## Configuration
 
-Settings under `ollama_export` in `configs/data.yaml` include:
+Each `student_*.yaml` model profile contains its own `ollama_export` settings:
 
 - `model_name`: default export directory and Ollama model name;
 - `export_root`: parent output directory;
 - `gguf_outtype`: intermediate converter type such as `bf16`;
 - `quantizations`: quantizations to generate;
-- `selected_quantization`: optional Modelfile selection;
 - `modelfile_quantization`: optional GGUF quantization selector for the Modelfile;
 - `convert_args`: extra `convert_hf_to_gguf.py` arguments;
 - `quantize_args`: extra `llama-quantize` arguments.
 
 Explicit CLI overrides remain available for adapter, merged checkpoint, GGUF,
-and Modelfile paths. The student config supplies `model.base_model`, optional
-tokenizer and remote-code settings, and the default adapter `training.output_dir`.
+and Modelfile paths. The same student config also supplies `model.base_model`,
+optional tokenizer and remote-code settings, and the default adapter
+`training.output_dir`.
 
 ## Qwen3.5 MTP metadata
 
 Some merged Qwen3.5 checkpoints retain `mtp_num_hidden_layers` without MTP
 tensors. A GGUF containing that metadata can fail with a missing final block.
-This repository configures:
+The Qwen student profile configures:
 
 ```yaml
 ollama_export:
@@ -145,14 +144,13 @@ ollama_export:
 
 ## Registration and benchmarking
 
-The development stack no longer includes Ollama. The dedicated Heracles stack
-validates the enabled exported artifacts and performs `ollama create` inside its
-own GPU Ollama container:
+The dedicated Heracles stack
+validates the enabled exported artifacts and performs `ollama create` inside its Ollama container:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh models
 examples/herables_benchmark/run_benchmark.sh ollama list
-examples/herables_benchmark/run_benchmark.sh --benchmarks cypher
+examples/herables_benchmark/run_benchmark.sh
 ```
 
 See the [benchmark guide](../examples/herables_benchmark/README.md) for
@@ -166,7 +164,6 @@ Install export dependencies and provide a llama.cpp checkout:
 pip install -e '.[export]'
 export LLAMA_CPP_DIR=external/llama.cpp
 .venv/bin/python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages all

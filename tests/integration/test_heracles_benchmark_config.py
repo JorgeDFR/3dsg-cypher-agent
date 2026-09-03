@@ -144,8 +144,8 @@ def test_main_compose_no_longer_contains_ollama():
 @pytest.mark.parametrize(
     ("filename", "task", "questions"),
     [
-        ("cypher_student_model_sweep.yaml", "cypher", "qa_questions.yaml"),
-        ("pddl_student_model_sweep.yaml", "pddl", "pddl_questions.yaml"),
+        ("cypher_qa_student_model_sweep.yaml", "cypher", "qa_questions.yaml"),
+        ("cypher_pddl_student_model_sweep.yaml", "pddl", "pddl_questions.yaml"),
     ],
 )
 def test_experiment_configs_share_models_and_collect_local_metrics(filename, task, questions):
@@ -179,12 +179,14 @@ def test_student_manifest_uses_stable_base_and_fine_tuned_directories():
     assert all("q4km" not in entry["artifact_dir"].lower() for entry in qwen)
 
 
-def test_launcher_supports_cypher_pddl_and_creates_models_in_benchmark_ollama():
+def test_launcher_defaults_to_both_benchmarks_and_creates_models_in_benchmark_ollama():
     launcher = (BENCHMARK_DIR / "run_benchmark.sh").read_text(encoding="utf-8")
 
-    assert "--benchmarks cypher" in launcher
-    assert "--benchmarks pddl" in launcher
+    assert "--benchmarks cypher-qa" in launcher
+    assert "--benchmarks cypher-pddl" in launcher
     assert "--benchmarks both" in launcher
+    assert "RUN_CYPHER_QA=1\nRUN_CYPHER_PDDL=1" in launcher
+    assert "select_benchmarks" not in launcher
     assert "compose exec -T ollama ollama create" in launcher
     assert "mapfile -t provisioning_records" in launcher
     assert 'ollama create "${model}" -f "${modelfile}" </dev/null' in launcher
@@ -198,5 +200,7 @@ def test_launcher_supports_cypher_pddl_and_creates_models_in_benchmark_ollama():
 def test_report_uses_only_results_written_by_current_run():
     runner = (BENCHMARK_DIR / "benchmark_runner.sh").read_text(encoding="utf-8")
 
+    assert 'RUN_CYPHER_QA="${1:-1}"' in runner
+    assert 'RUN_CYPHER_PDDL="${2:-1}"' in runner
     assert 'RUN_MARKER="$(mktemp)"' in runner
     assert '-newer "${RUN_MARKER}"' in runner

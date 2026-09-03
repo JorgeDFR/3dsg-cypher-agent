@@ -30,10 +30,10 @@ COPY examples/herables_benchmark/benchmark_runner.sh \
      "${WORKSPACE_DIR}/benchmark_runner.sh"
 COPY examples/herables_benchmark/model_manifest.py \
      "${WORKSPACE_DIR}/model_manifest.py"
-COPY examples/herables_benchmark/config/cypher_student_model_sweep.yaml \
-     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/cypher_student_model_sweep.yaml"
-COPY examples/herables_benchmark/config/pddl_student_model_sweep.yaml \
-     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/pddl_student_model_sweep.yaml"
+COPY examples/herables_benchmark/config/cypher_qa_student_model_sweep.yaml \
+     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/cypher_qa_student_model_sweep.yaml"
+COPY examples/herables_benchmark/config/cypher_pddl_student_model_sweep.yaml \
+     "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/cypher_pddl_student_model_sweep.yaml"
 COPY examples/herables_benchmark/config/model_lists/students.yaml \
      "${WORKSPACE_DIR}/heracles_agents/examples/experiments/ollama/model_lists/students.yaml"
 

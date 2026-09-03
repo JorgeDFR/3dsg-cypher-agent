@@ -17,8 +17,8 @@ export HOST_GID="${HOST_GID:-$(id -g)}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-3dsg-heracles-benchmark}"
 export BENCHMARK_IMAGE="${BENCHMARK_IMAGE:-${COMPOSE_PROJECT_NAME}-main:latest}"
 
-RUN_CYPHER=1
-RUN_PDDL=0
+RUN_CYPHER_QA=1
+RUN_CYPHER_PDDL=1
 KEEP_STACK=0
 SERVICES_STARTED=0
 CLEANED_UP=0
@@ -37,15 +37,15 @@ Commands:
   config                    Validate and print the Compose configuration.
 
 Run options:
-  --benchmarks cypher       Run only Cypher QA (default).
-  --benchmarks pddl         Run only Cypher-PDDL.
-  --benchmarks both         Run both experiment sets.
+  --benchmarks both         Run both experiment sets (default).
+  --benchmarks cypher-qa    Run only Cypher QA.
+  --benchmarks cypher-pddl  Run only Cypher-PDDL.
   --keep-stack              Leave services running after the benchmark.
   -h, --help                Show this help.
 
-If `run` is started in a terminal without --benchmarks, an interactive
-Cypher/PDDL/both menu is shown. A working NVIDIA GPU and NVIDIA Container
-Toolkit are required because GPU resource metrics are part of this benchmark.
+If --benchmarks is omitted, both experiment sets run. A working NVIDIA GPU and
+NVIDIA Container Toolkit are required because GPU resource metrics are part of
+this benchmark.
 EOF
 }
 
@@ -198,46 +198,22 @@ provision_models() {
   info "Provisioned and verified ${provisioned} enabled Ollama model(s)."
 }
 
-select_benchmarks() {
-  cat <<'EOF'
-
-Select benchmark questions:
-
-  1) Cypher QA only
-  2) Cypher-PDDL only
-  3) Both
-  q) Quit
-
-EOF
-  local selection
-  while true; do
-    read -r -p "Selection [1/2/3/q]: " selection
-    case "${selection}" in
-      1) set_benchmarks cypher; return ;;
-      2) set_benchmarks pddl; return ;;
-      3) set_benchmarks both; return ;;
-      q | Q) exit 0 ;;
-      *) printf 'Enter 1, 2, 3, or q.\n' >&2 ;;
-    esac
-  done
-}
-
 set_benchmarks() {
   case "$1" in
-    cypher)
-      RUN_CYPHER=1
-      RUN_PDDL=0
+    cypher-qa)
+      RUN_CYPHER_QA=1
+      RUN_CYPHER_PDDL=0
       ;;
-    pddl)
-      RUN_CYPHER=0
-      RUN_PDDL=1
+    cypher-pddl)
+      RUN_CYPHER_QA=0
+      RUN_CYPHER_PDDL=1
       ;;
-    both | cypher,pddl | pddl,cypher)
-      RUN_CYPHER=1
-      RUN_PDDL=1
+    both)
+      RUN_CYPHER_QA=1
+      RUN_CYPHER_PDDL=1
       ;;
     *)
-      die "Unknown benchmark selection '$1'; use cypher, pddl, or both."
+      die "Unknown benchmark selection '$1'; use both, cypher-qa, or cypher-pddl."
       ;;
   esac
 }
@@ -266,14 +242,13 @@ run_sweep() {
     --no-deps \
     main \
     /home/benchmark/workspace/benchmark_runner.sh \
-    "${RUN_CYPHER}" \
-    "${RUN_PDDL}" \
+    "${RUN_CYPHER_QA}" \
+    "${RUN_CYPHER_PDDL}" \
     "${OUTPUT_DIR_IN_CONTAINER}"
   printf '\nBenchmark report:\n  %s/report.html\n' "${OUTPUT_DIR_ON_HOST}"
 }
 
 command="run"
-benchmarks_explicit=0
 if (($# > 0)); then
   case "$1" in
     run | build | models | ollama | status | down | config)
@@ -291,9 +266,8 @@ if [[ "${command}" == "run" ]]; then
   while (($# > 0)); do
     case "$1" in
       --benchmarks)
-        (($# >= 2)) || die "--benchmarks requires cypher, pddl, or both."
+        (($# >= 2)) || die "--benchmarks requires both, cypher-qa, or cypher-pddl."
         set_benchmarks "$2"
-        benchmarks_explicit=1
         shift 2
         ;;
       --keep-stack)
@@ -309,9 +283,6 @@ if [[ "${command}" == "run" ]]; then
         ;;
     esac
   done
-  if ((benchmarks_explicit == 0)) && [[ -t 0 ]]; then
-    select_benchmarks
-  fi
 fi
 
 check_docker

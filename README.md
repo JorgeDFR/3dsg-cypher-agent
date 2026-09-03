@@ -307,17 +307,17 @@ This repository does not modify or mount
 launcher, model manifest, and experiment YAML files live under
 `examples/herables_benchmark/`.
 
-Run the current Cypher-only base-versus-fine-tuned Ollama sweep with:
+Run both base-versus-fine-tuned Ollama benchmark variants with:
 
 ```bash
-examples/herables_benchmark/run_benchmark.sh --benchmarks cypher
+examples/herables_benchmark/run_benchmark.sh
 ```
 
-The launcher also accepts `--benchmarks pddl` or `--benchmarks both` for future
-PDDL-trained models. It registers enabled exports inside its own GPU Ollama
-container, records Heracles local/GPU metrics and raw samples, and writes
-`outputs/heracles_benchmark/model_sweep/report.html`. See the
-[benchmark guide](examples/herables_benchmark/README.md).
+The launcher also accepts `--benchmarks cypher-qa` or
+`--benchmarks cypher-pddl` to run only one variant. It registers enabled exports
+inside its own GPU Ollama container, records Heracles local/GPU metrics and raw
+samples, and writes `outputs/heracles_benchmark/model_sweep/report.html`. See
+the [benchmark guide](examples/herables_benchmark/README.md).
 
 Expected fine-tuned Ollama model names include:
 

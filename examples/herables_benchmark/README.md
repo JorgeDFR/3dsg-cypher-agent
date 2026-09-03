@@ -34,7 +34,6 @@ Export the baseline model:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-baseline \
   --stages all \
@@ -45,7 +44,6 @@ Export the finetuned model:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
-  --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages all
@@ -78,24 +76,22 @@ additional example.
 
 ## 3. Run
 
-Cypher QA is the non-interactive default:
+Both benchmark variants run by default:
 
 ```bash
-examples/herables_benchmark/run_benchmark.sh \
-  --benchmarks cypher
+examples/herables_benchmark/run_benchmark.sh
 ```
 
-PDDL and combined runs remain available for future models:
+Run only one variant with its explicit selector:
 
 ```bash
-examples/herables_benchmark/run_benchmark.sh --benchmarks pddl
-examples/herables_benchmark/run_benchmark.sh --benchmarks both
+examples/herables_benchmark/run_benchmark.sh --benchmarks cypher-qa
+examples/herables_benchmark/run_benchmark.sh --benchmarks cypher-pddl
 ```
 
-With no arguments in an interactive terminal, the launcher presents the same
-three choices. It validates Docker GPU access, builds the project-local
-benchmark image, starts isolated Neo4j/Ollama/metrics-proxy containers, validates
-all enabled exports, and runs `ollama create` inside the new benchmark Ollama
+The launcher validates Docker GPU access, builds the project-local benchmark
+image, starts isolated Neo4j/Ollama/metrics-proxy containers, validates all
+enabled exports, and runs `ollama create` inside the new benchmark Ollama
 container before launching Heracles.
 
 Results are written to:
@@ -103,8 +99,8 @@ Results are written to:
 ```text
 outputs/heracles_benchmark/model_sweep/
 |-- ollama/
-|   |-- cypher_student_model_sweep/
-|   `-- pddl_student_model_sweep/
+|   |-- cypher_qa_student_model_sweep/
+|   `-- cypher_pddl_student_model_sweep/
 `-- report.html
 ```
 
@@ -131,7 +127,7 @@ examples/herables_benchmark/run_benchmark.sh ollama list
 
 # Keep services after a run for inspection
 examples/herables_benchmark/run_benchmark.sh run \
-  --benchmarks cypher --keep-stack
+  --benchmarks cypher-qa --keep-stack
 
 # Inspect or stop them later
 examples/herables_benchmark/run_benchmark.sh status

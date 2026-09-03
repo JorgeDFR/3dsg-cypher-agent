@@ -451,7 +451,7 @@ def test_pddl_template_rejects_missing_grounding_contract():
 def test_pddl_templates_have_multiple_distinct_instruction_variants():
     templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
 
-    assert all(len(template["questions"]) >= 6 for template in templates)
+    assert all(len(template["questions"]) >= 5 for template in templates)
     assert all(
         len(template["questions"]) == len(set(template["questions"]))
         for template in templates

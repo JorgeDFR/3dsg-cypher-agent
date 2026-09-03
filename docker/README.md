@@ -127,7 +127,7 @@ After exporting GGUF artifacts with the main container, use the dedicated
 benchmark launcher to create them in Ollama and run Cypher and/or PDDL sweeps:
 
 ```bash
-examples/herables_benchmark/run_benchmark.sh --benchmarks cypher
+examples/herables_benchmark/run_benchmark.sh
 ```
 
 See [Ollama GGUF export](ollama_export.md) for artifact creation and the

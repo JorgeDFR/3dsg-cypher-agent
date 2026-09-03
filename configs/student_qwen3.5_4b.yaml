@@ -34,3 +34,13 @@ training:
   fp16: false
   gradient_checkpointing: true
   report_to: none
+
+ollama_export:
+  model_name: qwen3.5-4b-finetune
+  export_root: outputs/ollama
+  gguf_outtype: bf16
+  quantizations:
+    - Q4_K_M
+  convert_args:
+    - --no-mtp # https://github.com/ggml-org/llama.cpp/issues/24737
+  modelfile_quantization: bf16

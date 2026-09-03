@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-RUN_CYPHER="${1:-1}"
-RUN_PDDL="${2:-0}"
+RUN_CYPHER_QA="${1:-1}"
+RUN_CYPHER_PDDL="${2:-1}"
 OUTPUT_DIR="${3:-output/model_sweep}"
 WORKSPACE_DIR="/home/benchmark/workspace"
 OVERALL_STATUS=0
@@ -34,9 +34,9 @@ validate_flag() {
   fi
 }
 
-validate_flag RUN_CYPHER "${RUN_CYPHER}"
-validate_flag RUN_PDDL "${RUN_PDDL}"
-if [[ "${RUN_CYPHER}" == "0" && "${RUN_PDDL}" == "0" ]]; then
+validate_flag RUN_CYPHER_QA "${RUN_CYPHER_QA}"
+validate_flag RUN_CYPHER_PDDL "${RUN_CYPHER_PDDL}"
+if [[ "${RUN_CYPHER_QA}" == "0" && "${RUN_CYPHER_PDDL}" == "0" ]]; then
   printf 'ERROR: At least one benchmark must be selected.\n' >&2
   exit 2
 fi
@@ -47,11 +47,11 @@ if ! python "${WORKSPACE_DIR}/heracles/examples/load_scene_graph.py" \
   record_failure "Failed to load the Neo4j database."
 else
   experiments=()
-  if [[ "${RUN_CYPHER}" == "1" ]]; then
-    experiments+=(examples/experiments/ollama/cypher_student_model_sweep.yaml)
+  if [[ "${RUN_CYPHER_QA}" == "1" ]]; then
+    experiments+=(examples/experiments/ollama/cypher_qa_student_model_sweep.yaml)
   fi
-  if [[ "${RUN_PDDL}" == "1" ]]; then
-    experiments+=(examples/experiments/ollama/pddl_student_model_sweep.yaml)
+  if [[ "${RUN_CYPHER_PDDL}" == "1" ]]; then
+    experiments+=(examples/experiments/ollama/cypher_pddl_student_model_sweep.yaml)
   fi
 
   log "Running the selected Ollama student model sweep."
@@ -67,11 +67,11 @@ fi
 
 log "Generating the static HTML report."
 result_directories=()
-if [[ "${RUN_CYPHER}" == "1" ]]; then
-  result_directories+=("${OUTPUT_DIR}/ollama/cypher_student_model_sweep")
+if [[ "${RUN_CYPHER_QA}" == "1" ]]; then
+  result_directories+=("${OUTPUT_DIR}/ollama/cypher_qa_student_model_sweep")
 fi
-if [[ "${RUN_PDDL}" == "1" ]]; then
-  result_directories+=("${OUTPUT_DIR}/ollama/pddl_student_model_sweep")
+if [[ "${RUN_CYPHER_PDDL}" == "1" ]]; then
+  result_directories+=("${OUTPUT_DIR}/ollama/cypher_pddl_student_model_sweep")
 fi
 
 result_files=()

@@ -15,7 +15,6 @@ from typing import Any
 from cypher_3dsg_agent_distillation.core.config import (
     ensure_parent,
     expanded_path,
-    load_data_config,
     load_yaml,
     resolve_project_path,
 )
@@ -56,7 +55,6 @@ class OllamaExportSettings:
     merged_model_dir: Path | None
     base_gguf_path: Path
     quantized_gguf_paths: dict[str, Path]
-    selected_quantization: str
     modelfile_quantization: str
     modelfile_gguf_path: Path
     modelfile_path: Path
@@ -64,11 +62,6 @@ class OllamaExportSettings:
     gguf_outtype: str
     convert_args: list[str]
     quantize_args: list[str]
-
-    @property
-    def selected_gguf_path(self) -> Path:
-        return self.quantized_gguf_paths[self.selected_quantization]
-
 
 def require_export_dependencies():
     try:
@@ -230,7 +223,6 @@ def resolve_modelfile_gguf(
 
 
 def build_export_settings(
-    data_config: dict[str, Any],
     student_config: dict[str, Any],
     *,
     model_name: str | None = None,
@@ -242,10 +234,9 @@ def build_export_settings(
     modelfile_path: str | Path | None = None,
     base_only: bool = False,
     quantizations: Sequence[str] | None = None,
-    selected_quantization: str | None = None,
     gguf_outtype: str | None = None,
 ) -> OllamaExportSettings:
-    export_config = dict(data_config.get("ollama_export") or {})
+    export_config = dict(student_config.get("ollama_export") or {})
     model_config = student_config["model"]
     training_config = student_config.get("training") or {}
     configured_adapter_dir = adapter_dir or training_config.get("output_dir")
@@ -265,21 +256,6 @@ def build_export_settings(
     resolved_quantizations = normalized_quantizations(
         quantizations or export_config.get("quantizations") or configured_quantization
     )
-    resolved_selected_quantization = (
-        (
-            selected_quantization
-            or export_config.get("selected_quantization")
-            or resolved_quantizations[0]
-        )
-        .strip()
-        .upper()
-    )
-    if resolved_selected_quantization not in resolved_quantizations:
-        msg = (
-            f"selected quantization `{resolved_selected_quantization}` is not in "
-            f"configured quantizations: {', '.join(resolved_quantizations)}"
-        )
-        raise ValueError(msg)
 
     resolved_base_gguf_path = resolve_project_path(
         base_gguf_path
@@ -300,7 +276,7 @@ def build_export_settings(
         selector=str(
             modelfile_gguf
             or export_config.get("modelfile_quantization")
-            or resolved_selected_quantization
+            or resolved_quantizations[0]
         ),
         model_name=str(resolved_model_name),
         export_dir=export_dir,
@@ -329,7 +305,6 @@ def build_export_settings(
         ),
         base_gguf_path=resolved_base_gguf_path,
         quantized_gguf_paths=resolved_quantized_gguf_paths,
-        selected_quantization=resolved_selected_quantization,
         modelfile_quantization=resolved_modelfile_quantization,
         modelfile_gguf_path=resolved_modelfile_gguf_path,
         modelfile_path=resolve_project_path(
@@ -690,7 +665,6 @@ def export_metadata(settings: OllamaExportSettings) -> dict[str, Any]:
         "quantized_gguf_paths": {
             quantization: str(path) for quantization, path in settings.quantized_gguf_paths.items()
         },
-        "selected_quantization": settings.selected_quantization,
         "modelfile_quantization": settings.modelfile_quantization,
         "gguf_outtype": settings.gguf_outtype,
         "recommended_quantization": settings.modelfile_quantization,
@@ -789,10 +763,8 @@ def run_export(
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
     student_config = load_yaml(resolve_project_path(args.student_config))
     settings = build_export_settings(
-        data_config,
         student_config,
         model_name=args.model_name,
         adapter_dir=args.adapter_dir,
@@ -803,7 +775,6 @@ def command(args: argparse.Namespace) -> None:
         modelfile_path=args.modelfile_path,
         base_only=args.base_only,
         quantizations=args.quantizations,
-        selected_quantization=args.selected_quantization,
         gguf_outtype=args.outtype,
     )
     run_export(
@@ -824,7 +795,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export a base or LoRA-fine-tuned student to Ollama/GGUF artifacts."
     )
-    parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",
@@ -849,7 +819,7 @@ def main() -> None:
         help=(
             "GGUF quantization to write in the Modelfile, e.g. bf16, q4, q5, "
             "Q4_K_M, or Q5_K_M. The artifact path is resolved automatically. "
-            "Defaults to the selected quantization."
+            "Defaults to the first configured quantization."
         ),
     )
     parser.add_argument("--modelfile-path")
@@ -862,7 +832,6 @@ def main() -> None:
         ),
     )
     parser.add_argument("--quantizations", nargs="+")
-    parser.add_argument("--selected-quantization")
     parser.add_argument(
         "--outtype",
         default=None,

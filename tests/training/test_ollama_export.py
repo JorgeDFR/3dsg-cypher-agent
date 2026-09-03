@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from cypher_3dsg_agent_distillation.core.config import load_yaml
 from cypher_3dsg_agent_distillation.training import ollama_export
 from cypher_3dsg_agent_distillation.training.ollama_export import (
     build_export_settings,
@@ -17,17 +18,6 @@ from cypher_3dsg_agent_distillation.training.ollama_export import (
 )
 
 
-def data_config(tmp_path):
-    return {
-        "ollama_export": {
-            "model_name": "agent-distilled",
-            "export_root": str(tmp_path),
-            "stop_tokens": ["<stop>"],
-            "quantizations": ["Q4_K_M", "Q5_K_M"],
-        }
-    }
-
-
 def student_config(tmp_path):
     return {
         "model": {
@@ -38,17 +28,35 @@ def student_config(tmp_path):
         "training": {
             "output_dir": str(tmp_path / "adapter"),
         },
+        "ollama_export": {
+            "model_name": "agent-distilled",
+            "export_root": str(tmp_path),
+            "stop_tokens": ["<stop>"],
+            "quantizations": ["Q4_K_M", "Q5_K_M"],
+        },
     }
 
 
+def test_student_profiles_own_model_specific_export_settings():
+    data = load_yaml("configs/data.yaml")
+    qwen = load_yaml("configs/student_qwen3.5_4b.yaml")
+    granite = load_yaml("configs/student_granite4.1_3b.yaml")
+
+    assert "ollama_export" not in data
+    assert qwen["ollama_export"]["model_name"] == "qwen3.5-4b-finetune"
+    assert qwen["ollama_export"]["convert_args"] == ["--no-mtp"]
+    assert granite["ollama_export"]["model_name"] == "granite4.1-3b-finetune"
+    assert "convert_args" not in granite["ollama_export"]
+
+
 def test_build_export_settings_derives_all_quantized_paths(tmp_path):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     export_dir = tmp_path / "agent-distilled"
 
     assert settings.model_name == "agent-distilled"
     assert settings.base_model == "vendor/base-model"
     assert settings.trust_remote_code is True
-    assert settings.selected_quantization == "Q4_K_M"
+    assert settings.modelfile_quantization == "Q4_K_M"
     assert settings.merged_model_dir == export_dir / "merged-hf"
     assert settings.base_gguf_path == export_dir / "agent-distilled.bf16.gguf"
     assert settings.quantized_gguf_paths["Q4_K_M"] == export_dir / "agent-distilled.Q4_K_M.gguf"
@@ -58,20 +66,19 @@ def test_build_export_settings_derives_all_quantized_paths(tmp_path):
 
 
 def test_build_export_settings_separates_models_by_name(tmp_path):
-    first = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    first = build_export_settings(student_config(tmp_path))
     second = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         model_name="another-agent",
     )
 
     assert first.modelfile_path.parent == tmp_path / "agent-distilled"
     assert second.modelfile_path.parent == tmp_path / "another-agent"
-    assert first.selected_gguf_path.parent != second.selected_gguf_path.parent
+    assert first.modelfile_gguf_path.parent != second.modelfile_gguf_path.parent
 
 
 def test_write_settings_modelfile_writes_metadata(tmp_path):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     export_dir = tmp_path / "agent-distilled"
     settings.modelfile_gguf_path.parent.mkdir(parents=True)
     settings.modelfile_gguf_path.touch()
@@ -86,7 +93,6 @@ def test_write_settings_modelfile_writes_metadata(tmp_path):
     assert metadata["model_variant"] == "fine-tuned"
     assert metadata["adapter_dir"] == str(tmp_path / "adapter")
     assert metadata["merged_model_dir"] == str(export_dir / "merged-hf")
-    assert metadata["selected_quantization"] == "Q4_K_M"
     assert metadata["modelfile_quantization"] == "Q4_K_M"
     assert metadata["modelfile_gguf_path"] == str(export_dir / "agent-distilled.Q4_K_M.gguf")
     assert metadata["quantized_gguf_paths"]["Q5_K_M"] == str(
@@ -96,7 +102,6 @@ def test_write_settings_modelfile_writes_metadata(tmp_path):
 
 def test_base_only_settings_do_not_create_adapter_or_merged_paths(tmp_path):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         base_only=True,
         model_name="base-model",
@@ -106,7 +111,9 @@ def test_base_only_settings_do_not_create_adapter_or_merged_paths(tmp_path):
     assert settings.adapter_dir is None
     assert settings.merged_model_dir is None
     assert settings.base_gguf_path == tmp_path / "base-model" / "base-model.bf16.gguf"
-    assert settings.selected_gguf_path == (tmp_path / "base-model" / "base-model.Q4_K_M.gguf")
+    assert settings.modelfile_gguf_path == (
+        tmp_path / "base-model" / "base-model.Q4_K_M.gguf"
+    )
 
 
 def test_base_only_settings_do_not_require_training_config(tmp_path):
@@ -114,7 +121,6 @@ def test_base_only_settings_do_not_require_training_config(tmp_path):
     del config["training"]
 
     settings = build_export_settings(
-        data_config(tmp_path),
         config,
         base_only=True,
         model_name="base-model",
@@ -129,7 +135,6 @@ def test_modelfile_gguf_override_selects_unquantized_artifact(tmp_path):
     unquantized.parent.mkdir(parents=True)
     unquantized.touch()
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         modelfile_gguf="bf16",
     )
@@ -139,7 +144,6 @@ def test_modelfile_gguf_override_selects_unquantized_artifact(tmp_path):
     export_dir = tmp_path / "agent-distilled"
     assert settings.modelfile_gguf_path == unquantized
     assert settings.modelfile_quantization == "BF16"
-    assert settings.selected_gguf_path == export_dir / "agent-distilled.Q4_K_M.gguf"
     assert (
         (export_dir / "Modelfile")
         .read_text(encoding="utf-8")
@@ -157,7 +161,6 @@ def test_modelfile_gguf_override_selects_unquantized_artifact(tmp_path):
 
 def test_modelfile_gguf_short_quantization_resolves_artifact(tmp_path):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         modelfile_gguf="q5",
     )
@@ -171,7 +174,6 @@ def test_modelfile_gguf_short_quantization_resolves_artifact(tmp_path):
 def test_modelfile_gguf_rejects_paths(tmp_path):
     with pytest.raises(ValueError, match="expects a quantization"):
         build_export_settings(
-            data_config(tmp_path),
             student_config(tmp_path),
             modelfile_gguf="outputs/model.bf16.gguf",
         )
@@ -179,7 +181,6 @@ def test_modelfile_gguf_rejects_paths(tmp_path):
 
 def test_write_settings_modelfile_rejects_missing_quantization_file(tmp_path):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         modelfile_gguf="q5",
     )
@@ -190,7 +191,6 @@ def test_write_settings_modelfile_rejects_missing_quantization_file(tmp_path):
 
 def test_base_only_modelfile_metadata_omits_merge_fields(tmp_path):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         base_only=True,
         model_name="base-model",
@@ -208,7 +208,7 @@ def test_base_only_modelfile_metadata_omits_merge_fields(tmp_path):
 
 
 def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     export_dir = tmp_path / "agent-distilled"
     settings.merged_model_dir.mkdir(parents=True)
     llama_cpp_dir = tmp_path / "llama.cpp"
@@ -251,7 +251,7 @@ def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
 
 
 def test_convert_hf_to_gguf_uses_llama_cpp_venv_python_by_default(tmp_path, monkeypatch):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     settings.merged_model_dir.mkdir(parents=True)
     llama_cpp_dir = tmp_path / "llama.cpp"
     llama_cpp_dir.mkdir()
@@ -275,7 +275,7 @@ def test_convert_hf_to_gguf_uses_llama_cpp_venv_python_by_default(tmp_path, monk
 
 
 def test_convert_failure_retains_merged_model(tmp_path, monkeypatch):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     settings.merged_model_dir.mkdir(parents=True)
     llama_cpp_dir = tmp_path / "llama.cpp"
     llama_cpp_dir.mkdir()
@@ -295,7 +295,6 @@ def test_convert_failure_retains_merged_model(tmp_path, monkeypatch):
 def test_convert_rejects_gguf_output_inside_cleanup_directory(tmp_path):
     merged_dir = tmp_path / "agent-distilled" / "merged-hf"
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         merged_model_dir=merged_dir,
         base_gguf_path=merged_dir / "agent-distilled.bf16.gguf",
@@ -307,7 +306,6 @@ def test_convert_rejects_gguf_output_inside_cleanup_directory(tmp_path):
 
 def test_convert_base_model_uses_resolved_hugging_face_snapshot(tmp_path, monkeypatch):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         base_only=True,
         model_name="base-model",
@@ -345,7 +343,7 @@ def test_convert_base_model_uses_resolved_hugging_face_snapshot(tmp_path, monkey
 
 
 def test_quantize_gguf_invokes_llama_quantize_for_each_quantization(tmp_path, monkeypatch):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
     export_dir = tmp_path / "agent-distilled"
     settings.base_gguf_path.parent.mkdir(parents=True)
     settings.base_gguf_path.touch()
@@ -427,7 +425,7 @@ def test_resolve_converter_python_bin_keeps_explicit_interpreter(tmp_path):
 
 
 def test_run_export_dry_run_does_not_write_modelfile(tmp_path):
-    settings = build_export_settings(data_config(tmp_path), student_config(tmp_path))
+    settings = build_export_settings(student_config(tmp_path))
 
     run_export(settings, stages=["modelfile"], dry_run=True)
 
@@ -437,7 +435,6 @@ def test_run_export_dry_run_does_not_write_modelfile(tmp_path):
 
 def test_run_export_base_only_skips_merge_stage(tmp_path, monkeypatch):
     settings = build_export_settings(
-        data_config(tmp_path),
         student_config(tmp_path),
         base_only=True,
         model_name="base-model",
