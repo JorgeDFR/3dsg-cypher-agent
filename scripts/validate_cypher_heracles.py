@@ -6,16 +6,16 @@ import time
 import _bootstrap  # noqa: F401
 from neo4j import GraphDatabase
 
-from cypher_3dsg_agent_distillation.config import load_yaml
-from cypher_3dsg_agent_distillation.evaluation import (
+from cypher_3dsg_agent_distillation.core.config import load_yaml
+from cypher_3dsg_agent_distillation.core.io import read_jsonl
+from cypher_3dsg_agent_distillation.cypher.evaluation import (
     build_report,
     evaluate_records,
     print_report_summary,
     write_report,
 )
-from cypher_3dsg_agent_distillation.heracles_loader import load_scene_with_heracles
-from cypher_3dsg_agent_distillation.io import read_jsonl
-from cypher_3dsg_agent_distillation.neo4j_validation import (
+from cypher_3dsg_agent_distillation.graph.heracles_loader import load_scene_with_heracles
+from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
     DEFAULT_HERACLES_NEO4J_URI,

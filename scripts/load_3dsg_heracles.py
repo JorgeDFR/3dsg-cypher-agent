@@ -3,8 +3,8 @@ import os
 
 import _bootstrap  # noqa: F401
 
-from cypher_3dsg_agent_distillation.heracles_loader import load_scene_with_heracles
-from cypher_3dsg_agent_distillation.neo4j_validation import (
+from cypher_3dsg_agent_distillation.graph.heracles_loader import load_scene_with_heracles
+from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
     DEFAULT_HERACLES_NEO4J_URI,

@@ -21,11 +21,12 @@ outputs/ollama/
 |-- qwen3.5-4b-baseline/
 |   |-- Modelfile
 |   |-- Modelfile.json
+|   |-- qwen3.5-4b-baseline.bf16.gguf
 |   `-- qwen3.5-4b-baseline.Q4_K_M.gguf
 `-- qwen3.5-4b-finetune/
     |-- Modelfile
     |-- Modelfile.json
-    |-- merged-hf/
+    |-- qwen3.5-4b-finetune.bf16.gguf
     `-- qwen3.5-4b-finetune.Q4_K_M.gguf
 ```
 
@@ -57,7 +58,7 @@ unquantized BF16 output, regenerate only the Modelfile and select it explicitly:
 docker/stack.sh main python scripts/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
-  --modelfile-gguf outputs/ollama/qwen3.5-4b-finetune/qwen3.5-4b-finetune.bf16.gguf \
+  --modelfile-gguf bf16 \
   --stages modelfile
 ```
 
