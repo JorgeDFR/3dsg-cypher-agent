@@ -70,7 +70,7 @@ Run the complete demo from database loading through baseline evaluation,
 student training, validation, and static HTML report generation:
 
 ```bash
-docker/stack.sh demo
+docker/stack.sh demo-train
 ```
 
 The demo uses the deterministic synthetic teacher, so it does not require an
@@ -79,6 +79,17 @@ configured student, and runs eval-loss plus fine-tuned raw-generation validation
 on the test and challenge splits. Set `DEMO_SCENE`,
 `DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, or `DEMO_STUDENT_CONFIG` to use
 alternative inputs.
+
+Once the trained adapter exists, run the deploy/quantization extension:
+
+```bash
+docker/stack.sh demo-deploy
+```
+
+This exports and registers the BF16, Q8_0, and Q4_K_M GGUF models in Ollama,
+validates each one on the challenge split, and updates the workflow report. The
+inputs and model name can be overridden with the `DEPLOY_*` environment
+variables documented by `docker/stack.sh help`.
 
 Run `docker/stack.sh help` for the ordered first-run guide and command groups.
 See [docker/README.md](docker/README.md) for the complete command reference and

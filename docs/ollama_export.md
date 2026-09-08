@@ -163,6 +163,17 @@ the Heracles benchmark stack. The main stack owns the generated JSONL splits
 and matching scene database. Its Ollama service is optional, uses a separate
 model cache and container name, and mounts `outputs/ollama` read-only.
 
+For the standard trained student, run the complete export, registration,
+challenge validation, and report pipeline with:
+
+```bash
+docker/stack.sh demo-deploy
+```
+
+This command requires the adapter referenced by `training.output_dir` in the
+student config to already exist. The commands below show the equivalent manual
+workflow and remain useful when running only selected stages.
+
 After exporting BF16, Q8_0, and Q4_K_M in one `--stages all` run, create one Modelfile
 per artifact. Keeping distinct files and registered model names prevents one
 variant from replacing the other during a paired comparison:

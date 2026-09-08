@@ -41,7 +41,7 @@ docker/stack.sh status
 Run the complete reproducible workflow:
 
 ```bash
-docker/stack.sh demo
+docker/stack.sh demo-train
 ```
 
 The demo loads the scene, prepares questions, creates validated traces with the
@@ -49,6 +49,21 @@ synthetic teacher, makes grouped splits, evaluates the base model, trains the
 adapter, evaluates the fine-tuned model, and writes the workflow HTML report.
 Its inputs can be overridden with `DEMO_SCENE`, `DEMO_DATA_CONFIG`,
 `DEMO_TEACHER_CONFIG`, and `DEMO_STUDENT_CONFIG`.
+
+After the demo (or an equivalent student-training run) has produced the LoRA
+adapter, export and validate its deployable GGUF variants:
+
+```bash
+docker/stack.sh demo-deploy
+```
+
+The deploy pipeline exports the merged model and its BF16, Q8_0, and Q4_K_M
+GGUF variants, starts Ollama, registers all three models, reloads the configured
+Neo4j scene, validates each model on the challenge split, and regenerates the
+workflow report. It fails before export if the trained adapter is absent. Use
+`DEPLOY_DATA_CONFIG`, `DEPLOY_STUDENT_CONFIG`, `DEPLOY_SCENE`,
+and `DEPLOY_MODEL_NAME` to override its defaults. The adapter directory comes
+from `training.output_dir` in the selected student config.
 
 ## Daily use
 
@@ -89,7 +104,9 @@ Project commands:
 - `main COMMAND [ARGS...]`: execute a command in `main`;
 - `shell`: open an interactive Bash shell in `main`;
 - `exec COMMAND [ARGS...]`: compatibility alias for `main`;
-- `demo`: run the full training/evaluation workflow;
+- `demo-train`: run the full training/evaluation workflow;
+- `demo-deploy`: export and validate BF16, Q8_0, and Q4_K_M Ollama models from an
+  already-trained student;
 - `load-neo4j [SCENE]`: load a scene into Neo4j.
 
 Inspection:
