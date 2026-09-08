@@ -6,9 +6,6 @@ interface_description: |
       - nodeSymbol: a unique string identifier
       - class: a string identifying the object's semantic class or type
       - center: the 3D position of the object, as a POINT type
-      - name: optional semantic node name
-      - bbox_center: optional 3D bounding box center, as a POINT type
-      - bbox_dim: optional 3D bounding box dimensions, as a POINT type
     - MeshPlace: a node representing a 2D segment of space the robot might be able to move to.
       - nodeSymbol: a unique string identifier
       - class: a string identifying the place's semantic class or type
@@ -20,25 +17,20 @@ interface_description: |
       - nodeSymbol: a unique string identifier
       - class: a string identifying the room's semantic class or type
       - center: the 3D position of the room, as a POINT type
-    - Building: a node representing a building or highest-level region.
-      - nodeSymbol: a unique string identifier
-      - center: the 3D position of the building, as a POINT type
 
-  Object, MeshPlace, Place, Room, and Building are Cypher labels attached to nodes.
+  Object, MeshPlace, Place, and Room are all Cypher labels attached to nodes.
 
-  Places and Mesh Places represent a higher level of the hierarchy compared to objects,
-  but lower level than rooms.
+  Places and Mesh Places represent a higher level of the hierarchy compared to Objects, but lower level than Rooms.
 
-  Hierarchical edges use (a)-[:CONTAINS]->(b), meaning b is contained within a.
-  Use bounded paths for transitive hierarchy queries. For example, Room-to-Object
-  traversal is exactly two edges: (r:Room)-[:CONTAINS*2..2]->(o:Object).
-
-  Connectivity edges within a layer are:
-    - [:OBJECT_CONNECTED]
-    - [:PLACE_CONNECTED]
-    - [:MESH_PLACE_CONNECTED]
-    - [:ROOM_CONNECTED]
-    - [:BUILDING_CONNECTED]
+  Types of edges:
+    - Hierarchical edges: connects nodes between different layers. Nodes in higher levels of the hierarchy may contain nodes in lower levels of the hierarchy, but nodes in the lower level of the hierarchy will not contain higher-level nodes.
+      - (a)-[:CONTAINS]->(b): means that b is contained within a.
+      - (a)-[:CONTAINS*]->(b): is a bounded path for transitive hierarchy queries. For example, Room-to-Object traversal is exactly two edges, so use (r:Room)-[:CONTAINS*2..2]->(o:Object).
+    - Connectivity edges: connects nodes in the same layer.
+      - (a)-[:OBJECT_CONNECTED]-(b)
+      - (a)-[:PLACE_CONNECTED]-(b)
+      - (a)-[:MESH_PLACE_CONNECTED]-(b)
+      - (a)-[:ROOM_CONNECTED]-(b)
 
   Use point.distance for distance queries. Do not use deprecated distance().
   Do not use APOC procedures or functions.

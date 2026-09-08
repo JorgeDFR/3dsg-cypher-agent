@@ -27,6 +27,7 @@ Setup and lifecycle:
   check                    Validate Docker, Compose, and NVIDIA GPU support.
   build                    Rebuild the main project image.
   up                       Start the main project container and Neo4j.
+  ollama-up                Start the optional Ollama GGUF inference container.
   down                     Stop the stack; persistent volumes are retained.
   restart [SERVICE...]     Restart the complete stack or selected services.
 
@@ -34,6 +35,7 @@ Main project container:
   main COMMAND [ARGS...]   Run a command in the running main container.
   shell                    Open an interactive shell in the main container.
   exec COMMAND [ARGS...]   Alias for main (kept for compatibility).
+  ollama COMMAND [ARGS...] Run the Ollama CLI in the optional container.
 
 Automated workflow:
   demo                     Run the full demo from database load through student
@@ -334,6 +336,16 @@ run_main() {
   compose exec main "$@"
 }
 
+run_ollama() {
+  if [[ $# -lt 1 ]]; then
+    die "Missing Ollama command. Usage: docker/stack.sh ollama COMMAND [ARGS...]"
+  fi
+
+  prepare_runtime
+  require_service_running ollama
+  compose exec -T ollama ollama "$@"
+}
+
 run_demo() {
   local total_steps=13
 
@@ -375,19 +387,19 @@ run_demo() {
     python scripts/train_agent_lora.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
-  demo_step 8 "${total_steps}" "Evaluate loss on all splits" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split all \
-      --mode eval-loss
-  demo_step 9 "${total_steps}" "Validate generation on the test split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split test \
-      --mode raw-generation \
-      --max-new-tokens 1024
+  # demo_step 8 "${total_steps}" "Evaluate loss on all splits" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split all \
+  #     --mode eval-loss
+  # demo_step 9 "${total_steps}" "Validate generation on the test split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split test \
+  #     --mode raw-generation \
+  #     --max-new-tokens 1024
   demo_step 10 "${total_steps}" "Validate generation on the challenge split" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
@@ -395,22 +407,22 @@ run_demo() {
       --split challenge \
       --mode raw-generation \
       --max-new-tokens 1024
-  demo_step 11 "${total_steps}" "Establish baseline on the test split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split test \
-      --mode raw-generation \
-      --baseline \
-      --max-new-tokens 1024
-  demo_step 12 "${total_steps}" "Establish baseline on the challenge split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --baseline \
-      --max-new-tokens 1024
+  # demo_step 11 "${total_steps}" "Establish baseline on the test split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split test \
+  #     --mode raw-generation \
+  #     --baseline \
+  #     --max-new-tokens 1024
+  # demo_step 12 "${total_steps}" "Establish baseline on the challenge split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split challenge \
+  #     --mode raw-generation \
+  #     --baseline \
+  #     --max-new-tokens 1024
   demo_step 13 "${total_steps}" "Generate HTML workflow report" \
     python scripts/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \
@@ -451,6 +463,10 @@ case "${command}" in
     preflight
     compose up -d neo4j main
     ;;
+  ollama-up)
+    preflight
+    compose --profile ollama up -d --wait ollama
+    ;;
   down)
     check_docker
     compose down --remove-orphans
@@ -474,6 +490,9 @@ case "${command}" in
     ;;
   main | exec)
     run_main "$@"
+    ;;
+  ollama)
+    run_ollama "$@"
     ;;
   demo)
     run_demo "$@"

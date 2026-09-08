@@ -3,9 +3,23 @@ from contextlib import nullcontext
 
 import pytest
 
+import cypher_3dsg_agent_distillation.agents.student_eval_loss as eval_loss_module
 import cypher_3dsg_agent_distillation.agents.student_evaluation as student_evaluation
+import cypher_3dsg_agent_distillation.agents.student_model as student_model
 import cypher_3dsg_agent_distillation.training.train as train_module
 from cypher_3dsg_agent_distillation.agents.agent_prompts import run_cypher_tool_schema
+from cypher_3dsg_agent_distillation.agents.raw_generation_runtimes import (
+    GenerationResult,
+    clean_generated_text,
+    generation_length_kwargs,
+    render_messages_for_generation,
+)
+from cypher_3dsg_agent_distillation.agents.student_eval_loss import (
+    combine_eval_loss_summaries,
+    evaluate_eval_loss_splits,
+    evaluate_eval_loss_with_loaded_model,
+    finite_perplexity,
+)
 from cypher_3dsg_agent_distillation.agents.student_evaluation import (
     ALL_SPLITS,
     DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
@@ -14,28 +28,22 @@ from cypher_3dsg_agent_distillation.agents.student_evaluation import (
     EVAL_LOSS_MODE,
     FINAL_ANSWER_CHECK,
     TOOL_CALL_CHECK,
-    GenerationResult,
-    clean_generated_text,
-    combine_eval_loss_summaries,
     configure_neo4j_notification_output,
     default_adapter_dir,
     evaluate_end_to_end_record,
-    evaluate_eval_loss_splits,
-    evaluate_eval_loss_with_loaded_model,
     final_answer_prompt_messages,
-    finite_perplexity,
     generation_debug_report,
-    generation_length_kwargs,
     initial_prompt_messages,
-    load_student_model_and_tokenizer,
     parse_generated_tool_calls,
     raw_generation_progress_description,
-    render_messages_for_generation,
     report_output_path,
     score_final_answer_generation,
     score_tool_call_generation,
     summarize_raw_generation_records,
     tokenizer_source,
+)
+from cypher_3dsg_agent_distillation.agents.student_model import (
+    load_student_model_and_tokenizer,
 )
 
 
@@ -139,6 +147,26 @@ def generated_tool_call(cypher):
     )
 
 
+def generated_native_tool_call(cypher):
+    return GenerationResult(
+        text="",
+        raw_text='{"tool_calls": [...] }',
+        prompt="native Ollama request",
+        prompt_tokens=10,
+        generated_tokens=5,
+        max_new_tokens=32,
+        token_budget=32,
+        tool_calls=(
+            {
+                "function": {
+                    "name": "run_cypher_query",
+                    "arguments": {"cypher_string": cypher},
+                }
+            },
+        ),
+    )
+
+
 class FakeTensor:
     def to(self, _device):
         return self
@@ -210,6 +238,14 @@ class RecordingProgressContext:
         self.events.append("progress_exit")
 
 
+class FakeGenerationRuntime:
+    def __init__(self, generate):
+        self._generate = generate
+
+    def generate(self, messages, **kwargs):
+        return self._generate(None, None, messages, **kwargs)
+
+
 def test_default_adapter_dir_uses_training_output_dir():
     assert default_adapter_dir({"training": {"output_dir": "outputs/adapter"}}) == (
         "outputs/adapter"
@@ -262,6 +298,22 @@ def test_report_output_path_keeps_baseline_separate_from_fine_tuned_results():
     assert output.name == "test.baseline.raw-generation.report.json"
 
 
+def test_report_output_path_keeps_ollama_models_separate():
+    output = report_output_path(
+        data_config={"test_report_path": "data/scene/reports/test.agent.report.json"},
+        split="challenge",
+        mode="raw-generation",
+        output=None,
+        runtime="ollama",
+        runtime_model="qwen3.5-4b-finetune:q4_k_m",
+    )
+
+    assert output.name == (
+        "challenge.student.ollama.qwen3.5-4b-finetune-q4_k_m."
+        "raw-generation.report.json"
+    )
+
+
 def test_report_output_path_uses_aggregate_name_for_all_splits():
     output = report_output_path(
         data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
@@ -309,10 +361,10 @@ def test_load_baseline_model_does_not_load_lora_adapter(monkeypatch):
             cls.calls.append((_args, _kwargs))
             raise AssertionError("The baseline must not load a LoRA adapter.")
 
-    monkeypatch.setattr(student_evaluation, "configure_model_library_output", lambda: None)
+    monkeypatch.setattr(student_model, "configure_model_library_output", lambda: None)
     monkeypatch.setattr(
-        student_evaluation,
-        "require_eval_loss_dependencies",
+        student_model,
+        "require_transformers_dependencies",
         lambda: (
             None,
             FakePeftModel,
@@ -374,8 +426,8 @@ def test_combine_eval_loss_summaries_weights_by_token_count():
 
 def test_evaluate_eval_loss_updates_progress_per_batch(monkeypatch):
     monkeypatch.setattr(
-        student_evaluation,
-        "require_eval_loss_dependencies",
+        eval_loss_module,
+        "require_transformers_dependencies",
         lambda: (FakeTorch, None, FakeDataLoader, None, None, None),
     )
     monkeypatch.setattr(train_module, "CausalLmDataCollator", lambda _tokenizer: None)
@@ -385,7 +437,7 @@ def test_evaluate_eval_loss_updates_progress_per_batch(monkeypatch):
         lambda *_args, **_kwargs: [{"uid": "one"}, {"uid": "two"}, {"uid": "three"}],
     )
     monkeypatch.setattr(
-        student_evaluation,
+        eval_loss_module,
         "shifted_token_metrics",
         lambda _outputs, _labels: {
             "tokens": 5,
@@ -435,18 +487,18 @@ def test_eval_loss_progress_starts_after_model_and_dataset_setup(monkeypatch):
     events = []
 
     monkeypatch.setattr(
-        student_evaluation,
+        eval_loss_module,
         "load_student_model_and_tokenizer",
         lambda **_kwargs: (events.append("load_model") or FakeModel(), object()),
     )
     monkeypatch.setattr(
-        student_evaluation,
+        eval_loss_module,
         "eval_loss_progress_context",
         lambda _show_progress: RecordingProgressContext(events),
     )
     monkeypatch.setattr(
-        student_evaluation,
-        "require_eval_loss_dependencies",
+        eval_loss_module,
+        "require_transformers_dependencies",
         lambda: (FakeTorch, None, FakeDataLoader, None, None, None),
     )
     monkeypatch.setattr(train_module, "CausalLmDataCollator", lambda _tokenizer: None)
@@ -457,7 +509,7 @@ def test_eval_loss_progress_starts_after_model_and_dataset_setup(monkeypatch):
 
     monkeypatch.setattr(train_module, "build_training_dataset", fake_build_training_dataset)
     monkeypatch.setattr(
-        student_evaluation,
+        eval_loss_module,
         "shifted_token_metrics",
         lambda _outputs, _labels: {
             "tokens": 5,
@@ -568,7 +620,12 @@ def test_generation_debug_report_captures_exact_prompt_and_completion_only():
 
     assert report["rendered_prompt"] == generation.prompt
     assert report["raw_completion"] == generation.raw_text
-    assert set(report) == {"rendered_prompt", "raw_completion"}
+    assert set(report) == {
+        "rendered_prompt",
+        "raw_completion",
+        "structured_tool_calls",
+        "provider_metadata",
+    }
 
 
 def test_render_messages_for_generation_falls_back_without_thinking_kwarg():
@@ -633,6 +690,23 @@ def test_parse_generated_tool_calls_reports_malformed_marker():
     assert parsed.error
 
 
+def test_score_tool_call_generation_accepts_ollama_native_tool_call():
+    record = raw_generation_record()
+    generation = generated_native_tool_call(record["gold_cypher"])
+
+    result = score_tool_call_generation(
+        record,
+        generation.text,
+        validator=FakeValidator(),
+        policy=None,
+        structured_tool_calls=generation.tool_calls,
+    )
+
+    assert result["status"] == "pass"
+    assert result["tool_call_parse_success"] is True
+    assert result["tool_result_match"] is True
+
+
 def test_score_final_answer_generation_matches_expected_solution():
     result = score_final_answer_generation(
         raw_generation_record(),
@@ -667,6 +741,34 @@ def test_score_tool_call_generation_executes_and_matches_expected_solution():
     assert result["static_valid"] is True
     assert result["executable"] is True
     assert result["cypher_solution_match"] is True
+
+
+def test_score_tool_call_generation_marks_explain_rejection_static_invalid():
+    record = raw_generation_record()
+
+    class ExplainRejectingValidator:
+        def explain(self, _cypher):
+            return {
+                "syntax_error": True,
+                "executable": False,
+                "error": "Neo.ClientError.Statement.SyntaxError: Invalid input '<>'",
+            }
+
+        def validate(self, *_args, **_kwargs):
+            raise AssertionError("EXPLAIN-invalid Cypher must not be executed")
+
+    result = score_tool_call_generation(
+        record,
+        generated_tool_call(record["gold_cypher"]),
+        validator=ExplainRejectingValidator(),
+        policy=None,
+    )
+
+    assert result["status"] == "static_error"
+    assert result["static_valid"] is False
+    assert result["syntax_error"] is True
+    assert result["explain_validation"]["executable"] is False
+    assert "Neo4j EXPLAIN rejected query" in result["static_issues"][0]
 
 
 def test_score_tool_call_generation_flags_empty_result_hidden_false_positive_risk():
@@ -969,12 +1071,9 @@ def test_end_to_end_retries_failed_query_then_scores_final_answer(monkeypatch):
             }
 
     validator = RetryValidator()
-    monkeypatch.setattr(student_evaluation, "generate_assistant_response", fake_generate)
-
     result = evaluate_end_to_end_record(
         record,
-        model=object(),
-        tokenizer=object(),
+        runtime=FakeGenerationRuntime(fake_generate),
         validator=validator,
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],
@@ -998,6 +1097,83 @@ def test_end_to_end_retries_failed_query_then_scores_final_answer(monkeypatch):
         "bounded prompt",
     ]
     assert generation_debug_turns[-1]["raw_completion"] == "<answer><O1></answer>"
+
+
+def test_end_to_end_uses_explain_failure_as_static_retry_feedback():
+    record = raw_generation_record()
+
+    def fake_generate(_model, _tokenizer, _messages, **_kwargs):
+        return generated_result(generated_tool_call("INVALID CYPHER"))
+
+    class ExplainRejectingValidator:
+        def explain(self, cypher):
+            assert cypher == "INVALID CYPHER"
+            return {
+                "syntax_error": True,
+                "executable": False,
+                "error": "Neo.ClientError.Statement.SyntaxError: invalid",
+            }
+
+        def validate(self, *_args, **_kwargs):
+            raise AssertionError("EXPLAIN-invalid Cypher must not be executed")
+
+    result = evaluate_end_to_end_record(
+        record,
+        runtime=FakeGenerationRuntime(fake_generate),
+        validator=ExplainRejectingValidator(),
+        policy=None,
+        tool_schemas=[run_cypher_tool_schema()],
+        max_new_tokens=32,
+        enable_thinking=False,
+        max_query_retries=0,
+    )
+
+    assert result["status"] == "query_retries_exhausted"
+    assert result["last_failure_reason"] == "static_error"
+    assert result["attempts"][0]["status"] == "static_error"
+    assert result["attempts"][0]["explain_validation"]["syntax_error"] is True
+
+
+def test_end_to_end_accepts_ollama_native_tool_calls():
+    record = raw_generation_record()
+    responses = iter(
+        [
+            generated_native_tool_call(record["gold_cypher"]),
+            generated_result("<answer><O1></answer>"),
+        ]
+    )
+    conversations = []
+
+    def fake_generate(_model, _tokenizer, messages, **_kwargs):
+        conversations.append(json.loads(json.dumps(messages)))
+        return next(responses)
+
+    class NativeValidator:
+        def validate(self, _cypher, execute, **_kwargs):
+            assert execute is True
+            return {
+                "executable": True,
+                "rows": [{"object": "O1"}],
+                "rows_truncated": False,
+                "error": None,
+            }
+
+    result = evaluate_end_to_end_record(
+        record,
+        runtime=FakeGenerationRuntime(fake_generate),
+        validator=NativeValidator(),
+        policy=None,
+        tool_schemas=[run_cypher_tool_schema()],
+        max_new_tokens=32,
+        enable_thinking=False,
+    )
+
+    assert result["status"] == "pass"
+    assert result["final_answer_match"] is True
+    assert conversations[1][-2]["tool_calls"][0]["function"]["name"] == (
+        "run_cypher_query"
+    )
+    assert conversations[1][-1]["role"] == "tool"
 
 
 def test_default_end_to_end_limits_accept_bounded_room_result(monkeypatch):
@@ -1038,12 +1214,9 @@ def test_default_end_to_end_limits_accept_bounded_room_result(monkeypatch):
                 "rows_truncated": False,
             }
 
-    monkeypatch.setattr(student_evaluation, "generate_assistant_response", fake_generate)
-
     result = evaluate_end_to_end_record(
         record,
-        model=object(),
-        tokenizer=object(),
+        runtime=FakeGenerationRuntime(fake_generate),
         validator=RoomResultValidator(),
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],
@@ -1137,11 +1310,9 @@ def test_end_to_end_retries_oversized_results_without_feeding_rows(monkeypatch):
                 "rows_truncated": False,
             }
 
-    monkeypatch.setattr(student_evaluation, "generate_assistant_response", fake_generate)
     result = evaluate_end_to_end_record(
         record,
-        model=object(),
-        tokenizer=object(),
+        runtime=FakeGenerationRuntime(fake_generate),
         validator=BoundedValidator(),
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],
@@ -1167,16 +1338,11 @@ def test_end_to_end_stops_after_default_one_query_retry(monkeypatch):
             generated_result("<tool_call><function=run_cypher_query>"),
         ]
     )
-    monkeypatch.setattr(
-        student_evaluation,
-        "generate_assistant_response",
-        lambda *_args, **_kwargs: next(responses),
-    )
-
     result = evaluate_end_to_end_record(
         raw_generation_record(),
-        model=object(),
-        tokenizer=object(),
+        runtime=FakeGenerationRuntime(
+            lambda *_args, **_kwargs: next(responses)
+        ),
         validator=FakeValidator(),
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],
@@ -1205,11 +1371,9 @@ def test_end_to_end_does_not_replay_an_overlong_query(monkeypatch):
         conversations.append(json.loads(json.dumps(messages)))
         return next(responses)
 
-    monkeypatch.setattr(student_evaluation, "generate_assistant_response", fake_generate)
     result = evaluate_end_to_end_record(
         raw_generation_record(),
-        model=object(),
-        tokenizer=object(),
+        runtime=FakeGenerationRuntime(fake_generate),
         validator=FakeValidator(),
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],

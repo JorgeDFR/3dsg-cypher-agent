@@ -38,12 +38,14 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     text = rendered_text(messages)
 
     assert [message["role"] for message in messages] == ["user"] * len(messages)
-    assert text.index("3D scene graph agent") < text.index("<Scene Graph Description>")
+    assert text.index(
+        "mapping from natural language queries to Cypher queries"
+    ) < text.index("<Scene Graph Description>")
     assert text.index("<Scene Graph Description>") < text.index("<Labelspace Description>")
     assert text.index("<Labelspace Description>") < text.index("Labels in Database:")
     assert "Which object classes exist?" in text
-    assert "SLDP Equality Language" in text
-    assert "return the empty value" in text
+    assert "## SLDP Language" in text
+    assert "return the appropriate empty value" in text
     assert "Your answer should be an SLDP set of strings" in text
     assert seed["gold_cypher"] not in text
     assert seed["solution"] not in text
@@ -64,8 +66,12 @@ def test_native_pddl_seed_prompt_rendering_includes_pddl_context_only():
 
     assert "PDDL Domain" in text
     assert "PDDL Examples" in text
-    assert "PDDL goal language" in text
-    assert "leave the answer contents empty" in text
+    assert "## PDDL Goal Language" in text
+    assert "return an empty answer instead of inventing a PDDL goal" in text
+    assert text.index("<PDDL Domain>") < text.index("<PDDL Examples>")
+    assert text.index("<PDDL Examples>") < text.index(
+        "Now, use Cypher queries to generate a PDDL goal"
+    )
     assert "Grab a wastebin" in text
     assert seed["solution"] not in text
     assert "Your answer should be an SLDP" not in text

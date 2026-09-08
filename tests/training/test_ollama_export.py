@@ -32,7 +32,7 @@ def student_config(tmp_path):
             "model_name": "agent-distilled",
             "export_root": str(tmp_path),
             "stop_tokens": ["<stop>"],
-            "quantizations": ["Q4_K_M", "Q5_K_M"],
+            "quantizations": ["Q4_K_M", "Q8_0"],
         },
     }
 
@@ -60,7 +60,7 @@ def test_build_export_settings_derives_all_quantized_paths(tmp_path):
     assert settings.merged_model_dir == export_dir / "merged-hf"
     assert settings.base_gguf_path == export_dir / "agent-distilled.bf16.gguf"
     assert settings.quantized_gguf_paths["Q4_K_M"] == export_dir / "agent-distilled.Q4_K_M.gguf"
-    assert settings.quantized_gguf_paths["Q5_K_M"] == export_dir / "agent-distilled.Q5_K_M.gguf"
+    assert settings.quantized_gguf_paths["Q8_0"] == export_dir / "agent-distilled.Q8_0.gguf"
     assert settings.modelfile_gguf_path == export_dir / "agent-distilled.Q4_K_M.gguf"
     assert settings.modelfile_path == export_dir / "Modelfile"
 
@@ -95,8 +95,8 @@ def test_write_settings_modelfile_writes_metadata(tmp_path):
     assert metadata["merged_model_dir"] == str(export_dir / "merged-hf")
     assert metadata["modelfile_quantization"] == "Q4_K_M"
     assert metadata["modelfile_gguf_path"] == str(export_dir / "agent-distilled.Q4_K_M.gguf")
-    assert metadata["quantized_gguf_paths"]["Q5_K_M"] == str(
-        export_dir / "agent-distilled.Q5_K_M.gguf"
+    assert metadata["quantized_gguf_paths"]["Q8_0"] == str(
+        export_dir / "agent-distilled.Q8_0.gguf"
     )
 
 
@@ -162,12 +162,12 @@ def test_modelfile_gguf_override_selects_unquantized_artifact(tmp_path):
 def test_modelfile_gguf_short_quantization_resolves_artifact(tmp_path):
     settings = build_export_settings(
         student_config(tmp_path),
-        modelfile_gguf="q5",
+        modelfile_gguf="q8",
     )
 
-    assert settings.modelfile_quantization == "Q5_K_M"
+    assert settings.modelfile_quantization == "Q8_0"
     assert settings.modelfile_gguf_path == (
-        tmp_path / "agent-distilled" / "agent-distilled.Q5_K_M.gguf"
+        tmp_path / "agent-distilled" / "agent-distilled.Q8_0.gguf"
     )
 
 
@@ -182,10 +182,10 @@ def test_modelfile_gguf_rejects_paths(tmp_path):
 def test_write_settings_modelfile_rejects_missing_quantization_file(tmp_path):
     settings = build_export_settings(
         student_config(tmp_path),
-        modelfile_gguf="q5",
+        modelfile_gguf="q8",
     )
 
-    with pytest.raises(FileNotFoundError, match="quantization `Q5_K_M`"):
+    with pytest.raises(FileNotFoundError, match="quantization `Q8_0`"):
         write_settings_modelfile(settings)
 
 
@@ -360,7 +360,7 @@ def test_quantize_gguf_invokes_llama_quantize_for_each_quantization(tmp_path, mo
 
     assert outputs == {
         "Q4_K_M": export_dir / "agent-distilled.Q4_K_M.gguf",
-        "Q5_K_M": export_dir / "agent-distilled.Q5_K_M.gguf",
+        "Q8_0": export_dir / "agent-distilled.Q8_0.gguf",
     }
     assert calls == [
         (
@@ -376,8 +376,8 @@ def test_quantize_gguf_invokes_llama_quantize_for_each_quantization(tmp_path, mo
             [
                 str(quantize_bin),
                 str(export_dir / "agent-distilled.bf16.gguf"),
-                str(export_dir / "agent-distilled.Q5_K_M.gguf"),
-                "Q5_K_M",
+                str(export_dir / "agent-distilled.Q8_0.gguf"),
+                "Q8_0",
             ],
             True,
         ),

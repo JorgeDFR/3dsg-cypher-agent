@@ -86,7 +86,7 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages quantize \
-  --quantizations Q4_K_M Q5_K_M
+  --quantizations Q4_K_M Q8_0
 ```
 
 `modelfile_quantization` selects the artifact referenced by `Modelfile`. When
@@ -96,7 +96,7 @@ it is omitted, the first configured quantization is used. The
 Use `--modelfile-gguf` to select a quantization independently of the conversion
 and quantization settings. It accepts unquantized types (`bf16`, `f16`, `f32`),
 short aliases (`q2`, `q3`, `q4`, `q5`, `q6`, `q8`), and full llama.cpp names
-such as `Q4_K_S` or `Q5_K_M`. For example, switch an existing finetune export
+such as `Q8_0`. For example, switch an existing finetune export
 from Q4_K_M to its unquantized BF16 GGUF without repeating conversion:
 
 ```bash
@@ -155,6 +155,100 @@ examples/herables_benchmark/run_benchmark.sh
 
 See the [benchmark guide](../examples/herables_benchmark/README.md) for
 the manifest and report layout.
+
+## Validate BF16 versus quantized GGUF on project splits
+
+Challenge/test split validation belongs to the main project stack rather than
+the Heracles benchmark stack. The main stack owns the generated JSONL splits
+and matching scene database. Its Ollama service is optional, uses a separate
+model cache and container name, and mounts `outputs/ollama` read-only.
+
+After exporting BF16, Q8_0, and Q4_K_M in one `--stages all` run, create one Modelfile
+per artifact. Keeping distinct files and registered model names prevents one
+variant from replacing the other during a paired comparison:
+
+```bash
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
+  --stages modelfile \
+  --modelfile-gguf bf16 \
+  --modelfile-path outputs/ollama/qwen3.5-4b-finetune/Modelfile.bf16
+
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
+  --stages modelfile \
+  --modelfile-gguf Q8_0 \
+  --modelfile-path outputs/ollama/qwen3.5-4b-finetune/Modelfile.q8_0
+
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
+  --stages modelfile \
+  --modelfile-gguf Q4_K_M \
+  --modelfile-path outputs/ollama/qwen3.5-4b-finetune/Modelfile.q4_k_m
+```
+
+Start the optional service and register both names inside it:
+
+```bash
+docker/stack.sh ollama-up
+
+docker/stack.sh ollama create qwen3.5-4b-finetune-bf16 \
+  -f /models/qwen3.5-4b-finetune/Modelfile.bf16
+
+docker/stack.sh ollama create qwen3.5-4b-finetune-q8_0 \
+  -f /models/qwen3.5-4b-finetune/Modelfile.q8_0
+
+docker/stack.sh ollama create qwen3.5-4b-finetune-q4_k_m \
+  -f /models/qwen3.5-4b-finetune/Modelfile.q4_k_m
+
+docker/stack.sh ollama list
+```
+
+Load the configured scene into the main Neo4j database, then run both variants
+with identical generation and query limits:
+
+```bash
+docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
+
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split challenge \
+  --mode raw-generation \
+  --runtime ollama \
+  --ollama-model qwen3.5-4b-finetune-bf16 \
+  --max-new-tokens 1024
+
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split challenge \
+  --mode raw-generation \
+  --runtime ollama \
+  --ollama-model qwen3.5-4b-finetune-q8_0 \
+  --max-new-tokens 1024
+
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split challenge \
+  --mode raw-generation \
+  --runtime ollama \
+  --ollama-model qwen3.5-4b-finetune-q4_k_m \
+  --max-new-tokens 1024
+```
+
+Ollama runs use deterministic defaults (`temperature=0`, `seed=42`) and send
+non-streaming `/api/chat` requests with native tools. Override these with
+`--ollama-temperature`, `--ollama-seed`, `--ollama-timeout`, or
+`--ollama-context-length`. The context length defaults to 16384 so the longest
+current challenge tool-response conversations can complete, and
+`--ollama-keep-alive` controls model residency. The default report name includes the runtime and model,
+so BF16 and Q4_K_M results remain separate. Eval-loss remains a Transformers
+operation; Ollama is supported only for raw-generation validation.
 
 ## Host-only export
 

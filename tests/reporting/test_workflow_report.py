@@ -218,12 +218,20 @@ def write_minimal_artifacts(config):
                             "tool_call_parse_success": 1,
                             "executable": 1,
                             "cypher_solution_match": 1,
+                            "tool_result_match": 1,
                         },
                         "rates": {
                             "tool_call_parse_success": 1.0,
                             "executable": 1.0,
                             "cypher_solution_match": 1.0,
+                            "tool_result_match": 1.0,
                         },
+                        "statuses": {"pass": 1},
+                    },
+                    "end_to_end_final_answer": {
+                        "evaluated": 1,
+                        "metrics": {"final_answer_match": 1},
+                        "rates": {"final_answer_match": 1.0},
                         "statuses": {"pass": 1},
                     },
                 },
@@ -290,9 +298,10 @@ def write_minimal_artifacts(config):
                             "final_answer_match": "true",
                         },
                         "tool_call_from_prompt": {
-                            "status": "pass",
-                            "tool_call_parse_success": True,
-                            "executable": True,
+                        "status": "pass",
+                        "tool_call_parse_success": True,
+                        "static_valid": True,
+                        "executable": True,
                             "cypher_solution_match": "true",
                         },
                         "end_to_end_final_answer": {
@@ -321,6 +330,69 @@ def write_minimal_artifacts(config):
             encoding="utf-8",
         ) as target:
             target.write(source.read())
+
+
+def write_quantization_reports(config):
+    reports_dir = config["test_report_path"].rsplit("/", 1)[0]
+    source_path = f"{reports_dir}/test.student.raw-generation.report.json"
+    with open(source_path, encoding="utf-8") as source:
+        source_report = json.load(source)
+
+    with open(
+        f"{reports_dir}/challenge.student.raw-generation.report.json",
+        "w",
+        encoding="utf-8",
+    ) as target:
+        json.dump(source_report, target)
+
+    variants = (
+        ("qwen3.5-4b-finetune-bf16", "BF16", 10),
+        ("qwen3.5-4b-finetune-q4_k_m", "Q4_K_M", 20),
+        ("qwen3.5-4b-finetune-q8_0", "Q8_0", 15),
+    )
+    for model, quantization, generated_tokens in variants:
+        report = json.loads(json.dumps(source_report))
+        report["metadata"] = {
+            "split": "challenge",
+            "runtime": "ollama",
+            "raw_generation": {
+                "runtime": {
+                    "provider": "ollama",
+                    "model": model,
+                    "model_details": {
+                        "format": "gguf",
+                        "quantization_level": quantization,
+                    },
+                }
+            },
+        }
+        record = report["records"][0]
+        for attempt in record["end_to_end_final_answer"]["attempts"]:
+            attempt["generated_tokens"] = generated_tokens
+        for turn in record["generation_debug"]["end_to_end_generation"]["turns"]:
+            turn["provider_metadata"] = {"eval_duration": 1_000_000_000}
+        path = (
+            f"{reports_dir}/challenge.student.ollama.{model}."
+            "raw-generation.report.json"
+        )
+        with open(path, "w", encoding="utf-8") as target:
+            json.dump(report, target)
+
+
+def write_gguf_artifacts(tmp_path):
+    export_root = tmp_path / "outputs" / "ollama"
+    model_name = "qwen3.5-4b-finetune"
+    export_dir = export_root / model_name
+    export_dir.mkdir(parents=True)
+    (export_dir / f"{model_name}.bf16.gguf").write_bytes(b"b" * 1_000)
+    (export_dir / f"{model_name}.Q4_K_M.gguf").write_bytes(b"q" * 400)
+    (export_dir / f"{model_name}.Q8_0.gguf").write_bytes(b"e" * 700)
+    return {
+        "ollama_export": {
+            "export_root": str(export_root),
+            "model_name": model_name,
+        }
+    }
 
 
 def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
@@ -363,6 +435,7 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "tool_call_status",
         "final_answer_status",
         "tool_call_parse_success",
+        "tool_call_static_valid",
         "tool_call_executable",
         "cypher_solution_match",
         "grounding_match",
@@ -387,6 +460,39 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Trace Outcomes" in html
     assert "Validation Examples" in html
     assert "Baseline Examples" in html
+    assert "Deploy / Quantization" not in html
+    assert html.count('class="raw-family-grid"') >= 2
+    assert html.count('<section class="raw-examples">') == 2
+    assert '<details class="raw-examples">' not in html
+    assert 'class="question-types-toggle"' in html
+    assert 'class="question-type-row" hidden' in html
+    assert "Tool Call Static Valid</th>" not in html
+    assert "<dt>Tool Call Static Valid</dt>" in html
+    heading_start = html.index('<div class="raw-family-heading">')
+    heading_end = html.index("</div>", heading_start)
+    heading = html[heading_start:heading_end]
+    assert "<h5>Cypher QA</h5>" in heading
+    assert 'class="question-types-toggle"' in heading
+    summary_table = html.index('<div class="table-wrap"><table', heading_end)
+    assert heading_end < summary_table
+    summary_start = html.index("<h3>Student Raw Generation Summary</h3>")
+    summary_end = html.index('<section class="raw-examples">', summary_start)
+    assert "Tool Call Static Valid</th>" not in html[summary_start:summary_end]
+    validation_metrics = html[
+        html.index('<section id="validation"') : html.index(
+            "<h3>Student Raw Generation Summary</h3>"
+        )
+    ]
+    baseline_metrics = html[
+        html.index('<section id="baseline"') : html.index(
+            "<h3>Base Student Raw Generation Summary</h3>"
+        )
+    ]
+    assert "Tool Result Match" not in validation_metrics
+    assert "Fine Tune" not in validation_metrics
+    assert "Test Student End To End Match" in validation_metrics
+    assert "Tool Result Match" not in baseline_metrics
+    assert "Test Fine Tune End To End Gap" in baseline_metrics
     assert "Artifacts" in html
     assert "Object Classes" in html
     assert "Mesh Place Classes" in html
@@ -597,6 +703,92 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Rejected Traces" not in html
 
 
+def test_workflow_report_renders_optional_quantization_comparison_tab(tmp_path):
+    config = minimal_data_config(tmp_path)
+    write_minimal_artifacts(config)
+    write_quantization_reports(config)
+    student_config = write_gguf_artifacts(tmp_path)
+
+    data = collect_workflow_report_data(config, student_config)
+    reports = data["deploy_quantization"]["raw_generation_reports"]
+    rows, details = validation_example_rows(
+        reports,
+        detail_title="Deploy / Quantization Example Details",
+        group_field="quantization",
+    )
+    html = render_workflow_report(data)
+
+    assert list(reports) == ["BF16", "Q4_K_M", "Q8_0"]
+    assert {row["quantization"] for row in rows} == {"BF16", "Q4_K_M", "Q8_0"}
+    assert all("split" not in row for row in rows)
+    assert all("quantization" in detail["fields"] for detail in details)
+
+    baseline_start = html.index('<section id="baseline"')
+    quantization_start = html.index('<section id="deploy-quantization"')
+    artifacts_start = html.index('<section id="artifacts"')
+    assert baseline_start < quantization_start < artifacts_start
+
+    section = html[quantization_start:artifacts_start]
+    assert "<h2>Deploy / Quantization</h2>" in section
+    title_end = section.index("</div>", section.index('class="raw-tab-title"'))
+    title_row = section[:title_end]
+    assert 'class="quantization-selector"' in title_row
+    assert '<option value="Q4_K_M">Q4-K-M</option>' in title_row
+    assert '<option value="Q8_0">Q8-0</option>' in title_row
+    assert "applyReportGroupSelection" in html
+    assert "<h3>Challenge Raw Generation Summary</h3>" in section
+    assert "<h3>Comparison Metrics</h3>" in section
+    comparison_section = section[: section.index("<h3>Challenge Raw Generation Summary</h3>")]
+    assert "Tool Result Match" not in comparison_section
+    assert "Quantization End To End Gap" in section
+    assert "GGUF Artifact Size" in section
+    assert "Q4-K-M GGUF Size Reduction" in section
+    assert "Q8-0 GGUF Size Reduction" in section
+    assert "60.00%" in comparison_section
+    assert "End-to-End Generation Throughput" in section
+    assert "10.00 tok/s" in comparison_section
+    assert "20.00 tok/s" in comparison_section
+    assert "2.00× faster" in comparison_section
+    assert "1.50× faster" in comparison_section
+    assert 'class="metric-tooltip" role="note"' in comparison_section
+    assert '<button type="button" class="metric-help"' in comparison_section
+    assert ".metric-help:hover + .metric-tooltip" in html
+    assert ".comparison-metric:hover .metric-tooltip" not in html
+    assert comparison_section.count('class="comparison-metric-row"') == 8
+    assert "McNemar" not in comparison_section
+    assert "Q4-K-M speed ratio =" in comparison_section
+    assert '<p class="metric-note">' not in comparison_section
+    assert "<h4>BF16</h4>" in section
+    assert "<h4>Q4-K-M</h4>" in section
+    assert "<h4>Q8-0</h4>" in section
+    assert ">Q4 K M<" not in section
+    assert ">Q4-K-M<" in section
+    assert section.count('class="raw-family-grid"') == 3
+    assert 'data-report-group-value="Q8_0" hidden' in section
+    assert 'data-report-metrics-value="Q8_0" hidden' in comparison_section
+    assert (
+        'class="raw-report-json" data-report-group-value="Q8_0" hidden'
+        in section
+    )
+    assert 'data-report-group-value="Q4_K_M" hidden' not in section
+    assert 'data-report-metrics-value="Q4_K_M" hidden' not in comparison_section
+    assert '<section class="raw-examples">' in section
+    assert 'class="question-types-toggle"' in section
+    assert 'class="question-type-row" hidden' in section
+    quantization_summary = section[: section.index('<section class="raw-examples">')]
+    assert "Tool Call Static Valid</th>" not in quantization_summary
+    assert "<h3>Deploy / Quantization Examples</h3>" in section
+    examples_start = section.index("<h3>Deploy / Quantization Examples</h3>")
+    examples_table = section[
+        examples_start : section.index("</table>", examples_start)
+    ]
+    assert ">Quantization</th>" in examples_table
+    assert ">Split</th>" not in examples_table
+    assert ">Tool Call Static Valid</th>" not in examples_table
+    assert 'data-sort-value="Q4-K-M">Q4-K-M</td>' in examples_table
+    assert 'data-report-group-value="Q8_0" hidden' in examples_table
+
+
 def test_workflow_report_renders_mixed_qa_and_pddl_records(tmp_path):
     config = minimal_data_config(tmp_path)
     write_minimal_artifacts(config)
@@ -712,6 +904,12 @@ def test_workflow_report_renders_mixed_qa_and_pddl_records(tmp_path):
     assert "cypher_pddl" in html
     assert "<h5>Cypher QA</h5>" in html
     assert "<h5>Cypher PDDL</h5>" in html
+    validation_start = html.index('<section id="validation"')
+    baseline_start = html.index('<section id="baseline"')
+    validation_section = html[validation_start:baseline_start]
+    assert validation_section.index("<h5>Cypher QA</h5>") < validation_section.index(
+        "<h5>Cypher PDDL</h5>"
+    )
     assert "Grounding Match" in html
     assert rows[0]["task_family"] == "cypher_pddl"
     assert rows[0]["output_type"] == "PDDL"

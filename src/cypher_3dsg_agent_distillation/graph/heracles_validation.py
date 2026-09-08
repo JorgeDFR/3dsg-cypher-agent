@@ -282,40 +282,62 @@ def answer_type_hint_from_solution_formats(
 def answer_formatting_guidance(output_type: OutputType) -> str:
     if output_type == "SLDP":
         return """
-Please format your response according to the SLDP Equality Language:
+Please format your response according to the SLDP Language:
 
-## SLDP Equality Language
+## SLDP Language
 
-Lists are equal if each element is equal. Sets are equal regardless of item order.
-Dictionaries are equal if their keys and values match. Points are equal within tolerance.
+A SLDP answer represents the answer to a direct question.
+It can be a primitive string, primitive number, list, set, dictionarie, or point.
+It can also be an arbitrary composition of these containers.
 
-A primitive string is an unquoted alphanumeric symbol.
+Use object and place symbols exactly as they appear in the scene graph. Node symbols should not contain parentheses or quotes. For example, O(1) should be written as O1.
+
+Do not include additional information than what is explicitly asked for in the question.
+E.g., if the question asks for a list of node IDs, the answer should be a list of node IDs and not a list of nodes with their properties or if the question asks for locations a list of points should be provided and not a list of nodes with their locations.
+
+### Syntax
+
+A primitive string is a sequence of alphanumeric characters (with no quotation).
 A primitive number is a floating point representation of a number.
-A list is written as [element1, element2, ... elementN].
-A set is written as <element1, element2, ... elementN>.
-A dict is written as {k1: v1, k2: v2}.
-A point is written as POINT(x y z), with no commas.
+A `list` is written as `[element1, element2, ... elementN]`
+A `set` is written as `<element1, element2, ... elementN>`
+A `dict` is written as `{k1: v1, k2: v2}`
+A `point` is written as `POINT(x y z)` (note the lack of comma)
 
-Format your final answer as an SLDP expression wrapped between <answer> and </answer>.
+### Denoting Final Answer:
+
+Format your final answer (*not* any intermediate tool calls) as an SLDP expression wrapped between the <answer> and </answer> tags (XML-style format).
+Example: <answer> <1,2,3> </answer>
 Only a single pair of answer tags should appear.
-
-If the database query has no answer, return the empty value matching the requested
-shape. Use <> for an empty set, [] for an empty list, or leave the answer contents
-empty when the result has no collection representation.
 """
     if output_type == "PDDL":
         return """
-Please format your response according to the PDDL goal language:
+Please format your response according to the PDDL Goal Language:
 
-The final answer must be a single valid PDDL goal expression using predicates from the
-provided PDDL domain.
-Use object, place, mesh place, and room/region symbols exactly as they appear in the scene graph.
-Do not include explanatory text inside the final answer.
+## PDDL Goal Language
 
-If the database query returns no grounding, leave the answer contents empty instead
-of inventing a PDDL goal.
+A PDDL goal describes the desired final state for a planner. It must be a single valid goal expression using predicates from the provided PDDL domain.
 
-Wrap the PDDL goal or empty answer between <answer> and </answer>.
+Use object and place symbols exactly as they appear in the scene graph. Node symbols should not contain parentheses or quotes. For example, O(1) should be written as O1.
+
+Do not include explanatory text inside the final answer. Do not invent predicates outside the provided PDDL domain.
+
+### Syntax
+
+An atomic predicate is written as `(predicate arg1 arg2 ... argN)`.
+A conjunction is written as `(and goal1 goal2 ... goalN)`.
+A disjunction is written as `(or goal1 goal2 ... goalN)`.
+A negated atomic predicate is written as `(not (predicate arg1 arg2 ... argN))`.
+
+Examples:
+`(visited-object O1)`
+`(and (visited-place R0) (visited-place R1))`
+`(or (visited-object O2) (visited-object O5))`
+
+### Denoting Final Answer:
+
+Format your final answer (*not* any intermediate tool calls) as a PDDL goal wrapped between the <answer> and </answer> tags (XML-style format).
+Example: <answer> (visited-place P100) </answer>
 Only a single pair of answer tags should appear.
 """
     raise ValueError(f"Unsupported output type: {output_type}")

@@ -643,6 +643,72 @@ def collect_report_files(data_config: dict[str, Any]) -> list[dict[str, Any]]:
     return [file_info(path) for path in sorted(directory.glob("*.report.json"))]
 
 
+def report_quantization(report: dict[str, Any], path: Path) -> str:
+    metadata = report.get("metadata") or {}
+    raw_generation = metadata.get("raw_generation") or {}
+    runtime = raw_generation.get("runtime") or {}
+    model_details = runtime.get("model_details") or {}
+    quantization = (
+        model_details.get("quantization_level")
+        or model_details.get("quantization")
+    )
+    if quantization:
+        return str(quantization).strip().upper()
+
+    model_name = str(runtime.get("model") or path.name)
+    match = re.search(
+        r"(?:^|[-_.])(BF16|F16|I?Q\d+(?:_[A-Z0-9]+)*)(?=$|[-.])",
+        model_name,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).upper() if match else "Unknown"
+
+
+def collect_quantization_reports(
+    data_config: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    directory = reports_dir(data_config)
+    if not directory.exists():
+        return {}
+
+    reports = {}
+    pattern = "challenge.student.ollama.*.raw-generation.report.json"
+    for path in sorted(directory.glob(pattern)):
+        report = read_json_if_exists(path)
+        if not isinstance(report, dict):
+            continue
+        metadata = report.get("metadata") or {}
+        if metadata.get("split") not in (None, "challenge"):
+            continue
+        quantization = report_quantization(report, path)
+        key = quantization
+        if key in reports:
+            runtime = (metadata.get("raw_generation") or {}).get("runtime") or {}
+            model_name = str(runtime.get("model") or path.stem)
+            key = f"{quantization} ({model_name})"
+        reports[key] = report
+    return reports
+
+
+def collect_gguf_artifacts(
+    student_config: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    export = (student_config or {}).get("ollama_export") or {}
+    export_root = export.get("export_root")
+    model_name = export.get("model_name")
+    if not export_root or not model_name:
+        return {}
+    directory = resolve_project_path(export_root) / str(model_name)
+    if not directory.exists():
+        return {}
+
+    artifacts = {}
+    for path in sorted(directory.glob("*.gguf")):
+        quantization = report_quantization({}, path)
+        artifacts[quantization] = file_info(path)
+    return artifacts
+
+
 def collect_trainer_state(student_config: dict[str, Any] | None) -> dict[str, Any] | None:
     if not student_config:
         return None
@@ -702,6 +768,7 @@ def collect_workflow_report_data(
         )
         for split in SPLITS
     }
+    quantization_raw_generation_reports = collect_quantization_reports(data_config)
     agent_reports = {
         split: read_json_if_exists(report_path(data_config, f"{split}.agent.report.json"))
         for split in SPLITS
@@ -805,6 +872,10 @@ def collect_workflow_report_data(
         "baseline": {
             "raw_generation_reports": baseline_raw_generation_reports,
         },
+        "deploy_quantization": {
+            "raw_generation_reports": quantization_raw_generation_reports,
+            "gguf_artifacts": collect_gguf_artifacts(student_config),
+        },
     }
 
 
@@ -816,6 +887,19 @@ def humanize_label(value: Any) -> str:
     text = str(value)
     if not text:
         return ""
+    quantization_tokens: dict[str, str] = {}
+
+    def protect_quantization(match: re.Match[str]) -> str:
+        placeholder = f"QUANTIZATIONTOKEN{len(quantization_tokens)}X"
+        quantization_tokens[placeholder] = match.group(0).upper().replace("_", "-")
+        return placeholder
+
+    text = re.sub(
+        r"\bI?Q\d+(?:_[A-Z0-9]+)+\b",
+        protect_quantization,
+        text,
+        flags=re.IGNORECASE,
+    )
     text = text.replace("_", " ").replace("-", " ").replace("/", " / ")
     text = "".join(
         f" {char}" if index > 0 and char.isupper() and text[index - 1].islower() else char
@@ -825,7 +909,10 @@ def humanize_label(value: Any) -> str:
     for part in text.split():
         key = part.lower()
         parts.append(LABEL_OVERRIDES.get(key, part[:1].upper() + part[1:]))
-    return " ".join(parts)
+    rendered = " ".join(parts)
+    for placeholder, quantization in quantization_tokens.items():
+        rendered = rendered.replace(placeholder, quantization)
+    return rendered
 
 
 def format_number(value: int | float, digits: int = 6) -> str:
@@ -840,6 +927,8 @@ def is_percentage_key(key: str | None) -> bool:
     normalized = key.lower().replace("-", "_").replace(" ", "_")
     if normalized == "learning_rate":
         return False
+    if normalized.endswith(("_static_valid", "_domain_valid")):
+        return True
     tokens = set(normalized.split("_"))
     return any(
         token in tokens
@@ -889,6 +978,8 @@ def format_bytes(value: int | float) -> str:
 def format_cell(value: Any, key: str | None = None) -> str:
     if value is None:
         return ""
+    if key == "quantization":
+        return str(value).replace("_", "-")
     if isinstance(value, bool):
         return "True" if value else "False"
     if isinstance(value, int | float):
@@ -980,6 +1071,7 @@ def render_table(
     *,
     table_class: str = "",
     filterable: bool = False,
+    collapsible_summary_rows: bool = False,
 ) -> str:
     if not rows:
         return '<p class="empty">No records found.</p>'
@@ -989,18 +1081,33 @@ def render_table(
     )
     filters = render_filter_row(headers) if filterable else ""
     body = []
-    for row in rows:
+    for index, row in enumerate(rows):
         cells = "".join(
             f'<td data-sort-value="{escape(sort_value(row.get(key), key))}">'
             f"{render_cell(row.get(key), key)}</td>"
             for key, _label in headers
         )
-        body.append(f"<tr>{cells}</tr>")
+        attributes = ""
+        if collapsible_summary_rows and index > 0:
+            attributes = ' class="question-type-row" hidden'
+        body.append(f"<tr{attributes}>{cells}</tr>")
     return (
         '<div class="table-wrap"><table '
         f'class="data-table sortable {"filterable" if filterable else ""} '
         f'{escape(table_class)}"><thead><tr>'
         f"{head}</tr>{filters}</thead><tbody>{''.join(body)}</tbody></table></div>"
+    )
+
+
+def render_question_types_toggle(question_type_count: int) -> str:
+    if question_type_count <= 0:
+        return ""
+    return (
+        '<button type="button" class="question-types-toggle" '
+        'aria-expanded="false" '
+        f'data-count="{question_type_count}">'
+        f"Show question types ({question_type_count})"
+        "</button>"
     )
 
 
@@ -1153,6 +1260,8 @@ def render_interactive_record_table(
     details: list[dict[str, Any]],
     empty_message: str = "No records found.",
     filterable: bool = True,
+    visibility_field: str | None = None,
+    visible_values: set[str] | None = None,
 ) -> str:
     if not rows:
         return f'<p class="empty">{escape(empty_message)}</p>'
@@ -1163,6 +1272,8 @@ def render_interactive_record_table(
     filters = render_filter_row(headers) if filterable else ""
     body = []
     templates = []
+    first_visible_index = 0
+    active_assigned = False
     for index, row in enumerate(rows):
         detail_id = stable_detail_id(section_id, index, row)
         cells = "".join(
@@ -1170,15 +1281,30 @@ def render_interactive_record_table(
             f"{render_cell(row.get(key), key)}</td>"
             for key, _label in headers
         )
-        active = " active" if index == 0 else ""
+        group_value = str(row.get(visibility_field) or "") if visibility_field else ""
+        visible = visible_values is None or group_value in visible_values
+        active = ""
+        if visible and not active_assigned:
+            active = " active"
+            active_assigned = True
+            first_visible_index = index
+        group_attribute = (
+            f' data-report-group-value="{escape(group_value)}"'
+            if visibility_field
+            else ""
+        )
+        hidden_attribute = "" if visible else " hidden"
         body.append(
             f'<tr class="record-row{active}" data-detail-id="{escape(detail_id)}" '
-            f'data-detail-target="{escape(section_id)}-detail">{cells}</tr>'
+            f'data-detail-target="{escape(section_id)}-detail"{group_attribute}'
+            f"{hidden_attribute}>{cells}</tr>"
         )
         templates.append(
             f'<template id="{escape(detail_id)}">{render_record_detail(details[index])}</template>'
         )
-    first_detail_id = stable_detail_id(section_id, 0, rows[0])
+    first_detail_id = stable_detail_id(
+        section_id, first_visible_index, rows[first_visible_index]
+    )
     return (
         '<div class="record-grid">'
         '<div class="table-wrap">'
@@ -1187,7 +1313,7 @@ def render_interactive_record_table(
         f"<tbody>{''.join(body)}</tbody></table>"
         "</div>"
         f'<aside id="{escape(section_id)}-detail" class="panel detail">'
-        f"{render_record_detail(details[0])}"
+        f"{render_record_detail(details[first_visible_index])}"
         "</aside>"
         "</div>"
         f'<!-- initial-detail:{escape(first_detail_id)} -->'
@@ -1724,6 +1850,7 @@ def raw_generation_summary_fallback_row(
         "final_answer_domain_valid": rate_value(
             final_answer, "rates", "final_answer_domain_valid"
         ),
+        "tool_call_static_valid": rate_value(tool_call, "rates", "static_valid"),
         "tool_call_executable": rate_value(tool_call, "rates", "executable"),
         "result_match": result_match,
         "potential_hidden_false_positive": rate_value(
@@ -1769,6 +1896,11 @@ def raw_generation_task_type_rows(
                     FINAL_ANSWER_CHECK,
                     "final_answer_domain_valid",
                 ),
+                "tool_call_static_valid": bool_rate(
+                    task_records,
+                    TOOL_CALL_CHECK,
+                    "static_valid",
+                ),
                 "tool_call_executable": bool_rate(
                     task_records,
                     TOOL_CALL_CHECK,
@@ -1797,10 +1929,11 @@ def validation_example_rows(
     raw_generation_reports: dict[str, dict[str, Any] | None],
     *,
     detail_title: str = "Validation Example Details",
+    group_field: str = "split",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows = []
     details = []
-    for split, report in raw_generation_reports.items():
+    for group_value, report in raw_generation_reports.items():
         if not isinstance(report, dict):
             continue
         for record in report.get("records") or []:
@@ -1820,7 +1953,7 @@ def validation_example_rows(
             )
             row = {
                 "uid": record.get("uid"),
-                "split": split,
+                group_field: group_value,
                 "task_family": family,
                 "output_type": output_type(record),
                 "task_type": task_type(record),
@@ -1829,6 +1962,9 @@ def validation_example_rows(
                 "final_answer_status": final_answer.get("status"),
                 "tool_call_parse_success": bool_or_none(
                     tool_call.get("tool_call_parse_success")
+                ),
+                "tool_call_static_valid": bool_or_none(
+                    tool_call.get("static_valid")
                 ),
                 "tool_call_executable": bool_or_none(tool_call.get("executable")),
                 "cypher_solution_match": None if pddl else result_match,
@@ -2062,27 +2198,368 @@ def validation_main_rows(
     return rows
 
 
+def raw_generation_rate(
+    report: dict[str, Any] | None,
+    section: str,
+    metric: str,
+) -> float | None:
+    value = rate_value(report, "summary", section, "rates", metric)
+    return float(value) if isinstance(value, int | float) else None
+
+
+def percentage_point_gap(candidate: float | None, reference: float | None) -> str | None:
+    if candidate is None or reference is None:
+        return None
+    return f"{(candidate - reference) * 100:+.2f} pp"
+
+
+ComparisonMetric = tuple[str, Any, str | None, str]
+
+
+def render_comparison_metrics(
+    rows: list[tuple[str, list[ComparisonMetric]]],
+) -> str:
+    rendered_rows = []
+    for row_title, cards in rows:
+        rendered_cards = []
+        for label, value, tone, note in cards:
+            if value is None:
+                continue
+            tone_class = f" metric-{tone}" if tone else ""
+            rendered_cards.append(
+                f'<div class="metric comparison-metric{tone_class}">'
+                '<div class="metric-label">'
+                f"{escape(humanize_label(label))}"
+                '<span class="metric-help-container">'
+                '<button type="button" class="metric-help" '
+                f'aria-label="Show metric help: {escape(note)}">?</button>'
+                f'<span class="metric-tooltip" role="note">{escape(note)}</span>'
+                "</span>"
+                "</div>"
+                f'<div class="metric-value">{render_cell(value, label)}</div>'
+                "</div>"
+            )
+        if rendered_cards:
+            rendered_rows.append(
+                '<div class="comparison-metric-row">'
+                f"<h4>{escape(row_title)}</h4>"
+                f'<div class="metric-grid comparison-metric-grid">'
+                f'{"".join(rendered_cards)}</div></div>'
+            )
+    if not rendered_rows:
+        return ""
+    return (
+        '<section class="comparison-metrics">'
+        '<h3>Comparison Metrics</h3>'
+        f'{"".join(rendered_rows)}'
+        "</section>"
+    )
+
+
+def gap_tone(value: str | None) -> str | None:
+    if value is None or value.startswith("+0.00") or value.startswith("-0.00"):
+        return "neutral"
+    return "good" if value.startswith("+") else "bad"
+
+
+END_TO_END_RATE_NOTE = (
+    "End-to-end match = correct final answers from the complete tool-using run "
+    "÷ evaluated questions."
+)
+
+
+def validation_comparison_metrics(
+    student_reports: dict[str, dict[str, Any] | None],
+) -> str:
+    cards: list[ComparisonMetric] = []
+    for split in ("test", "challenge"):
+        rate = raw_generation_rate(
+            student_reports.get(split), END_TO_END_CHECK, "final_answer_match"
+        )
+        cards.append(
+            (f"{split} student end-to-end match", rate, None, END_TO_END_RATE_NOTE)
+        )
+    return render_comparison_metrics([("End-to-End Quality", cards)])
+
+
+def baseline_comparison_metrics(
+    student_reports: dict[str, dict[str, Any] | None],
+    baseline_reports: dict[str, dict[str, Any] | None],
+) -> str:
+    rows = []
+    for split in ("test", "challenge"):
+        student_rate = raw_generation_rate(
+            student_reports.get(split), END_TO_END_CHECK, "final_answer_match"
+        )
+        baseline_rate = raw_generation_rate(
+            baseline_reports.get(split), END_TO_END_CHECK, "final_answer_match"
+        )
+        gap = percentage_point_gap(student_rate, baseline_rate)
+        rows.append(
+            (
+                humanize_label(split),
+                [
+                    (
+                        f"{split} baseline end-to-end match",
+                        baseline_rate,
+                        None,
+                        END_TO_END_RATE_NOTE,
+                    ),
+                    (
+                        f"{split} fine-tuned end-to-end match",
+                        student_rate,
+                        None,
+                        END_TO_END_RATE_NOTE,
+                    ),
+                    (
+                        f"{split} fine-tune end-to-end gap",
+                        gap,
+                        gap_tone(gap),
+                        "Fine-tune gap = fine-tuned end-to-end match − baseline "
+                        "end-to-end match. Positive values favor the fine-tuned model.",
+                    ),
+                ],
+            )
+        )
+    return render_comparison_metrics(rows)
+
+
+def end_to_end_generation_throughput(report: dict[str, Any] | None) -> float | None:
+    generated_tokens = 0.0
+    eval_duration_ns = 0.0
+    for record in (report or {}).get("records") or []:
+        attempts = ((record.get(END_TO_END_CHECK) or {}).get("attempts") or [])
+        turns = (
+            ((record.get("generation_debug") or {}).get("end_to_end_generation") or {})
+            .get("turns")
+            or []
+        )
+        for attempt, turn in zip(attempts, turns, strict=False):
+            tokens = attempt.get("generated_tokens")
+            duration = (turn.get("provider_metadata") or {}).get("eval_duration")
+            if isinstance(tokens, int | float) and isinstance(duration, int | float):
+                if tokens >= 0 and duration > 0:
+                    generated_tokens += float(tokens)
+                    eval_duration_ns += float(duration)
+    if eval_duration_ns <= 0:
+        return None
+    return generated_tokens / (eval_duration_ns / 1_000_000_000)
+
+
+def quantization_report(
+    reports: dict[str, dict[str, Any] | None], quantization: str
+) -> dict[str, Any] | None:
+    expected = quantization.upper()
+    for label, report in reports.items():
+        if label.split(" (", 1)[0].upper() == expected and isinstance(report, dict):
+            return report
+    return None
+
+
+def quantization_artifact(
+    artifacts: dict[str, dict[str, Any]], quantization: str
+) -> dict[str, Any] | None:
+    expected = quantization.upper()
+    for label, artifact in artifacts.items():
+        if label.upper() == expected:
+            return artifact
+    return None
+
+
+def deploy_comparison_metrics(
+    data: dict[str, Any], selected_quantization: str
+) -> str:
+    deploy_data = data["deploy_quantization"]
+    reports = deploy_data["raw_generation_reports"]
+    transformers = data["validation"]["raw_generation_reports"].get("challenge")
+    bf16 = quantization_report(reports, "BF16")
+    selected_report = reports.get(selected_quantization)
+    quantization = selected_quantization.split(" (", 1)[0]
+    quantization_label = humanize_label(quantization)
+    transformers_rate = raw_generation_rate(
+        transformers, END_TO_END_CHECK, "final_answer_match"
+    )
+    bf16_rate = raw_generation_rate(bf16, END_TO_END_CHECK, "final_answer_match")
+    selected_rate = raw_generation_rate(
+        selected_report, END_TO_END_CHECK, "final_answer_match"
+    )
+    deployment_gap = percentage_point_gap(bf16_rate, transformers_rate)
+    quantization_gap = percentage_point_gap(selected_rate, bf16_rate)
+
+    artifacts = deploy_data.get("gguf_artifacts") or {}
+    bf16_artifact = quantization_artifact(artifacts, "BF16") or {}
+    selected_artifact = quantization_artifact(artifacts, quantization) or {}
+    bf16_bytes = bf16_artifact.get("bytes")
+    selected_bytes = selected_artifact.get("bytes")
+    size_reduction = None
+    if (
+        isinstance(bf16_bytes, int | float)
+        and isinstance(selected_bytes, int | float)
+        and bf16_bytes > 0
+    ):
+        size_reduction = (
+            f"{(bf16_bytes - selected_bytes) / bf16_bytes * 100:.2f}%"
+        )
+
+    bf16_throughput = end_to_end_generation_throughput(bf16)
+    selected_throughput = end_to_end_generation_throughput(selected_report)
+    speed_change = None
+    speed_tone = None
+    if bf16_throughput and selected_throughput is not None:
+        speed_ratio = selected_throughput / bf16_throughput
+        if speed_ratio >= 1:
+            speed_change = f"{speed_ratio:.2f}× faster"
+            speed_tone = "good" if speed_ratio > 1 else "neutral"
+        elif speed_ratio > 0:
+            speed_change = f"{1 / speed_ratio:.2f}× slower"
+            speed_tone = "bad"
+
+    throughput_note = (
+        "End-to-end generation throughput = total generated tokens across all "
+        "end-to-end Ollama turns ÷ summed Ollama eval_duration. Prompt evaluation, "
+        "model loading, Neo4j execution, and other request overhead are excluded."
+    )
+    size_note = "GGUF size is the local artifact file size on disk."
+    rows: list[tuple[str, list[ComparisonMetric]]] = [
+        (
+            "End-to-End Quality",
+            [
+                (
+                    "Transformers end-to-end match",
+                    transformers_rate,
+                    None,
+                    END_TO_END_RATE_NOTE,
+                ),
+                ("BF16 end-to-end match", bf16_rate, None, END_TO_END_RATE_NOTE),
+                (
+                    f"{quantization} end-to-end match",
+                    selected_rate,
+                    None,
+                    END_TO_END_RATE_NOTE,
+                ),
+            ],
+        ),
+        (
+            "Quality Gaps",
+            [
+                (
+                    "Deployment end-to-end gap",
+                    deployment_gap,
+                    gap_tone(deployment_gap),
+                    "Deployment gap = Ollama BF16 end-to-end match − Transformers "
+                    "end-to-end match. Negative values indicate degradation.",
+                ),
+                (
+                    "Quantization end-to-end gap",
+                    quantization_gap,
+                    gap_tone(quantization_gap),
+                    f"Quantization gap = Ollama {quantization_label} end-to-end "
+                    "match − Ollama BF16 end-to-end match. Negative values indicate "
+                    "degradation.",
+                ),
+            ],
+        ),
+        (
+            "GGUF Artifact Size",
+            [
+                (
+                    "BF16 GGUF size",
+                    format_bytes(bf16_bytes) if bf16_bytes is not None else None,
+                    None,
+                    size_note,
+                ),
+                (
+                    f"{quantization} GGUF size",
+                    (
+                        format_bytes(selected_bytes)
+                        if selected_bytes is not None
+                        else None
+                    ),
+                    None,
+                    size_note,
+                ),
+                (
+                    f"{quantization} GGUF size reduction",
+                    size_reduction,
+                    "good" if size_reduction is not None else None,
+                    f"{quantization_label} size reduction = (BF16 bytes − "
+                    f"{quantization_label} bytes) ÷ BF16 bytes.",
+                ),
+            ],
+        ),
+        (
+            "End-to-End Generation Throughput",
+            [
+                (
+                    "BF16 throughput",
+                    f"{bf16_throughput:.2f} tok/s" if bf16_throughput is not None else None,
+                    None,
+                    throughput_note,
+                ),
+                (
+                    f"{quantization} throughput",
+                    (
+                        f"{selected_throughput:.2f} tok/s"
+                        if selected_throughput is not None
+                        else None
+                    ),
+                    None,
+                    throughput_note,
+                ),
+                (
+                    f"{quantization} speed change",
+                    speed_change,
+                    speed_tone,
+                    f"{quantization_label} speed ratio = {quantization_label} tok/s "
+                    "÷ BF16 tok/s. Ratios above 1 are reported as that many times "
+                    "faster; ratios below 1 use the reciprocal and are reported as "
+                    "that many times slower.",
+                ),
+            ],
+        ),
+    ]
+    return render_comparison_metrics(rows)
+
+
 def render_raw_generation_tab(
     raw_generation_reports: dict[str, dict[str, Any] | None],
     *,
     title: str,
     summary_title: str,
     section_id: str,
+    group_field: str = "split",
+    comparison_metrics: str = "",
+    show_title: bool = True,
+    visible_report_groups: set[str] | None = None,
 ) -> str:
     raw_rows_by_split = validation_main_rows(raw_generation_reports)
     example_rows, example_details = validation_example_rows(
         raw_generation_reports,
         detail_title=f"{title} Example Details",
+        group_field=group_field,
     )
     summary_tables = []
     for split, family_rows in raw_rows_by_split.items():
         family_tables = []
-        for family, rows in family_rows.items():
+        family_order = {"cypher_qa": 0, "cypher_pddl": 1}
+        for family in sorted(
+            family_rows,
+            key=lambda name: (family_order.get(name, 2), str(name)),
+        ):
+            rows = family_rows[family]
             result_label = (
                 "grounding_match" if family == "cypher_pddl" else "cypher_solution_match"
             )
-            family_tables.append(
+            heading = (
+                '<div class="raw-family-heading">'
                 f"<h5>{escape(humanize_label(family))}</h5>"
+                f"{render_question_types_toggle(len(rows) - 1)}"
+                "</div>"
+            )
+            family_tables.append(
+                '<section class="raw-family-summary">'
+                '<div class="collapsible-summary-table">'
+                + heading
                 + render_table(
                     [
                         ("task_type", "task_type"),
@@ -2094,21 +2571,29 @@ def render_raw_generation_tab(
                     ],
                     rows,
                     table_class="equal-columns",
+                    collapsible_summary_rows=True,
                 )
+                + "</div></section>"
             )
+        group_attribute = ""
+        hidden_attribute = ""
+        if visible_report_groups is not None:
+            group_attribute = f' data-report-group-value="{escape(split)}"'
+            hidden_attribute = "" if split in visible_report_groups else " hidden"
         summary_tables.append(
-            f"<h4>{escape(humanize_label(split))}</h4>" + "".join(family_tables)
+            f'<section class="raw-summary-group"{group_attribute}{hidden_attribute}>'
+            f"<h4>{escape(humanize_label(split))}</h4>"
+            f'<div class="raw-family-grid">{"".join(family_tables)}</div>'
+            "</section>"
         )
-    return (
-        f"<h2>{escape(title)}</h2>"
-        + f"<h3>{escape(summary_title)}</h3>"
-        + ("".join(summary_tables) if summary_tables else '<p class="empty">No records found.</p>')
-        + f"<h3>{escape(title)} Examples</h3>"
+    examples = (
+        '<section class="raw-examples">'
+        f"<h3>{escape(title)} Examples</h3>"
         + render_interactive_record_table(
             section_id=f"{section_id}-examples",
             headers=[
                 ("uid", "uid"),
-                ("split", "split"),
+                (group_field, group_field),
                 ("task_family", "task_family"),
                 ("task_type", "task_type"),
                 ("question", "question"),
@@ -2120,8 +2605,30 @@ def render_raw_generation_tab(
             ],
             rows=example_rows,
             details=example_details,
+            visibility_field=(group_field if visible_report_groups is not None else None),
+            visible_values=visible_report_groups,
         )
-        + render_json_details(f"{title} raw generation reports", raw_generation_reports)
+        + "</section>"
+    )
+    if visible_report_groups is None:
+        raw_report_details = render_json_details(
+            f"{title} raw generation reports", raw_generation_reports
+        )
+    else:
+        raw_report_details = "".join(
+            f'<div class="raw-report-json" data-report-group-value="{escape(group)}"'
+            f'{"" if group in visible_report_groups else " hidden"}>'
+            f'{render_json_details(f"{title} {group} raw generation report", report)}'
+            "</div>"
+            for group, report in raw_generation_reports.items()
+        )
+    return (
+        (f"<h2>{escape(title)}</h2>" if show_title else "")
+        + comparison_metrics
+        + f"<h3>{escape(summary_title)}</h3>"
+        + ("".join(summary_tables) if summary_tables else '<p class="empty">No records found.</p>')
+        + examples
+        + raw_report_details
     )
 
 
@@ -2131,6 +2638,9 @@ def render_validation_tab(data: dict[str, Any]) -> str:
         title="Validation",
         summary_title="Student Raw Generation Summary",
         section_id="validation",
+        comparison_metrics=validation_comparison_metrics(
+            data["validation"]["raw_generation_reports"]
+        ),
     )
 
 
@@ -2140,6 +2650,62 @@ def render_baseline_tab(data: dict[str, Any]) -> str:
         title="Baseline",
         summary_title="Base Student Raw Generation Summary",
         section_id="baseline",
+        comparison_metrics=baseline_comparison_metrics(
+            data["validation"]["raw_generation_reports"],
+            data["baseline"]["raw_generation_reports"],
+        ),
+    )
+
+
+def render_deploy_quantization_tab(data: dict[str, Any]) -> str:
+    reports = data["deploy_quantization"]["raw_generation_reports"]
+    bf16_key = next(
+        (label for label in reports if label.split(" (", 1)[0].upper() == "BF16"),
+        None,
+    )
+    selectable = [
+        label
+        for label in reports
+        if label.split(" (", 1)[0].upper() != "BF16"
+    ]
+    selected = selectable[0] if selectable else None
+    visible_groups = {value for value in (bf16_key, selected) if value is not None}
+
+    selector = ""
+    comparison_metrics = ""
+    if selectable:
+        options = "".join(
+            f'<option value="{escape(label)}">{escape(humanize_label(label))}</option>'
+            for label in selectable
+        )
+        selector = (
+            '<label class="quantization-selector-label" '
+            'for="deploy-quantization-selector">Quantization'
+            '<select id="deploy-quantization-selector" class="quantization-selector" '
+            f'data-reference-value="{escape(bf16_key or "")}">{options}</select>'
+            "</label>"
+        )
+        comparison_metrics = "".join(
+            f'<div class="quantization-metrics" data-report-metrics-value="{escape(label)}"'
+            f'{"" if label == selected else " hidden"}>'
+            f"{deploy_comparison_metrics(data, label)}</div>"
+            for label in selectable
+        )
+
+    title = (
+        '<div class="raw-tab-title">'
+        "<h2>Deploy / Quantization</h2>"
+        f"{selector}</div>"
+    )
+    return title + render_raw_generation_tab(
+        reports,
+        title="Deploy / Quantization",
+        summary_title="Challenge Raw Generation Summary",
+        section_id="deploy-quantization",
+        group_field="quantization",
+        comparison_metrics=comparison_metrics,
+        show_title=False,
+        visible_report_groups=visible_groups,
     )
 
 
@@ -2179,8 +2745,19 @@ def render_workflow_report(data: dict[str, Any]) -> str:
         ("train", "Train", render_train_tab(data)),
         ("validation", "Validation", render_validation_tab(data)),
         ("baseline", "Baseline", render_baseline_tab(data)),
-        ("artifacts", "Artifacts", render_artifacts_tab(data)),
     ]
+    quantization_reports = data.get("deploy_quantization", {}).get(
+        "raw_generation_reports"
+    )
+    if quantization_reports:
+        tabs.append(
+            (
+                "deploy-quantization",
+                "Deploy / Quantization",
+                render_deploy_quantization_tab(data),
+            )
+        )
+    tabs.append(("artifacts", "Artifacts", render_artifacts_tab(data)))
     buttons = "".join(
         f'<button class="tab-button{" active" if index == 0 else ""}" '
         f'data-tab="{escape(tab_id)}">{escape(label)}</button>'
@@ -2236,8 +2813,33 @@ def render_workflow_report(data: dict[str, Any]) -> str:
     h1, h2, h3 {{ margin: 0 0 12px; }}
     h1 {{ font-size: 24px; }}
     h2 {{ font-size: 20px; }}
-    h3 {{ font-size: 15px; margin-top: 22px; }}
+    h3 {{ font-size: 15px; }}
     h4 {{ font-size: 14px; margin: 18px 0 8px; }}
+    .raw-tab-title {{
+      align-items: center;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }}
+    .raw-tab-title h2 {{ margin: 0; }}
+    .quantization-selector-label {{
+      align-items: center;
+      color: var(--muted);
+      display: flex;
+      font-size: 12px;
+      font-weight: 650;
+      gap: 8px;
+    }}
+    .quantization-selector {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text);
+      font: inherit;
+      min-width: 130px;
+      padding: 6px 30px 6px 9px;
+    }}
     .subtitle {{ color: var(--muted); }}
     .tabs {{
       display: flex;
@@ -2275,8 +2877,62 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       border: 1px solid var(--line);
       padding: 12px;
     }}
+    .metric-good {{ border-top: 3px solid var(--good); }}
+    .metric-bad {{ border-top: 3px solid var(--bad); }}
+    .metric-neutral {{ border-top: 3px solid var(--muted); }}
     .metric-label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; }}
     .metric-value {{ font-size: 20px; font-weight: 650; margin-top: 4px; }}
+    .comparison-metrics {{ margin: 14px 0 24px; }}
+    .comparison-metric-row {{ margin-top: 14px; }}
+    .comparison-metric-row h4 {{ color: var(--muted); margin: 0 0 7px; }}
+    .comparison-metric-grid {{
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      margin: 0;
+    }}
+    .comparison-metric {{ position: relative; }}
+    .comparison-metric .metric-label {{
+      align-items: center;
+      display: flex;
+      gap: 6px;
+      justify-content: space-between;
+    }}
+    .metric-help-container {{ display: inline-flex; position: relative; }}
+    .metric-help {{
+      align-items: center;
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: inherit;
+      cursor: help;
+      display: inline-flex;
+      flex: 0 0 17px;
+      font: inherit;
+      font-size: 11px;
+      height: 17px;
+      justify-content: center;
+      padding: 0;
+      text-transform: none;
+      width: 17px;
+    }}
+    .metric-tooltip {{
+      background: #17202b;
+      border-radius: 5px;
+      color: #fff;
+      display: none;
+      font-size: 12px;
+      font-weight: 400;
+      right: -1px;
+      line-height: 1.4;
+      max-width: 420px;
+      min-width: min(300px, calc(100vw - 80px));
+      padding: 9px 10px;
+      position: absolute;
+      text-transform: none;
+      top: calc(100% + 6px);
+      z-index: 30;
+    }}
+    .metric-help:hover + .metric-tooltip,
+    .metric-help:focus + .metric-tooltip {{ display: block; }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -2288,7 +2944,37 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       border: 1px solid var(--line);
       padding: 12px;
     }}
-    .counter-panel h3 {{ margin-top: 0; }}
+    .raw-summary-group {{ margin: 18px 0 24px; }}
+    .raw-family-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }}
+    .raw-family-summary {{ min-width: 0; }}
+    .raw-family-heading {{
+      align-items: center;
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      min-height: 29px;
+    }}
+    .raw-family-heading h5 {{ color: var(--muted); margin: 0; }}
+    .raw-family-summary .table-wrap {{ margin-bottom: 0; }}
+    .question-types-toggle {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      padding: 5px 9px;
+    }}
+    .question-types-toggle:hover {{ background: var(--accent-soft); }}
+    .raw-examples {{ margin-top: 26px; }}
     .counter-empty {{
       color: var(--muted);
       background: #f5f7fa;
@@ -2393,7 +3079,6 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       max-height: calc(100vh - 148px);
       overflow: auto;
     }}
-    .detail h3 {{ margin-top: 0; }}
     .detail h4 {{ margin: 16px 0 8px; font-size: 13px; }}
     .detail h5 {{ margin: 10px 0 6px; font-size: 12px; color: var(--muted); }}
     .kv {{
@@ -2466,6 +3151,8 @@ def render_workflow_report(data: dict[str, Any]) -> str:
     @media (max-width: 980px) {{
       .record-grid {{ grid-template-columns: 1fr; }}
       .detail {{ position: static; max-height: none; }}
+      .raw-family-grid {{ grid-template-columns: 1fr; }}
+      .raw-tab-title {{ align-items: flex-start; flex-direction: column; }}
     }}
   </style>
 </head>
@@ -2518,7 +3205,7 @@ def render_workflow_report(data: dict[str, Any]) -> str:
     }}
     function firstVisibleRecordRow(table) {{
       return Array.from(table.querySelectorAll(".record-row[data-detail-id]"))
-        .find((row) => row.style.display !== "none");
+        .find((row) => !row.hidden && row.style.display !== "none");
     }}
     function applyColumnFilters(table) {{
       const filters = Array.from(table.querySelectorAll(".column-filter"));
@@ -2535,9 +3222,35 @@ def render_workflow_report(data: dict[str, Any]) -> str:
         row.style.display = visible ? "" : "none";
       }});
       const active = table.querySelector(".record-row.active");
-      if (active && active.style.display !== "none") return;
+      if (active && !active.hidden && active.style.display !== "none") return;
       selectRecordRow(firstVisibleRecordRow(table));
     }}
+    function applyReportGroupSelection(selector) {{
+      const panel = selector.closest(".tab-panel");
+      if (!panel) return;
+      const visible = new Set([selector.dataset.referenceValue, selector.value]);
+      panel.querySelectorAll(
+        ".raw-summary-group[data-report-group-value], " +
+        ".raw-report-json[data-report-group-value]"
+      )
+        .forEach((group) => {{
+          group.hidden = !visible.has(group.dataset.reportGroupValue);
+        }});
+      panel.querySelectorAll(".quantization-metrics[data-report-metrics-value]")
+        .forEach((metrics) => {{
+          metrics.hidden = metrics.dataset.reportMetricsValue !== selector.value;
+        }});
+      const tables = new Set();
+      panel.querySelectorAll(".record-row[data-report-group-value]").forEach((row) => {{
+        row.hidden = !visible.has(row.dataset.reportGroupValue);
+        const table = row.closest("table");
+        if (table) tables.add(table);
+      }});
+      tables.forEach((table) => applyColumnFilters(table));
+    }}
+    document.querySelectorAll(".quantization-selector").forEach((selector) => {{
+      selector.addEventListener("change", () => applyReportGroupSelection(selector));
+    }});
     document.querySelectorAll("table.sortable th[data-sort-index]").forEach((header) => {{
       header.addEventListener("click", () => {{
         const table = header.closest("table");
@@ -2567,6 +3280,19 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       input.addEventListener("input", () => {{
         const table = input.closest("table");
         if (table) applyColumnFilters(table);
+      }});
+    }});
+    document.querySelectorAll(".question-types-toggle").forEach((button) => {{
+      button.addEventListener("click", () => {{
+        const tableWrap = button.closest(".collapsible-summary-table");
+        if (!tableWrap) return;
+        const expanded = button.getAttribute("aria-expanded") !== "true";
+        tableWrap.querySelectorAll(".question-type-row").forEach((row) => {{
+          row.hidden = !expanded;
+        }});
+        button.setAttribute("aria-expanded", String(expanded));
+        const action = expanded ? "Hide" : "Show";
+        button.textContent = `${{action}} question types (${{button.dataset.count}})`;
       }});
     }});
     document.querySelectorAll(".record-row[data-detail-id]").forEach((row) => {{

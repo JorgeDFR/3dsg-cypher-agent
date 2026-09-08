@@ -15,6 +15,7 @@ from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     neo4j_uri_candidates,
     schema_policy,
     static_checks,
+    static_checks_with_explain,
     suppress_neo4j_notification_logs,
 )
 
@@ -103,6 +104,44 @@ def test_static_checks_rejects_unqualified_distance_but_allows_point_distance():
         "MATCH (o:Object) RETURN distance(o.center, o.center)",
         allow_writes=False,
     )
+
+
+def test_static_checks_with_explain_rejects_neo4j_parser_error():
+    class Validator:
+        def explain(self, cypher):
+            assert "nodeSymbol <>" in cypher
+            return {
+                "syntax_error": True,
+                "executable": False,
+                "error": "Neo.ClientError.Statement.SyntaxError: Invalid input '<>'",
+            }
+
+    issues, explain_validation = static_checks_with_explain(
+        'MATCH (o:Object {nodeSymbol <> "O1"}) RETURN o',
+        allow_writes=False,
+        validator=Validator(),
+    )
+
+    assert explain_validation["syntax_error"] is True
+    assert issues == [
+        "Neo4j EXPLAIN rejected query: "
+        "Neo.ClientError.Statement.SyntaxError: Invalid input '<>'"
+    ]
+
+
+def test_static_checks_with_explain_stops_before_neo4j_for_policy_errors():
+    class Validator:
+        def explain(self, _cypher):
+            raise AssertionError("policy-invalid Cypher must not reach Neo4j")
+
+    issues, explain_validation = static_checks_with_explain(
+        "MATCH (o:Object) DELETE o",
+        allow_writes=False,
+        validator=Validator(),
+    )
+
+    assert "write keyword not allowed: DELETE" in issues
+    assert explain_validation is None
 
 
 def test_neo4j_connection_settings_default_to_heracles_docker_then_host():

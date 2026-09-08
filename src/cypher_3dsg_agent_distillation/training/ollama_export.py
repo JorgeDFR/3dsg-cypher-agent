@@ -168,7 +168,7 @@ def normalized_modelfile_quantization(value: str) -> str:
     ):
         raise ValueError(
             "--modelfile-gguf expects a quantization such as `bf16`, `q4`, "
-            "or `Q5_K_M`, not a file path."
+            "or `Q8_0`, not a file path."
         )
     return GGUF_QUANTIZATION_ALIASES.get(normalized, normalized.upper())
 
@@ -817,8 +817,8 @@ def main() -> None:
     parser.add_argument(
         "--modelfile-gguf",
         help=(
-            "GGUF quantization to write in the Modelfile, e.g. bf16, q4, q5, "
-            "Q4_K_M, or Q5_K_M. The artifact path is resolved automatically. "
+            "GGUF quantization to write in the Modelfile, e.g. bf16, q4, q8, "
+            "Q4_K_M, or Q8_0. The artifact path is resolved automatically. "
             "Defaults to the first configured quantization."
         ),
     )

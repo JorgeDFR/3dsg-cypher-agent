@@ -1,20 +1,29 @@
 domain_description: |
   <PDDL Domain>
-    The PDDL domain consists of predicates parameterized by symbols from a 3D scene graph.
+    The PDDL domain consists of the following predicates described below. These predicates get parameterized by symbols from a 3D scene graph.
 
-    (visited-object ?O): the robot must visit Object ?O.
-    (at-object ?O): the robot must end at Object ?O.
-    (holding ?O): the robot must hold Object ?O.
-    (safe ?O): the robot must inspect Object ?O.
-    (visited-region ?R): the robot must visit Region/Room ?R.
-    (in-region ?R): the robot must end in Region/Room ?R.
-    (visited-place ?P): the robot must visit Place or MeshPlace ?P.
-    (at-place ?P): the robot must end at Place or MeshPlace ?P.
-    (object-in-place ?O ?P): Object ?O must be located inside Place or MeshPlace ?P.
+    (visited-object ?O): This predicate indicates that a robot must visit Object '?O' at some point, where '?O' is a placeholder for an Object ID.
+    (at-object ?O): This predicate indicates that a robot must be at Object '?O', where '?O' is a placeholder for an Object ID.
+    (visited-region ?R): This predicate indicates that a robot must visit Room '?R' at some point, where '?R' is a placeholder for a Room ID.
+    (in-region ?R): This predicate indicates that a robot must be at Room '?R', where '?R' is a placeholder for a Room ID.
+    (visited-place ?P): This predicate indicates that a robot must visit Place '?P' at some point, where '?P' is a placeholder for a Place ID.
+    (at-place ?P): This predicate indicates that a robot must be at Place '?P', where '?P' is a placeholder for a Place ID.
+    The 'at' and 'visited' predicates are useful for specifying locations for robots to go.
+    When an instruction indicates an order, you should use (at-place ?P), (at-object ?O), or (in-region ?R) to specify the final goal and (visited-place ?P), (visited-object ?O), or (visited-region ?R) to specify the intermediate goals.
 
-    Use visited-* when the entity only needs to occur somewhere along the route and the robot may continue afterward. Use at-object, at-place, or in-region when the instruction constrains the robot's final location.
+    (safe ?O): This predicate indicates that a robot must inspect Object '?O', where '?O' is a placeholder for an Object ID.
 
-    Compose predicates with 'and' when all listed conditions must hold. Use 'not' for an explicitly prohibited final-state fact. When an instruction is ambiguous about which object, place, mesh place, or region/room is intended, use 'or' so the planner can choose among valid alternatives.
+    (holding ?O): This predicate indicates the a robot must be holding an Object '?O', where '?O' is a placeholder for an Object ID.
+    The 'holding' predicate is useful for specifying that a robot should pick up an object.
+
+    (object-in-place ?O ?P): This predicate indicates that an Object '?O' must be located inside a Place '?P', where '?O' is a placeholder for an Object ID and '?P' is a placeholder for a Place ID.
+    The 'object-in-place' predicate is useful for specifying that a robot should place an object somewhere. If the robot should move an object from one place to another, you should use the 'object-in-place' predicate for the goal instead of the 'holding' predicate.
+
+    You can compose PDDL goal predicates into more complex goals using the following operators:
+      - 'not': This operator negates the truth value of the predicate. For example '(not (visited-region R1))' means Room 'R1' should not be visited.
+      - 'and': This operator is used to indicate that multiple predicates must be true. For example '(and (visited-region R1) (visited-object O1))' means both Room 'R1' and Object 'O1' must be visited.
+      - 'or': This operator is used to indicate that either one predicate or another predicate must be true. For example '(or (visited-region R1) (visited-object O1))' means that either Room 'R1' or Object 'O1' must be visited.
+    If an instruction is not specific about which object, place, mesh place, or room that it is referring to, you MUST use the 'or' operator to construct a PDDL goal. This lets the planner determine which goal to achieve.
   </PDDL Domain>
 
 predicates:

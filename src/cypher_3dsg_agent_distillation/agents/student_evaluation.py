@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-import gc
 import json
-import math
 import re
 from collections import Counter
 from contextlib import nullcontext
@@ -13,11 +11,27 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from cypher_3dsg_agent_distillation.core.cli_output import (
-    phase_progress,
-    print_breakdown,
-    print_summary,
+from cypher_3dsg_agent_distillation.agents.raw_generation_runtimes import (
+    DEFAULT_OLLAMA_CONTEXT_LENGTH,
+    RAW_GENERATION_RUNTIMES,
+    TRANSFORMERS_RUNTIME,
+    GenerationResult,
+    OllamaRawGenerationRuntime,
+    RawGenerationRuntime,
+    TransformersRawGenerationRuntime,
+    generation_artifacts_present,
+    jsonable,
 )
+from cypher_3dsg_agent_distillation.agents.student_eval_loss import (
+    combine_eval_loss_summaries,
+    evaluate_eval_loss,
+    evaluate_eval_loss_splits,
+)
+from cypher_3dsg_agent_distillation.agents.student_model import (
+    default_adapter_dir,
+    tokenizer_source,
+)
+from cypher_3dsg_agent_distillation.core.cli_output import print_breakdown, print_summary
 from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config, load_yaml
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
@@ -28,7 +42,6 @@ RAW_GENERATION_MODE = "raw-generation"
 SUPPORTED_SPLITS = ("train", "eval", "test", "challenge")
 ALL_SPLITS = "all"
 SPLIT_CHOICES = (*SUPPORTED_SPLITS, ALL_SPLITS)
-DEFAULT_ENTROPY_CHUNK_SIZE = 32
 FINAL_ANSWER_CHECK = "final_answer_from_trace"
 TOOL_CALL_CHECK = "tool_call_from_prompt"
 END_TO_END_CHECK = "end_to_end_final_answer"
@@ -40,16 +53,6 @@ E2E_REPAIR_MESSAGE = (
     "The query was not executed successfully. Return one corrected "
     "run_cypher_query tool call."
 )
-GENERATION_CONFIG_REPORT_KEYS = (
-    "max_length",
-    "max_new_tokens",
-    "do_sample",
-    "temperature",
-    "top_p",
-    "top_k",
-    "eos_token_id",
-    "pad_token_id",
-)
 
 
 @dataclass(frozen=True)
@@ -59,56 +62,6 @@ class ToolCallParseResult:
     error: str | None = None
 
 
-@dataclass(frozen=True)
-class GenerationResult:
-    text: str
-    raw_text: str
-    prompt: str
-    prompt_tokens: int
-    generated_tokens: int
-    max_new_tokens: int | None
-    token_budget: int | None
-
-
-def require_eval_loss_dependencies():
-    try:
-        import torch
-        from peft import PeftModel
-        from torch.utils.data import DataLoader
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoTokenizer,
-            DataCollatorForLanguageModeling,
-        )
-    except ImportError as exc:
-        msg = (
-            "Install training dependencies with `pip install -e '.[train]'` "
-            "before running student model evaluation."
-        )
-        raise RuntimeError(msg) from exc
-    return torch, PeftModel, DataLoader, AutoModelForCausalLM, AutoTokenizer, (
-        DataCollatorForLanguageModeling
-    )
-
-
-def default_adapter_dir(student_config: dict[str, Any]) -> str:
-    return str(student_config["training"]["output_dir"])
-
-
-def tokenizer_source(
-    *,
-    adapter_dir: str,
-    explicit_tokenizer: str | None,
-    model_config: dict[str, Any],
-    use_adapter: bool = True,
-) -> str:
-    if explicit_tokenizer:
-        return explicit_tokenizer
-    if use_adapter and Path(adapter_dir).exists():
-        return adapter_dir
-    return str(model_config.get("tokenizer") or model_config["base_model"])
-
-
 def report_output_path(
     *,
     data_config: dict[str, Any],
@@ -116,378 +69,23 @@ def report_output_path(
     mode: str,
     output: str | None,
     baseline: bool = False,
+    runtime: str = TRANSFORMERS_RUNTIME,
+    runtime_model: str | None = None,
 ) -> Path:
     if output:
         return Path(output)
     model_name = "baseline" if baseline else "student"
+    runtime_suffix = ""
+    if runtime != TRANSFORMERS_RUNTIME:
+        safe_model = re.sub(r"[^a-zA-Z0-9_.-]+", "-", runtime_model or "model")
+        runtime_suffix = f".{runtime}.{safe_model}"
     if split == ALL_SPLITS:
         return Path(data_config["test_report_path"]).with_name(
-            f"{model_name}.{mode}.report.json"
+            f"{model_name}{runtime_suffix}.{mode}.report.json"
         )
     return Path(data_config["test_report_path"]).with_name(
-        f"{split}.{model_name}.{mode}.report.json"
+        f"{split}.{model_name}{runtime_suffix}.{mode}.report.json"
     )
-
-
-def model_input_device(model):
-    try:
-        return next(model.parameters()).device
-    except StopIteration:
-        return "cpu"
-
-
-def disable_cache_for_scoring(model) -> None:
-    if hasattr(model, "config"):
-        model.config.use_cache = False
-    if getattr(model, "generation_config", None) is not None:
-        model.generation_config.use_cache = False
-
-
-def shifted_token_metrics(
-    outputs,
-    labels,
-    *,
-    entropy_chunk_size: int = DEFAULT_ENTROPY_CHUNK_SIZE,
-) -> dict[str, float | int]:
-    shift_logits = outputs.logits[:, :-1, :]
-    shift_labels = labels[:, 1:]
-    active_mask = shift_labels != -100
-    token_count = int(active_mask.sum().item())
-    if token_count == 0:
-        return {
-            "tokens": 0,
-            "nll_sum": 0.0,
-            "entropy_sum": 0.0,
-            "correct_tokens": 0,
-        }
-
-    if entropy_chunk_size <= 0:
-        entropy_chunk_size = DEFAULT_ENTROPY_CHUNK_SIZE
-
-    flat_logits = shift_logits.reshape(-1, shift_logits.shape[-1])
-    flat_labels = shift_labels.reshape(-1)
-    active_indices = active_mask.reshape(-1).nonzero(as_tuple=False).flatten()
-    nll_sum = 0.0
-    entropy_sum = 0.0
-    correct_tokens = 0
-    for start in range(0, token_count, entropy_chunk_size):
-        indices = active_indices[start : start + entropy_chunk_size]
-        logits = flat_logits.index_select(0, indices)
-        targets = flat_labels.index_select(0, indices)
-        correct_tokens += int((logits.argmax(dim=-1) == targets).sum().item())
-
-        float_logits = logits.float()
-        nll_sum += cross_entropy_sum(float_logits, targets)
-        entropy_sum += float(torch_entropy_from_logits(float_logits).sum().item())
-        del float_logits, logits, targets, indices
-
-    return {
-        "tokens": token_count,
-        "nll_sum": nll_sum,
-        "entropy_sum": entropy_sum,
-        "correct_tokens": correct_tokens,
-    }
-
-
-def cross_entropy_sum(logits, targets) -> float:
-    import torch.nn.functional as torch_functional
-
-    return torch_functional.cross_entropy(logits, targets, reduction="sum").item()
-
-
-def torch_entropy_from_logits(logits):
-    probabilities = logits.softmax(dim=-1)
-    log_partition = logits.logsumexp(dim=-1)
-    expected_logits = (probabilities * logits).sum(dim=-1)
-    return log_partition - expected_logits
-
-
-def finite_perplexity(eval_loss: float) -> float | None:
-    if eval_loss >= 700:
-        return None
-    value = math.exp(eval_loss)
-    return value if math.isfinite(value) else None
-
-
-def load_student_model_and_tokenizer(
-    *,
-    student_config: dict[str, Any],
-    adapter_dir: str,
-    explicit_tokenizer: str | None,
-    disable_cache: bool = True,
-    show_progress: bool = True,
-    use_adapter: bool = True,
-):
-    configure_model_library_output()
-    (
-        _torch,
-        PeftModel,
-        _DataLoader,
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        _DataCollatorForLanguageModeling,
-    ) = require_eval_loss_dependencies()
-    from cypher_3dsg_agent_distillation.training.train import (
-        align_model_token_ids,
-        dtype_from_name,
-        quantization_config,
-    )
-
-    model_config = student_config["model"]
-    phase_count = 3 if use_adapter else 2
-    initial_description = (
-        "Loading student tokenizer" if use_adapter else "Loading baseline tokenizer"
-    )
-    with phase_progress(initial_description, phase_count, enabled=show_progress) as (
-        progress,
-        task_id,
-    ):
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_source(
-                adapter_dir=adapter_dir,
-                explicit_tokenizer=explicit_tokenizer,
-                model_config=model_config,
-                use_adapter=use_adapter,
-            ),
-            trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-        )
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "right"
-        if progress is not None:
-            progress.update(task_id, advance=1, description="Loading base model weights")
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_config["base_model"],
-            dtype=dtype_from_name(model_config.get("dtype", "auto")),
-            quantization_config=quantization_config(model_config),
-            device_map="auto",
-            trust_remote_code=bool(model_config.get("trust_remote_code", False)),
-        )
-        align_model_token_ids(model, tokenizer)
-        if disable_cache:
-            disable_cache_for_scoring(model)
-        if use_adapter:
-            if progress is not None:
-                progress.update(task_id, advance=1, description="Loading LoRA adapter")
-            model = PeftModel.from_pretrained(model, adapter_dir)
-            if disable_cache:
-                disable_cache_for_scoring(model)
-        model.eval()
-        if progress is not None:
-            progress.update(
-                task_id,
-                advance=1,
-                description=(
-                    "Student model loaded" if use_adapter else "Baseline model loaded"
-                ),
-            )
-    return model, tokenizer
-
-
-def evaluate_eval_loss(
-    *,
-    data_config: dict[str, Any],
-    student_config: dict[str, Any],
-    split: str,
-    adapter_dir: str,
-    explicit_tokenizer: str | None,
-    batch_size: int,
-    max_length: int,
-    loss_mode: str,
-    progress=None,
-    progress_task_id=None,
-    show_progress: bool = False,
-) -> dict[str, Any]:
-    model, tokenizer = load_student_model_and_tokenizer(
-        student_config=student_config,
-        adapter_dir=adapter_dir,
-        explicit_tokenizer=explicit_tokenizer,
-        show_progress=show_progress,
-    )
-    return evaluate_eval_loss_with_loaded_model(
-        data_config=data_config,
-        split=split,
-        model=model,
-        tokenizer=tokenizer,
-        batch_size=batch_size,
-        max_length=max_length,
-        loss_mode=loss_mode,
-        progress=progress,
-        progress_task_id=progress_task_id,
-        show_progress=show_progress,
-    )
-
-
-def evaluate_eval_loss_with_loaded_model(
-    *,
-    data_config: dict[str, Any],
-    split: str,
-    model,
-    tokenizer,
-    batch_size: int,
-    max_length: int,
-    loss_mode: str,
-    progress=None,
-    progress_task_id=None,
-    show_progress: bool = False,
-) -> dict[str, Any]:
-    (
-        torch,
-        _PeftModel,
-        DataLoader,
-        _AutoModelForCausalLM,
-        _AutoTokenizer,
-        _DataCollatorForLanguageModeling,
-    ) = require_eval_loss_dependencies()
-    from cypher_3dsg_agent_distillation.training.train import (
-        CausalLmDataCollator,
-        build_training_dataset,
-    )
-
-    dataset = build_training_dataset(
-        data_config["splits"][split],
-        tokenizer,
-        loss_mode=loss_mode,
-        max_length=max_length,
-    )
-    collator = CausalLmDataCollator(tokenizer)
-    loader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
-
-    total_nll = 0.0
-    total_entropy = 0.0
-    total_correct_tokens = 0
-    total_tokens = 0
-    input_device = model_input_device(model)
-    progress_context = nullcontext(progress)
-    if progress is None and show_progress:
-        progress_context = eval_loss_progress_context(True)
-
-    with progress_context as active_progress:
-        active_task_id = progress_task_id
-        if active_progress is not None and active_task_id is None:
-            active_task_id = active_progress.add_task(
-                "eval-loss",
-                total=1,
-                visible=False,
-            )
-        if active_progress is not None and active_task_id is not None:
-            active_progress.update(
-                active_task_id,
-                total=len(loader),
-                completed=0,
-                visible=True,
-                description=f"Evaluating loss · {split_display_name(split)}",
-            )
-
-        with torch.inference_mode():
-            for batch in loader:
-                batch = {key: value.to(input_device) for key, value in batch.items()}
-                # Transformers casts the complete logits tensor to float32 when labels
-                # are supplied. Score supervised tokens in bounded chunks instead.
-                labels = batch.pop("labels")
-                outputs = model(**batch, use_cache=False)
-                metrics = shifted_token_metrics(outputs, labels)
-                token_count = metrics["tokens"]
-                total_nll += metrics["nll_sum"]
-                total_entropy += metrics["entropy_sum"]
-                total_correct_tokens += metrics["correct_tokens"]
-                total_tokens += token_count
-                del outputs
-                del labels
-                del batch
-                if active_progress is not None and active_task_id is not None:
-                    active_progress.update(active_task_id, advance=1)
-
-    if total_tokens == 0:
-        raise RuntimeError(f"No loss-bearing tokens found for split `{split}`.")
-
-    eval_loss = total_nll / total_tokens
-    return {
-        "examples": len(dataset),
-        "tokens": total_tokens,
-        "eval_loss": eval_loss,
-        "perplexity": finite_perplexity(eval_loss),
-        "eval_entropy": total_entropy / total_tokens,
-        "eval_mean_token_accuracy": total_correct_tokens / total_tokens,
-    }
-
-
-def evaluate_eval_loss_splits(
-    *,
-    data_config: dict[str, Any],
-    student_config: dict[str, Any],
-    splits: tuple[str, ...],
-    adapter_dir: str,
-    explicit_tokenizer: str | None,
-    batch_size: int,
-    max_length: int,
-    loss_mode: str,
-    progress=None,
-    progress_task_id=None,
-    show_progress: bool = False,
-) -> dict[str, dict[str, Any]]:
-    model, tokenizer = load_student_model_and_tokenizer(
-        student_config=student_config,
-        adapter_dir=adapter_dir,
-        explicit_tokenizer=explicit_tokenizer,
-        show_progress=show_progress,
-    )
-    return {
-        split: evaluate_eval_loss_with_loaded_model(
-            data_config=data_config,
-            split=split,
-            model=model,
-            tokenizer=tokenizer,
-            batch_size=batch_size,
-            max_length=max_length,
-            loss_mode=loss_mode,
-            progress=progress,
-            progress_task_id=progress_task_id,
-            show_progress=show_progress,
-        )
-        for split in splits
-    }
-
-
-def combine_eval_loss_summaries(
-    split_summaries: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    total_examples = sum(int(summary["examples"]) for summary in split_summaries.values())
-    total_tokens = sum(int(summary["tokens"]) for summary in split_summaries.values())
-    if total_tokens == 0:
-        raise RuntimeError("No loss-bearing tokens found across evaluated splits.")
-
-    eval_loss = (
-        sum(
-            float(summary["eval_loss"]) * int(summary["tokens"])
-            for summary in split_summaries.values()
-        )
-        / total_tokens
-    )
-    eval_entropy = (
-        sum(
-            float(summary["eval_entropy"]) * int(summary["tokens"])
-            for summary in split_summaries.values()
-        )
-        / total_tokens
-    )
-    eval_mean_token_accuracy = (
-        sum(
-            float(summary["eval_mean_token_accuracy"]) * int(summary["tokens"])
-            for summary in split_summaries.values()
-        )
-        / total_tokens
-    )
-    return {
-        "examples": total_examples,
-        "tokens": total_tokens,
-        "eval_loss": eval_loss,
-        "perplexity": finite_perplexity(eval_loss),
-        "eval_entropy": eval_entropy,
-        "eval_mean_token_accuracy": eval_mean_token_accuracy,
-        "splits": split_summaries,
-    }
 
 
 QWEN_TOOL_CALL_RE = re.compile(
@@ -512,40 +110,6 @@ CODE_BLOCK_RE = re.compile(
     r"```(?:json|python)?\s*(?P<body>.*?)```",
     flags=re.IGNORECASE | re.DOTALL,
 )
-THINK_END_RE = re.compile(r"</think>", flags=re.IGNORECASE)
-LEADING_ASSISTANT_TURN_RE = re.compile(
-    r"^\s*<\|im_start\|>assistant\s*",
-    flags=re.IGNORECASE,
-)
-CHAT_TERMINATOR_RE = re.compile(
-    r"<\|im_end\|>|<\|endoftext\|>",
-    flags=re.IGNORECASE,
-)
-GENERATION_ARTIFACT_RE = re.compile(
-    r"</?think>|<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>",
-    flags=re.IGNORECASE,
-)
-
-
-def jsonable(value: Any) -> Any:
-    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-
-
-def clean_generated_text(text: str) -> str:
-    cleaned = LEADING_ASSISTANT_TURN_RE.sub("", text).strip()
-    think_matches = list(THINK_END_RE.finditer(cleaned))
-    if think_matches:
-        cleaned = cleaned[think_matches[-1].end() :].lstrip()
-    terminator = CHAT_TERMINATOR_RE.search(cleaned)
-    if terminator:
-        cleaned = cleaned[: terminator.start()]
-    return cleaned.strip()
-
-
-def generation_artifacts_present(text: str) -> bool:
-    return bool(GENERATION_ARTIFACT_RE.search(text))
-
-
 def record_expected_solution(record: dict[str, Any]) -> Any:
     for key in ("expected_solution", "real_solution", "solution"):
         if key in record and record[key] is not None:
@@ -616,94 +180,6 @@ def final_answer_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]
     return messages
 
 
-def render_messages_for_generation(
-    tokenizer,
-    messages: list[dict[str, Any]],
-    *,
-    enable_thinking: bool | None = False,
-    tools: list[dict[str, Any]] | None = None,
-) -> str:
-    from cypher_3dsg_agent_distillation.training.train import (
-        message_to_plain_text,
-        normalize_chat_messages,
-    )
-
-    messages = normalize_chat_messages(messages)
-    if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-        kwargs = {
-            "tokenize": False,
-            "add_generation_prompt": True,
-        }
-        if tools is not None:
-            kwargs["tools"] = tools
-        if enable_thinking is not None:
-            kwargs["enable_thinking"] = enable_thinking
-        try:
-            return tokenizer.apply_chat_template(messages, **kwargs)
-        except TypeError:
-            if "enable_thinking" not in kwargs:
-                raise
-            kwargs.pop("enable_thinking")
-            return tokenizer.apply_chat_template(messages, **kwargs)
-
-    prompt = "\n\n".join(message_to_plain_text(message) for message in messages)
-    return f"{prompt}\n\nassistant:" if prompt else "assistant:"
-
-
-def generation_length_kwargs(max_new_tokens: int | None) -> dict[str, Any]:
-    if max_new_tokens is None:
-        return {}
-    if max_new_tokens <= 0:
-        raise ValueError("max_new_tokens must be greater than zero when provided.")
-    return {"max_new_tokens": max_new_tokens}
-
-
-def generation_config_report(model, *, max_new_tokens: int | None) -> dict[str, Any]:
-    config = getattr(model, "generation_config", None)
-    report = {}
-    if config is not None:
-        for key in GENERATION_CONFIG_REPORT_KEYS:
-            if hasattr(config, key):
-                report[key] = jsonable(getattr(config, key))
-    overrides = generation_length_kwargs(max_new_tokens)
-    if overrides:
-        report["generation_call_kwargs"] = overrides
-    return report
-
-
-def configured_generation_token_budget(model, max_new_tokens: int | None) -> int | None:
-    if max_new_tokens is not None:
-        return max_new_tokens
-    config = getattr(model, "generation_config", None)
-    configured_max_new_tokens = getattr(config, "max_new_tokens", None)
-    return int(configured_max_new_tokens) if configured_max_new_tokens is not None else None
-
-
-def generation_progress_stopping_criteria(
-    *,
-    input_length: int,
-    progress,
-    task_id,
-):
-    if progress is None or task_id is None:
-        return None
-
-    from transformers import StoppingCriteria, StoppingCriteriaList
-
-    class ProgressStoppingCriteria(StoppingCriteria):
-        def __init__(self) -> None:
-            self.completed = 0
-
-        def __call__(self, input_ids, _scores, **_kwargs) -> bool:
-            completed = max(0, int(input_ids.shape[-1]) - input_length)
-            if completed != self.completed:
-                progress.update(task_id, completed=completed)
-                self.completed = completed
-            return False
-
-    return StoppingCriteriaList([ProgressStoppingCriteria()])
-
-
 def generation_report_fields(result: GenerationResult) -> dict[str, int | None]:
     return {
         "prompt_tokens": result.prompt_tokens,
@@ -729,100 +205,18 @@ def generation_debug_report(
     return {
         "rendered_prompt": generation.prompt if generation is not None else None,
         "raw_completion": generation.raw_text if generation is not None else None,
+        "structured_tool_calls": (
+            list(generation.tool_calls) if generation is not None else []
+        ),
+        "provider_metadata": (
+            generation.provider_metadata if generation is not None else {}
+        ),
     }
 
 
 def expected_final_answer(record: dict[str, Any]) -> str | None:
     solution = record_expected_solution(record)
     return f"<answer>{solution}</answer>" if solution is not None else None
-
-
-def generate_assistant_response(
-    model,
-    tokenizer,
-    messages: list[dict[str, Any]],
-    *,
-    max_new_tokens: int | None,
-    enable_thinking: bool | None = False,
-    tools: list[dict[str, Any]] | None = None,
-    progress=None,
-    progress_task_id=None,
-    progress_description: str | None = None,
-) -> GenerationResult:
-    (torch, *_unused) = require_eval_loss_dependencies()
-    prompt = render_messages_for_generation(
-        tokenizer,
-        messages,
-        enable_thinking=enable_thinking,
-        tools=tools,
-    )
-    encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-    input_device = model_input_device(model)
-    encoded = {key: value.to(input_device) for key, value in encoded.items()}
-    input_length = encoded["input_ids"].shape[-1]
-    token_budget = configured_generation_token_budget(model, max_new_tokens)
-    if progress is not None and progress_task_id is not None:
-        progress_kwargs = {
-            "completed": 0,
-            "visible": True,
-            "description": progress_description or "generation",
-        }
-        if token_budget is not None:
-            progress_kwargs["total"] = token_budget
-        progress.update(progress_task_id, **progress_kwargs)
-
-    generate_kwargs = generation_length_kwargs(max_new_tokens)
-    stopping_criteria = generation_progress_stopping_criteria(
-        input_length=input_length,
-        progress=progress,
-        task_id=progress_task_id,
-    )
-    if stopping_criteria is not None:
-        generate_kwargs["stopping_criteria"] = stopping_criteria
-
-    with torch.inference_mode():
-        generated = model.generate(
-            **encoded,
-            **generate_kwargs,
-        )
-
-    generated_ids = generated[0][input_length:]
-    generated_tokens = int(generated_ids.shape[-1])
-    if progress is not None and progress_task_id is not None:
-        progress.update(progress_task_id, completed=generated_tokens)
-    raw_text = tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
-    result = GenerationResult(
-        text=clean_generated_text(raw_text),
-        raw_text=raw_text,
-        prompt=prompt,
-        prompt_tokens=int(input_length),
-        generated_tokens=generated_tokens,
-        max_new_tokens=max_new_tokens,
-        token_budget=token_budget,
-    )
-    # Do not keep GPU input/output tensors alive while the caller scores or stores
-    # string-only generation results. This matters most for multi-turn retries.
-    del generated_ids, generated, encoded
-    return result
-
-
-def generate_assistant_text(
-    model,
-    tokenizer,
-    messages: list[dict[str, Any]],
-    *,
-    max_new_tokens: int | None,
-    enable_thinking: bool | None = False,
-    tools: list[dict[str, Any]] | None = None,
-) -> str:
-    return generate_assistant_response(
-        model,
-        tokenizer,
-        messages,
-        max_new_tokens=max_new_tokens,
-        enable_thinking=enable_thinking,
-        tools=tools,
-    ).text
 
 
 def normalized_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -941,8 +335,18 @@ def generated_tool_marker_present(text: str) -> bool:
     )
 
 
-def parse_generated_tool_calls(text: str) -> ToolCallParseResult:
+def parse_generated_tool_calls(
+    text: str,
+    structured_tool_calls: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+) -> ToolCallParseResult:
     try:
+        if structured_tool_calls:
+            tool_calls = [
+                normalize_structured_tool_call(tool_call)
+                for tool_call in structured_tool_calls
+            ]
+            return ToolCallParseResult(True, tool_calls)
+
         tool_calls = qwen_tool_calls_from_text(text)
         if tool_calls:
             return ToolCallParseResult(True, tool_calls)
@@ -1020,18 +424,6 @@ def final_answer_generation_error(record: dict[str, Any], exc: Exception) -> dic
         "final_answer_format_valid": False,
         "final_answer_match": False,
     }
-
-
-def release_generation_memory() -> None:
-    """Release per-record objects and unused CUDA allocator blocks."""
-    gc.collect()
-    try:
-        import torch
-    except ImportError:
-        return
-    cuda = getattr(torch, "cuda", None)
-    if cuda is not None and cuda.is_available():
-        cuda.empty_cache()
 
 
 def bounded_text(value: Any, max_chars: int) -> str:
@@ -1166,8 +558,7 @@ def append_end_to_end_retry_feedback(
 def evaluate_end_to_end_record(
     record: dict[str, Any],
     *,
-    model,
-    tokenizer,
+    runtime: RawGenerationRuntime,
     validator,
     policy: dict[str, Any] | None,
     tool_schemas: list[dict[str, Any]],
@@ -1189,7 +580,9 @@ def evaluate_end_to_end_record(
     operational diagnostics for understanding retries and resource guards.
     """
     from cypher_3dsg_agent_distillation.agents.agent_records import DEFAULT_AGENT_TOOL
-    from cypher_3dsg_agent_distillation.graph.neo4j_validation import static_checks
+    from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
+        static_checks_with_explain,
+    )
 
     if max_query_retries < 0:
         raise ValueError("max_query_retries must be zero or greater.")
@@ -1208,9 +601,7 @@ def evaluate_end_to_end_record(
 
     while True:
         try:
-            generation = generate_assistant_response(
-                model,
-                tokenizer,
+            generation = runtime.generate(
                 messages,
                 max_new_tokens=max_new_tokens,
                 enable_thinking=enable_thinking,
@@ -1230,7 +621,7 @@ def evaluate_end_to_end_record(
             )
 
         generated_text = generation.text
-        parsed = parse_generated_tool_calls(generated_text)
+        parsed = parse_generated_tool_calls(generated_text, generation.tool_calls)
         if generation_debug_turns is not None:
             generation_debug_turns.append(
                 {
@@ -1304,11 +695,14 @@ def evaluate_end_to_end_record(
                         f"Query exceeded the {max_query_chars}-character safety limit."
                     ]
                 else:
-                    static_issues = static_checks(
+                    static_issues, explain_validation = static_checks_with_explain(
                         cypher,
                         allow_writes=not bool(record.get("read_only", True)),
                         policy=policy,
+                        validator=validator,
                     )
+                    if explain_validation is not None:
+                        attempt["explain_validation"] = jsonable(explain_validation)
                     if static_issues:
                         failure_reason = "static_error"
                         failure_issues = static_issues
@@ -1494,6 +888,7 @@ def score_tool_call_generation(
     policy: dict[str, Any] | None,
     max_rows: int | None = None,
     max_result_chars: int | None = None,
+    structured_tool_calls: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     from cypher_3dsg_agent_distillation.agents.agent_records import (
         DEFAULT_AGENT_TOOL,
@@ -1510,9 +905,12 @@ def score_tool_call_generation(
     from cypher_3dsg_agent_distillation.graph.heracles_validation import (
         answer_matches_with_heracles,
     )
-    from cypher_3dsg_agent_distillation.graph.neo4j_validation import result_hash, static_checks
+    from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
+        result_hash,
+        static_checks_with_explain,
+    )
 
-    parsed = parse_generated_tool_calls(generated_text)
+    parsed = parse_generated_tool_calls(generated_text, structured_tool_calls)
     base = {
         "generated_text": generated_text,
         "tool_call_generated": parsed.tool_call_generated,
@@ -1523,6 +921,7 @@ def score_tool_call_generation(
         "cypher_exact_match": False,
         "static_valid": False,
         "static_issues": [],
+        "explain_validation": None,
         "executable": False,
         "syntax_error": False,
         "timeout": False,
@@ -1575,13 +974,23 @@ def score_tool_call_generation(
     if not cypher_argument_present:
         return {**base, "status": "missing_cypher_argument"}
 
-    static_issues = static_checks(
+    static_issues, explain_validation = static_checks_with_explain(
         cypher,
         allow_writes=not bool(record.get("read_only", True)),
         policy=policy,
+        validator=validator,
     )
-    base.update({"static_valid": not static_issues, "static_issues": static_issues})
+    base.update(
+        {
+            "static_valid": not static_issues,
+            "static_issues": static_issues,
+            "explain_validation": jsonable(explain_validation),
+        }
+    )
     if static_issues:
+        if explain_validation is not None:
+            base["syntax_error"] = bool(explain_validation.get("syntax_error"))
+            base["execution_error"] = explain_validation.get("error")
         return {**base, "status": "static_error"}
 
     try:
@@ -1816,10 +1225,6 @@ def raw_generation_progress_context(show_progress: bool):
     )
 
 
-def eval_loss_progress_context(show_progress: bool):
-    return raw_generation_progress_context(show_progress)
-
-
 def split_display_name(split: str) -> str:
     return split.replace("_", " ").replace("-", " ").title()
 
@@ -1902,10 +1307,8 @@ def raw_generation_report_record(
 def evaluate_raw_generation(
     *,
     data_config: dict[str, Any],
-    student_config: dict[str, Any],
     split: str,
-    adapter_dir: str,
-    explicit_tokenizer: str | None,
+    runtime: RawGenerationRuntime,
     max_new_tokens: int | None,
     limit: int | None,
     validator,
@@ -1917,7 +1320,6 @@ def evaluate_raw_generation(
     max_tool_rows: int = DEFAULT_E2E_MAX_TOOL_ROWS,
     max_tool_response_chars: int = DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
     max_query_chars: int = DEFAULT_E2E_MAX_QUERY_CHARS,
-    baseline: bool = False,
 ) -> dict[str, Any]:
     from cypher_3dsg_agent_distillation.agents.agent_prompts import run_cypher_tool_schema
     from cypher_3dsg_agent_distillation.core.io import read_jsonl
@@ -1935,14 +1337,6 @@ def evaluate_raw_generation(
     if tool_call_skip_reason is None and validator is None:
         raise ValueError("validator is required when tool-call evaluation is not skipped.")
 
-    model, tokenizer = load_student_model_and_tokenizer(
-        student_config=student_config,
-        adapter_dir=adapter_dir,
-        explicit_tokenizer=explicit_tokenizer,
-        disable_cache=False,
-        show_progress=show_progress,
-        use_adapter=not baseline,
-    )
     records = read_jsonl(data_config["splits"][split])
     if limit is not None:
         records = records[:limit]
@@ -1975,9 +1369,7 @@ def evaluate_raw_generation(
                     ),
                 )
             try:
-                final_generation = generate_assistant_response(
-                    model,
-                    tokenizer,
+                final_generation = runtime.generate(
                     final_messages,
                     max_new_tokens=max_new_tokens,
                     enable_thinking=enable_thinking,
@@ -2021,9 +1413,7 @@ def evaluate_raw_generation(
                         ),
                     )
                 try:
-                    tool_generation = generate_assistant_response(
-                        model,
-                        tokenizer,
+                    tool_generation = runtime.generate(
                         tool_messages,
                         max_new_tokens=max_new_tokens,
                         enable_thinking=enable_thinking,
@@ -2042,6 +1432,7 @@ def evaluate_raw_generation(
                         policy=policy,
                         max_rows=max_tool_rows,
                         max_result_chars=max_tool_response_chars,
+                        structured_tool_calls=tool_generation.tool_calls,
                     )
                     add_raw_generation_debug_fields(tool_call_result, tool_generation)
                     tool_call_result["generation"] = generation_report_fields(
@@ -2071,8 +1462,7 @@ def evaluate_raw_generation(
                 try:
                     end_to_end_result = evaluate_end_to_end_record(
                         record,
-                        model=model,
-                        tokenizer=tokenizer,
+                        runtime=runtime,
                         validator=validator,
                         policy=policy,
                         tool_schemas=tool_schemas,
@@ -2113,7 +1503,7 @@ def evaluate_raw_generation(
                     end_to_end_generation_debug=end_to_end_generation_debug,
                 )
             )
-            release_generation_memory()
+            runtime.release_memory()
             if progress is not None:
                 progress.update(
                     record_task_id,
@@ -2133,10 +1523,8 @@ def evaluate_raw_generation(
     return {
         "summary": summarize_raw_generation_records(evaluated_records),
         "records": evaluated_records,
-        "generation_config": generation_config_report(
-            model,
-            max_new_tokens=max_new_tokens,
-        ),
+        "generation_config": runtime.generation_config(max_new_tokens=max_new_tokens),
+        "runtime": runtime.metadata(),
     }
 
 
@@ -2157,6 +1545,7 @@ def build_report(
     loss_mode: str | None = None,
     records: list[dict[str, Any]] | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    runtime: str = TRANSFORMERS_RUNTIME,
 ) -> dict[str, Any]:
     metadata = {
         "created_at": datetime.now(UTC).isoformat(),
@@ -2172,11 +1561,16 @@ def build_report(
         "base_model": student_config["model"]["base_model"],
         "model_variant": "baseline" if baseline else "fine-tuned",
         "adapter_dir": None if baseline else adapter_dir,
-        "tokenizer": tokenizer_source(
-            adapter_dir=adapter_dir,
-            explicit_tokenizer=explicit_tokenizer,
-            model_config=student_config["model"],
-            use_adapter=not baseline,
+        "runtime": runtime,
+        "tokenizer": (
+            tokenizer_source(
+                adapter_dir=adapter_dir,
+                explicit_tokenizer=explicit_tokenizer,
+                model_config=student_config["model"],
+                use_adapter=not baseline,
+            )
+            if runtime == TRANSFORMERS_RUNTIME
+            else None
         ),
     }
     if batch_size is not None:
@@ -2248,6 +1642,44 @@ def configure_neo4j_notification_output(*, show_notifications: bool) -> None:
     )
 
     suppress_neo4j_notification_logs()
+
+
+def build_raw_generation_runtime(
+    args: argparse.Namespace,
+    *,
+    student_config: dict[str, Any],
+    adapter_dir: str,
+) -> RawGenerationRuntime:
+    if args.runtime == TRANSFORMERS_RUNTIME:
+        return TransformersRawGenerationRuntime.load(
+            student_config=student_config,
+            adapter_dir=adapter_dir,
+            explicit_tokenizer=args.tokenizer,
+            show_progress=not args.no_progress,
+            baseline=args.baseline,
+        )
+
+    if not args.ollama_model:
+        raise ValueError("--ollama-model is required with --runtime ollama.")
+    runtime = OllamaRawGenerationRuntime(
+        model=args.ollama_model,
+        host=args.ollama_host,
+        timeout=args.ollama_timeout,
+        temperature=args.ollama_temperature,
+        seed=args.ollama_seed,
+        context_length=(
+            args.ollama_context_length
+            if args.ollama_context_length is not None
+            else max(
+                DEFAULT_OLLAMA_CONTEXT_LENGTH,
+                int(student_config["training"].get("max_length", 4096))
+                + int(args.max_new_tokens or 0),
+            )
+        ),
+        keep_alive=args.ollama_keep_alive,
+    )
+    runtime.validate()
+    return runtime
 
 
 def print_eval_loss_summary(
@@ -2392,6 +1824,8 @@ def command(args: argparse.Namespace) -> None:
     adapter_dir = args.adapter_dir or default_adapter_dir(student_config)
     if args.baseline and args.mode != RAW_GENERATION_MODE:
         raise ValueError("--baseline is supported only with --mode raw-generation.")
+    if args.mode == EVAL_LOSS_MODE and args.runtime != TRANSFORMERS_RUNTIME:
+        raise ValueError("eval-loss is supported only with --runtime transformers.")
 
     records = None
     extra_metadata = None
@@ -2447,14 +1881,17 @@ def command(args: argparse.Namespace) -> None:
             show_notifications=show_db_notifications,
         )
 
+        runtime = build_raw_generation_runtime(
+            args,
+            student_config=student_config,
+            adapter_dir=adapter_dir,
+        )
         validator, neo4j_metadata = connect_raw_generation_validator(args)
         try:
             raw_generation = evaluate_raw_generation(
                 data_config=data_config,
-                student_config=student_config,
                 split=args.split,
-                adapter_dir=adapter_dir,
-                explicit_tokenizer=args.tokenizer,
+                runtime=runtime,
                 max_new_tokens=args.max_new_tokens,
                 limit=args.limit,
                 validator=validator,
@@ -2466,7 +1903,6 @@ def command(args: argparse.Namespace) -> None:
                 max_tool_rows=args.e2e_max_tool_rows,
                 max_tool_response_chars=args.e2e_max_tool_response_chars,
                 max_query_chars=args.e2e_max_query_chars,
-                baseline=args.baseline,
             )
         finally:
             if validator is not None:
@@ -2486,6 +1922,7 @@ def command(args: argparse.Namespace) -> None:
                 "enable_thinking": args.enable_thinking,
                 "progress": not args.no_progress,
                 "model_variant": "baseline" if args.baseline else "fine-tuned",
+                "runtime": raw_generation["runtime"],
                 "generation_config": raw_generation["generation_config"],
                 "neo4j": neo4j_metadata,
                 "show_db_notifications": show_db_notifications,
@@ -2508,6 +1945,7 @@ def command(args: argparse.Namespace) -> None:
         loss_mode=loss_mode,
         records=records,
         extra_metadata=extra_metadata,
+        runtime=args.runtime,
     )
     output_path = write_report(
         report,
@@ -2517,6 +1955,8 @@ def command(args: argparse.Namespace) -> None:
             mode=args.mode,
             output=args.output,
             baseline=args.baseline,
+            runtime=args.runtime,
+            runtime_model=args.ollama_model,
         ),
     )
 
@@ -2572,6 +2012,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--runtime",
+        choices=RAW_GENERATION_RUNTIMES,
+        default=TRANSFORMERS_RUNTIME,
+        help=(
+            "Inference runtime for raw-generation validation. Eval-loss requires "
+            "Transformers (default: transformers)."
+        ),
+    )
+    parser.add_argument(
         "--adapter-dir",
         default=None,
         help="LoRA adapter directory. Defaults to training.output_dir in the student config.",
@@ -2581,7 +2030,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Evaluate the configured base student model without loading its LoRA "
-            "adapter. Supported only in raw-generation mode."
+            "adapter when using Transformers. With Ollama, this labels the selected "
+            "registered model as the baseline. Supported only in raw-generation mode."
         ),
     )
     parser.add_argument(
@@ -2624,7 +2074,8 @@ def main() -> None:
         default=None,
         help=(
             "Optional generated-token limit for raw-generation mode. When unset, "
-            "the loaded model generation_config is used."
+            "Transformers uses the loaded generation_config and Ollama uses the "
+            "registered model/server default."
         ),
     )
     parser.add_argument(
@@ -2667,6 +2118,48 @@ def main() -> None:
             "Allow tokenizer chat-template thinking mode for raw-generation. By "
             "default, thinking is disabled when the tokenizer supports it."
         ),
+    )
+    parser.add_argument(
+        "--ollama-model",
+        default=None,
+        help="Registered Ollama model name. Required with --runtime ollama.",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        default=None,
+        help="Ollama API URL. Defaults to OLLAMA_HOST or http://ollama:11434.",
+    )
+    parser.add_argument(
+        "--ollama-timeout",
+        type=float,
+        default=300.0,
+        help="Timeout in seconds for each non-streaming Ollama request.",
+    )
+    parser.add_argument(
+        "--ollama-temperature",
+        type=float,
+        default=0.0,
+        help="Ollama sampling temperature (default: 0 for paired comparisons).",
+    )
+    parser.add_argument(
+        "--ollama-seed",
+        type=int,
+        default=42,
+        help="Ollama generation seed (default: 42).",
+    )
+    parser.add_argument(
+        "--ollama-context-length",
+        type=int,
+        default=DEFAULT_OLLAMA_CONTEXT_LENGTH,
+        help=(
+            "Ollama context length (default: 16384, sized for the longest current "
+            "challenge tool-response conversations)."
+        ),
+    )
+    parser.add_argument(
+        "--ollama-keep-alive",
+        default="5m",
+        help="How long Ollama keeps the selected model loaded (default: 5m).",
     )
     parser.add_argument(
         "--no-progress",

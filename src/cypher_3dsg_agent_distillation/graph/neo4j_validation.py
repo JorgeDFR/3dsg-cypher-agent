@@ -167,6 +167,32 @@ def static_checks(
     return issues
 
 
+def static_checks_with_explain(
+    cypher: str,
+    allow_writes: bool,
+    *,
+    policy: dict[str, Any] | None = None,
+    validator=None,
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Run policy checks and, when connected, ask Neo4j to parse the query."""
+    issues = static_checks(cypher, allow_writes, policy=policy)
+    if issues or validator is None or is_safe_refusal(cypher):
+        return issues, None
+
+    explain = getattr(validator, "explain", None)
+    if explain is None:
+        return issues, None
+    try:
+        validation = explain(cypher)
+    except Exception as exc:
+        issues.append(f"Neo4j EXPLAIN failed: {type(exc).__name__}: {exc}")
+        return issues, None
+    if not validation.get("executable"):
+        error = validation.get("error") or "query was rejected"
+        issues.append(f"Neo4j EXPLAIN rejected query: {error}")
+    return issues, validation
+
+
 def _uri_candidates_from_value(uri: str | Sequence[str]) -> tuple[str, ...]:
     if isinstance(uri, str):
         return neo4j_uri_candidates(uri)
@@ -247,6 +273,9 @@ class Neo4jValidator:
     def close(self) -> None:
         if self.driver is not None:
             self.driver.close()
+
+    def explain(self, cypher: str) -> dict[str, Any]:
+        return self.validate(cypher, execute=False)
 
     def validate(
         self,
@@ -352,7 +381,12 @@ def validate_records(
     for record in records:
         cypher = record.get(cypher_field, "")
         record_allows_writes = allow_writes or not bool(record.get("read_only", True))
-        issues = static_checks(cypher, record_allows_writes, policy=policy)
+        issues, explain_validation = static_checks_with_explain(
+            cypher,
+            record_allows_writes,
+            policy=policy,
+            validator=validator,
+        )
         result = {
             "uid": record.get("uid"),
             "question": record.get("question"),
@@ -361,8 +395,16 @@ def validate_records(
             "static_valid": not issues,
             "refusal": is_safe_refusal(cypher),
         }
+        if explain_validation is not None:
+            result["explain_validation"] = explain_validation
         if validator is not None and not issues and not is_safe_refusal(cypher):
-            result.update(validator.validate(cypher, execute=execute))
+            result.update(
+                validator.validate(cypher, execute=True)
+                if execute
+                else explain_validation or validator.explain(cypher)
+            )
+        elif explain_validation is not None:
+            result.update(explain_validation)
         validated.append({**record, "validation": result})
     return validated
 

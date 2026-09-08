@@ -131,14 +131,27 @@ def test_benchmark_paths_resolve_from_relocated_directory():
     assert not (PROJECT_ROOT / "examples" / "heracles_agents").exists()
 
 
-def test_main_compose_no_longer_contains_ollama():
+def test_main_compose_has_profiled_ollama_for_project_split_validation():
     compose = yaml.safe_load(
         (PROJECT_ROOT / "docker" / "docker-compose.yaml").read_text(encoding="utf-8")
     )
 
-    assert "ollama" not in compose["services"]
-    assert "ollama-cache" not in compose["volumes"]
-    assert "OLLAMA_HOST" not in compose["x-main-environment"]
+    ollama = compose["services"]["ollama"]
+    assert ollama["profiles"] == ["ollama"]
+    assert ollama["gpus"] == "all"
+    assert ollama["container_name"] == "3dsg-cypher-agent-ollama"
+    assert "ports" not in ollama
+    assert "../outputs/ollama:/models:ro" in ollama["volumes"]
+    assert "ollama-cache" in compose["volumes"]
+    assert compose["x-main-environment"]["OLLAMA_HOST"] == "http://ollama:11434"
+
+
+def test_main_stack_exposes_explicit_ollama_lifecycle_and_cli_commands():
+    launcher = (PROJECT_ROOT / "docker" / "stack.sh").read_text(encoding="utf-8")
+
+    assert "ollama-up" in launcher
+    assert "compose --profile ollama up -d --wait ollama" in launcher
+    assert 'compose exec -T ollama ollama "$@"' in launcher
 
 
 @pytest.mark.parametrize(

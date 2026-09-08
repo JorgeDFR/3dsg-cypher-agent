@@ -35,9 +35,9 @@ The public training and evaluation surface is agent-trace based.
 
 The supported default interface is the GPU-required Docker stack. It provides
 the project Python environment, Neo4j, CUDA-enabled PyTorch, and llama.cpp
-without requiring host Python package installation. Ollama runs separately in
-the project-local Heracles benchmark stack so inference metrics have an
-isolated, stable target.
+without requiring host Python package installation. An optional main-stack
+Ollama service validates exported GGUFs on project splits. Heracles performance
+sweeps retain a separate Ollama instance as an isolated, stable metrics target.
 
 Create the local environment file and set `OPENROUTER_API_KEY` when teacher
 generation is required:
@@ -272,6 +272,26 @@ docker/stack.sh main python scripts/evaluate_student.py \
   --baseline \
   --max-new-tokens 1024
 ```
+
+Raw-generation validation can also use a GGUF model registered in the optional
+Ollama service. This reuses the same split records, tool schema, Neo4j checks,
+retry policy, and report format as Transformers evaluation:
+
+```bash
+docker/stack.sh ollama-up
+docker/stack.sh main python scripts/evaluate_student.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --split challenge \
+  --mode raw-generation \
+  --runtime ollama \
+  --ollama-model qwen3.5-4b-finetune-bf16 \
+  --max-new-tokens 1024
+```
+
+The Ollama model must already be registered from an exported GGUF. See
+[docs/ollama_export.md](docs/ollama_export.md#validate-bf16-versus-quantized-gguf-on-project-splits)
+for the BF16-versus-Q4_K_M registration and paired validation workflow.
 
 Generate a static HTML workflow report for the configured scene:
 

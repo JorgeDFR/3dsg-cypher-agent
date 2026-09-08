@@ -1,15 +1,17 @@
 # Docker Development Stack
 
 Docker is the default interface for training and export. The normal development
-stack contains two services:
+stack contains two always-on services and one optional service:
 
 - `main`: project scripts, tests, QLoRA training, evaluation, and GGUF export;
 - `neo4j`: the 3D scene graph database.
+- `ollama`: optional GGUF inference for raw-generation validation on project
+  splits.
 
-Ollama is intentionally not part of this stack. Local model registration,
-inference, and Heracles sweeps use the isolated stack under
-`examples/herables_benchmark`, where the Ollama container can be
-measured consistently.
+The optional Ollama service is behind a Compose profile and is not started by
+`setup` or `up`. Heracles sweeps continue to use their isolated stack under
+`examples/herables_benchmark`; that stack has different questions, scene data,
+metrics, and its own Ollama cache.
 
 ## First run
 
@@ -60,6 +62,14 @@ docker/stack.sh logs neo4j
 docker/stack.sh down
 ```
 
+Start Ollama only when validating exported GGUF models on the configured
+project splits:
+
+```bash
+docker/stack.sh ollama-up
+docker/stack.sh ollama list
+```
+
 The project virtual environment is activated automatically for `main` and
 `shell`, so use `python` directly inside the container.
 
@@ -96,6 +106,7 @@ Inside the development network, project scripts use:
 
 ```text
 neo4j://neo4j:7683
+http://ollama:11434  # when the optional profile is running
 ```
 
 From the host:
@@ -119,9 +130,10 @@ the host. Compose retains these named volumes across `down`:
 
 - `3dsg-cypher-agent-huggingface-cache`;
 - `3dsg-cypher-agent-neo4j-data`;
-- `3dsg-cypher-agent-neo4j-logs`.
+- `3dsg-cypher-agent-neo4j-logs`;
+- `3dsg-cypher-agent-ollama-cache` when the optional profile is used.
 
-## Ollama and Heracles benchmark
+## Heracles benchmark Ollama
 
 After exporting GGUF artifacts with the main container, use the dedicated
 benchmark launcher to create them in Ollama and run Cypher and/or PDDL sweeps:
