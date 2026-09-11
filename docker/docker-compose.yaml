@@ -73,7 +73,7 @@ services:
   # Optional local GGUF inference service. It is started explicitly with the
   # `ollama` profile so training and Transformers evaluation remain unaffected.
   ollama:
-    image: ollama/ollama:0.32.4
+    image: ollama/ollama:0.33.3
     container_name: 3dsg-cypher-agent-ollama
     profiles: [ollama]
     gpus: all

@@ -277,7 +277,7 @@ def test_tokenizer_source_baseline_ignores_existing_adapter(tmp_path):
 
 def test_report_output_path_uses_split_and_mode_name():
     output = report_output_path(
-        data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
+        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
         split="challenge",
         mode=EVAL_LOSS_MODE,
         output=None,
@@ -288,7 +288,7 @@ def test_report_output_path_uses_split_and_mode_name():
 
 def test_report_output_path_keeps_baseline_separate_from_fine_tuned_results():
     output = report_output_path(
-        data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
+        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
         split="test",
         mode="raw-generation",
         output=None,
@@ -316,13 +316,34 @@ def test_report_output_path_keeps_ollama_models_separate():
 
 def test_report_output_path_uses_aggregate_name_for_all_splits():
     output = report_output_path(
-        data_config={"test_report_path": "data/3dsg/scene/reports/test.agent.report.json"},
+        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
         split=ALL_SPLITS,
         mode=EVAL_LOSS_MODE,
         output=None,
     )
 
     assert output.name == "student.eval-loss.report.json"
+
+
+def test_report_output_path_uses_selected_model_version_directory(tmp_path):
+    reports = (
+        tmp_path
+        / "reports"
+        / "models"
+        / "qwen3.5-4b-finetune"
+        / "2026-09-08-T-15-05-21-Z"
+    )
+
+    output = report_output_path(
+        data_config={"test_report_path": str(tmp_path / "reports" / "dataset" / "test.json")},
+        split="test",
+        mode="raw-generation",
+        output=None,
+        reports_directory=reports,
+    )
+
+    assert output.parent == reports
+    assert output.name == "test.student.raw-generation.report.json"
 
 
 def test_load_baseline_model_does_not_load_lora_adapter(monkeypatch):

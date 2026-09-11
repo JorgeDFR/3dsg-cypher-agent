@@ -10,7 +10,22 @@ import spark_dsg
 import yaml
 
 from cypher_3dsg_agent_distillation.core.cli_output import print_summary
-from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config
+from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
+    ensure_parent,
+    load_data_config,
+    load_yaml,
+    resolve_project_path,
+)
+from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
+    config_record,
+    file_fingerprint,
+    git_provenance,
+    iso_now,
+    record_stage,
+    serializable_arguments,
+)
 
 LOCAL_ID_MASK = (1 << 56) - 1
 HOP_COUNTS = (2, 3, 4)
@@ -1394,7 +1409,48 @@ def build_template_config(
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config,
+        dataset_version=args.dataset_version,
+        create_version=True,
+    )
+    referenced_configs = {
+        "data_config": config_record(data_config["data_config_path"], project_root=PROJECT_ROOT),
+        "schema": config_record(data_config["schema_path"], project_root=PROJECT_ROOT),
+    }
+    for question_set in data_config.get("question_sets") or []:
+        name = question_set["name"]
+        referenced_configs[f"question_templates:{name}"] = config_record(
+            question_set["question_templates_path"], project_root=PROJECT_ROOT
+        )
+        referenced_configs[f"experiment_profile:{name}"] = config_record(
+            question_set["experiment_profile_path"], project_root=PROJECT_ROOT
+        )
+        profile_config = load_yaml(question_set["experiment_profile_path"])
+        for key, value in profile_config.items():
+            if key.endswith("_path") and value:
+                referenced_configs[f"profile_input:{name}:{key}"] = config_record(
+                    resolve_project_path(value), project_root=PROJECT_ROOT
+                )
+    created_at = iso_now()
+    atomic_write_yaml(
+        {
+            "schema_version": 1,
+            "artifact_type": "dataset",
+            "scene_id": data_config["scene_id"],
+            "version": data_config["dataset_version"],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "status": "building",
+            "source_scene": file_fingerprint(
+                data_config["scene_path"], relative_to=PROJECT_ROOT
+            ),
+            "configs": referenced_configs,
+            "code": git_provenance(PROJECT_ROOT),
+            "stages": {},
+        },
+        data_config["metadata_path"],
+    )
     config = build_template_config(
         scene_path=data_config["scene_path"],
         scene_id=data_config["scene_id"],
@@ -1409,10 +1465,18 @@ def command(args: argparse.Namespace) -> None:
             sort_keys=False,
             allow_unicode=True,
         )
+    record_stage(
+        data_config["metadata_path"],
+        "extract_3dsg_values",
+        arguments=serializable_arguments(args),
+        outputs={"scene_template_values": output},
+        project_root=PROJECT_ROOT,
+    )
     print_summary(
         "Scene template values extracted",
         [
             ("Scene", config["scene_id"]),
+            ("Dataset version", data_config["dataset_version"]),
             ("Nodes", sum(config["scene_summary"]["nodes"].values())),
             ("Edges", config["scene_summary"]["edges"]),
             ("Output", output),
@@ -1425,6 +1489,11 @@ def main() -> None:
         description="Extract dataset template values from a 3DSG JSON."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument(
+        "--dataset-version",
+        default=None,
+        help="Optional new version in YYYY-MM-DD-T-HH-MM-SS-Z format.",
+    )
     parser.add_argument("--max-classes", type=int, default=30)
     parser.add_argument("--max-object-symbols", type=int, default=50)
     parser.add_argument("--max-place-symbols", type=int, default=50)

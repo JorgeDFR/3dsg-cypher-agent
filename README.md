@@ -123,9 +123,54 @@ Supported render views:
 ## Workflow
 
 Generated dataset artifacts are resolved from `scene_id` in `configs/data.yaml`
-and written under `data/3dsg/{scene_id}/...`. The source 3DSG JSON is not
-derived from `scene_id`; configure the user-provided Hydra/Spark DSG file with
-`scene_path`.
+and written under `data/datasets/{scene_id}/{dataset_version}/...`. Versions use
+readable UTC timestamps such as `2026-09-08-T-12-05-47-Z`. The source 3DSG JSON
+is not derived from `scene_id`; configure the user-provided Hydra/Spark DSG file
+with `scene_path`.
+
+`extract_3dsg_values.py` starts a new dataset version by default. Every later
+command selects the latest dataset version unless `--dataset-version` is passed.
+Teacher traces are stored below `traces/{teacher_name}/{teacher_run}/`. Trace
+generation creates a new run; splitting uses the dataset's active run unless
+`--teacher` and/or `--teacher-run` select another run.
+
+LoRA training creates a new timestamp below the configured
+`training.output_dir`. Evaluation, workflow reporting, and export use the latest
+completed model unless `--model-version` is passed. A model records the dataset
+and exact split hashes used for training. Evaluating it against different data
+shows an interactive warning; non-interactive jobs must explicitly pass
+`--allow-dataset-mismatch`.
+
+Reports are isolated by dataset, model family, and model version:
+
+```text
+data/datasets/{scene}/{dataset_version}/reports/
+  dataset/
+  models/{model_family}/baseline/
+  models/{model_family}/{model_version}/
+```
+
+Ollama/GGUF exports intentionally remain unversioned at
+`outputs/ollama/{model_name}` because the files are large. Starting an export
+from a different LoRA version removes that model's previous export directory.
+Its `metadata.yaml` records the source model and dataset lineage so Ollama
+validation reports are still routed to the correct model-version report folder.
+
+List the available IDs and see which versions are currently selected as latest:
+
+```bash
+docker/stack.sh main python scripts/list_artifact_versions.py \
+  --data-config configs/data.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml
+```
+
+For a checkout that still uses the former flat directories, preview and then
+apply the one-time migration with:
+
+```bash
+docker/stack.sh main python scripts/migrate_versioned_artifacts.py
+docker/stack.sh main python scripts/migrate_versioned_artifacts.py --apply
+```
 
 Question sources are configured as a list, so one generated file and its later
 training splits can contain multiple task families:

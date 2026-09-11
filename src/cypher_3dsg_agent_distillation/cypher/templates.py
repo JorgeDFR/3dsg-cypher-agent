@@ -18,7 +18,18 @@ import yaml
 
 from cypher_3dsg_agent_distillation.agents.experiment_profiles import load_experiment_profile
 from cypher_3dsg_agent_distillation.core.cli_output import captured_warnings, print_summary
-from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
+    ensure_parent,
+    load_data_config,
+    load_yaml,
+)
+from cypher_3dsg_agent_distillation.core.versioning import (
+    config_record,
+    record_stage,
+    require_new_outputs,
+    serializable_arguments,
+)
 from cypher_3dsg_agent_distillation.cypher.pddl_goals import (
     grounding_contract,
     grounding_is_non_empty,
@@ -810,7 +821,9 @@ def write_questions_yaml(records: list[dict[str, Any]], path: str) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     config = load_yaml(data_config["scene_template_values_path"])
     config["scene_id"] = data_config["scene_id"]
     config["source_3dsg"] = data_config["scene_path"]
@@ -838,7 +851,20 @@ def command(args: argparse.Namespace) -> None:
     if len(uids) != len(set(uids)):
         raise ValueError("Question generation produced duplicate record UIDs.")
     output_path = data_config["raw_questions_path"]
+    require_new_outputs([output_path], force=args.force)
     write_questions_yaml(records, output_path)
+    record_stage(
+        data_config["metadata_path"],
+        "generate_3dsg_seed_templates",
+        arguments=serializable_arguments(args),
+        outputs={"generated_questions": output_path},
+        project_root=PROJECT_ROOT,
+        extra={
+            "data_config": config_record(
+                data_config["data_config_path"], project_root=PROJECT_ROOT
+            )
+        },
+    )
     counts = Counter(record["query_type"] for record in records)
     effective_non_empty_ratio = (
         args.non_empty_ratio if args.non_empty_ratio is not None else "per set"
@@ -847,6 +873,7 @@ def command(args: argparse.Namespace) -> None:
         "Question templates generated",
         [
             ("Scene", data_config["scene_id"]),
+            ("Dataset version", data_config["dataset_version"]),
             ("Questions", len(records)),
             ("Question types", len(counts)),
             ("Question sets", len(question_sets)),
@@ -859,6 +886,8 @@ def command(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
+    parser.add_argument("--force", action="store_true")
     parser.add_argument("--limit-per-template", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--non-empty-ratio", type=float, default=None)

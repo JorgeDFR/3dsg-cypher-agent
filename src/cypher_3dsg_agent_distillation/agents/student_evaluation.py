@@ -32,9 +32,21 @@ from cypher_3dsg_agent_distillation.agents.student_model import (
     tokenizer_source,
 )
 from cypher_3dsg_agent_distillation.core.cli_output import print_breakdown, print_summary
-from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.core.config import (
+    ensure_parent,
+    load_data_config,
+    load_student_config,
+    load_student_family_config,
+    load_yaml,
+    model_reports_dir,
+    ollama_export_metadata,
+)
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
+)
+from cypher_3dsg_agent_distillation.core.versioning import (
+    confirm_dataset_lineage,
+    read_metadata,
 )
 
 EVAL_LOSS_MODE = "eval-loss"
@@ -71,6 +83,7 @@ def report_output_path(
     baseline: bool = False,
     runtime: str = TRANSFORMERS_RUNTIME,
     runtime_model: str | None = None,
+    reports_directory: str | Path | None = None,
 ) -> Path:
     if output:
         return Path(output)
@@ -79,13 +92,14 @@ def report_output_path(
     if runtime != TRANSFORMERS_RUNTIME:
         safe_model = re.sub(r"[^a-zA-Z0-9_.-]+", "-", runtime_model or "model")
         runtime_suffix = f".{runtime}.{safe_model}"
-    if split == ALL_SPLITS:
-        return Path(data_config["test_report_path"]).with_name(
-            f"{model_name}{runtime_suffix}.{mode}.report.json"
-        )
-    return Path(data_config["test_report_path"]).with_name(
-        f"{split}.{model_name}{runtime_suffix}.{mode}.report.json"
+    directory = (
+        Path(reports_directory)
+        if reports_directory is not None
+        else Path(data_config["test_report_path"]).parent
     )
+    if split == ALL_SPLITS:
+        return directory / f"{model_name}{runtime_suffix}.{mode}.report.json"
+    return directory / f"{split}.{model_name}{runtime_suffix}.{mode}.report.json"
 
 
 QWEN_TOOL_CALL_RE = re.compile(
@@ -1546,13 +1560,23 @@ def build_report(
     records: list[dict[str, Any]] | None = None,
     extra_metadata: dict[str, Any] | None = None,
     runtime: str = TRANSFORMERS_RUNTIME,
+    model_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "created_at": datetime.now(UTC).isoformat(),
         "mode": mode,
         "split": split,
         "data_config": data_config_path,
+        "dataset_version": data_config.get("dataset_version"),
+        "evaluated_on_dataset": {
+            "scene_id": data_config.get("scene_id"),
+            "version": data_config.get("dataset_version"),
+            "teacher_name": data_config.get("teacher_name"),
+            "teacher_run": data_config.get("teacher_run"),
+        },
         "student_config": student_config_path,
+        "model_family": student_config.get("model_family"),
+        "model_version": None if baseline else student_config.get("model_version"),
         "split_path": (
             data_config["splits"][split]
             if split in data_config["splits"]
@@ -1573,6 +1597,9 @@ def build_report(
             else None
         ),
     }
+    metadata["trained_on_dataset"] = (
+        None if baseline else (model_metadata or {}).get("dataset")
+    )
     if batch_size is not None:
         metadata["batch_size"] = batch_size
     if max_length is not None:
@@ -1819,13 +1846,101 @@ def print_raw_generation_summary(
 
 def command(args: argparse.Namespace) -> None:
     configure_model_library_output()
-    data_config = load_data_config(args.data_config)
-    student_config = load_yaml(args.student_config)
-    adapter_dir = args.adapter_dir or default_adapter_dir(student_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
+    family_config = load_student_family_config(args.student_config)
     if args.baseline and args.mode != RAW_GENERATION_MODE:
         raise ValueError("--baseline is supported only with --mode raw-generation.")
     if args.mode == EVAL_LOSS_MODE and args.runtime != TRANSFORMERS_RUNTIME:
         raise ValueError("eval-loss is supported only with --runtime transformers.")
+
+    export_metadata = None
+    if args.runtime != TRANSFORMERS_RUNTIME:
+        if not args.ollama_model:
+            raise ValueError("--ollama-model is required with --runtime ollama.")
+        export_metadata = ollama_export_metadata(family_config, args.ollama_model)
+
+    model_metadata = None
+    if args.baseline:
+        student_config = family_config
+        adapter_dir = args.adapter_dir or str(
+            Path(family_config["model_family_root"]) / "baseline"
+        )
+        selected_reports_dir = model_reports_dir(
+            data_config, student_config, baseline=True
+        )
+    else:
+        exported_version = None
+        adapter_metadata = None
+        adapter_version = None
+        if args.adapter_dir and (Path(args.adapter_dir) / "metadata.yaml").is_file():
+            adapter_metadata = read_metadata(Path(args.adapter_dir) / "metadata.yaml")
+            adapter_version = adapter_metadata.get("version")
+        if export_metadata:
+            exported_version = (export_metadata.get("source_model") or {}).get("version")
+            if not exported_version:
+                raise ValueError(
+                    "The Ollama export metadata does not identify its source LoRA version."
+                )
+            if args.model_version not in (None, "latest", exported_version):
+                raise ValueError(
+                    f"Requested model version {args.model_version} does not match Ollama "
+                    f"export source version {exported_version}."
+                )
+        if (
+            adapter_version
+            and args.model_version not in (None, "latest", adapter_version)
+        ):
+            raise ValueError(
+                f"Requested model version {args.model_version} does not match adapter "
+                f"metadata version {adapter_version}."
+            )
+        if args.adapter_dir:
+            student_config = dict(family_config)
+            training = dict(student_config["training"])
+            training["output_dir"] = args.adapter_dir
+            student_config["training"] = training
+            student_config["model_version"] = str(adapter_version or "external")
+            student_config["model_dir"] = args.adapter_dir
+        elif export_metadata is not None:
+            student_config = dict(family_config)
+            source_model = export_metadata["source_model"]
+            student_config["model_family"] = str(
+                source_model.get("family") or family_config["model_family"]
+            )
+            student_config["model_version"] = str(exported_version)
+            student_config["model_dir"] = source_model.get("path")
+            training = dict(student_config["training"])
+            training["output_dir"] = str(source_model.get("path") or "")
+            student_config["training"] = training
+        else:
+            student_config = load_student_config(
+                args.student_config,
+                model_version=str(
+                    exported_version or args.model_version or "latest"
+                ),
+            )
+        adapter_dir = args.adapter_dir or default_adapter_dir(student_config)
+        metadata_file = Path(adapter_dir) / "metadata.yaml"
+        if export_metadata is not None:
+            model_metadata = export_metadata
+        elif adapter_metadata is not None:
+            model_metadata = adapter_metadata
+        elif metadata_file.is_file():
+            model_metadata = read_metadata(metadata_file)
+        elif not args.allow_dataset_mismatch:
+            raise RuntimeError(
+                f"Adapter metadata is missing at {metadata_file}. Re-run with "
+                "--allow-dataset-mismatch to use an adapter with unknown lineage."
+            )
+        if model_metadata is not None:
+            confirm_dataset_lineage(
+                model_metadata=model_metadata,
+                data_config=data_config,
+                allow_mismatch=args.allow_dataset_mismatch,
+            )
+        selected_reports_dir = model_reports_dir(data_config, student_config)
 
     records = None
     extra_metadata = None
@@ -1946,6 +2061,7 @@ def command(args: argparse.Namespace) -> None:
         records=records,
         extra_metadata=extra_metadata,
         runtime=args.runtime,
+        model_metadata=model_metadata,
     )
     output_path = write_report(
         report,
@@ -1957,6 +2073,7 @@ def command(args: argparse.Namespace) -> None:
             baseline=args.baseline,
             runtime=args.runtime,
             runtime_model=args.ollama_model,
+            reports_directory=selected_reports_dir,
         ),
     )
 
@@ -1991,9 +2108,20 @@ def main() -> None:
         description="Evaluate a fine-tuned or baseline student model on configured splits."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",
+    )
+    parser.add_argument(
+        "--model-version",
+        default=None,
+        help="LoRA version. Defaults to the latest completed version.",
+    )
+    parser.add_argument(
+        "--allow-dataset-mismatch",
+        action="store_true",
+        help="Continue non-interactively when model and dataset lineage differ.",
     )
     parser.add_argument(
         "--split",
@@ -2023,7 +2151,10 @@ def main() -> None:
     parser.add_argument(
         "--adapter-dir",
         default=None,
-        help="LoRA adapter directory. Defaults to training.output_dir in the student config.",
+        help=(
+            "LoRA adapter directory. Defaults to the selected/latest completed version "
+            "below training.output_dir."
+        ),
     )
     parser.add_argument(
         "--baseline",

@@ -28,8 +28,21 @@ from cypher_3dsg_agent_distillation.core.cli_output import (
     print_breakdown,
     print_summary,
 )
-from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config
+from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
+    ensure_parent,
+    load_data_config,
+    with_teacher_run,
+)
 from cypher_3dsg_agent_distillation.core.io import read_jsonl, write_jsonl
+from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
+    config_record,
+    record_stage,
+    require_new_outputs,
+    serializable_arguments,
+    split_fingerprints,
+)
 from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import (
     load_raw_seed_records_from_config,
     prepare_seed_records,
@@ -1053,6 +1066,9 @@ def split_report_payload(
         "metadata": {
             "created_at": datetime.now(UTC).isoformat(),
             "scene_id": data_config.get("scene_id"),
+            "dataset_version": data_config.get("dataset_version"),
+            "teacher_name": data_config.get("teacher_name"),
+            "teacher_run": data_config.get("teacher_run"),
             "render_view": render_view,
             "optimize_student_traces": optimize_enabled,
             "max_per_task_type": data_config.get("max_per_task_type"),
@@ -1137,7 +1153,25 @@ def split_report_lines(
 
 
 def split_command(args: argparse.Namespace) -> None:
-    config = load_data_config(args.data_config)
+    config = load_data_config(args.data_config, dataset_version=args.dataset_version)
+    teacher_name = args.teacher or config.get("teacher_name")
+    if not teacher_name:
+        raise ValueError(
+            "No teacher run is active for this dataset. Generate traces first or pass --teacher."
+        )
+    config = with_teacher_run(
+        config,
+        teacher_name=str(teacher_name),
+        teacher_run=(
+            args.teacher_run
+            if args.teacher or args.teacher_run
+            else config.get("teacher_run")
+        ),
+    )
+    prospective_report = split_report_output_path(config, args.report_output)
+    require_new_outputs(
+        [*config["splits"].values(), prospective_report], force=args.force
+    )
     optimize_enabled = args.optimize_student_traces or bool(
         config.get("optimize_student_traces", False)
     )
@@ -1187,8 +1221,39 @@ def split_command(args: argparse.Namespace) -> None:
         ),
         split_report_output_path(config, args.report_output),
     )
+    split_records_metadata, split_fingerprint = split_fingerprints(
+        config["splits"], project_root=PROJECT_ROOT
+    )
+    metadata = record_stage(
+        config["metadata_path"],
+        "split",
+        arguments=serializable_arguments(args),
+        outputs={
+            **{f"split:{name}": path for name, path in config["splits"].items()},
+            "split_report": report_path,
+        },
+        project_root=PROJECT_ROOT,
+        extra={
+            "teacher_name": config["teacher_name"],
+            "teacher_run": config["teacher_run"],
+            "split_fingerprint": split_fingerprint,
+            "data_config": config_record(
+                config["data_config_path"], project_root=PROJECT_ROOT
+            ),
+        },
+    )
+    metadata["status"] = "complete"
+    metadata["split_files"] = split_records_metadata
+    metadata["split_fingerprint"] = split_fingerprint
+    metadata["active_teacher_run"] = {
+        "teacher_name": config["teacher_name"],
+        "version": config["teacher_run"],
+    }
+    atomic_write_yaml(metadata, config["metadata_path"])
     summary_rows = [
         ("Accepted traces", source_counts["accepted_teacher_traces"]),
+        ("Dataset version", config["dataset_version"]),
+        ("Teacher run", f"{config['teacher_name']}/{config['teacher_run']}"),
         ("Rejected traces scanned", source_counts["rejected_total"] if optimize_enabled else 0),
         ("Optimization", "enabled" if optimize_enabled else "disabled"),
         ("Render view", args.render_view),
@@ -1222,7 +1287,9 @@ def split_command(args: argparse.Namespace) -> None:
 
 
 def prepare_seeds_command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     profiles = load_experiment_profiles_from_config(data_config)
     if not profiles:
         raise ValueError(
@@ -1242,13 +1309,27 @@ def prepare_seeds_command(args: argparse.Namespace) -> None:
         metadata_defaults=seed_defaults.get("metadata", {}),
     )
     output_path = data_config["seed_records_jsonl_path"]
+    require_new_outputs([output_path], force=args.force)
     write_jsonl(prepared, output_path)
+    record_stage(
+        data_config["metadata_path"],
+        "prepare_seeds",
+        arguments=serializable_arguments(args),
+        outputs={"seed_records": output_path},
+        project_root=PROJECT_ROOT,
+        extra={
+            "data_config": config_record(
+                data_config["data_config_path"], project_root=PROJECT_ROOT
+            )
+        },
+    )
     counts = Counter(record.query_type for record in prepared)
     family_counts = Counter(record.task_family for record in prepared)
     print_summary(
         "Seed records prepared",
         [
             ("Scene", data_config["scene_id"]),
+            ("Dataset version", data_config["dataset_version"]),
             ("Records", len(prepared)),
             ("Question types", len(counts)),
             ("Task families", format_counter(family_counts)),
@@ -1263,10 +1344,20 @@ def main() -> None:
 
     seeds_parser = subparsers.add_parser("prepare-seeds")
     seeds_parser.add_argument("--data-config", default="configs/data.yaml")
+    seeds_parser.add_argument("--dataset-version", default=None)
+    seeds_parser.add_argument("--force", action="store_true")
     seeds_parser.set_defaults(func=prepare_seeds_command)
 
     split_parser = subparsers.add_parser("split")
     split_parser.add_argument("--data-config", default="configs/data.yaml")
+    split_parser.add_argument("--dataset-version", default=None)
+    split_parser.add_argument(
+        "--teacher",
+        default=None,
+        help="Teacher folder name. Defaults to the dataset's active teacher.",
+    )
+    split_parser.add_argument("--teacher-run", default=None)
+    split_parser.add_argument("--force", action="store_true")
     split_parser.add_argument(
         "--render-view",
         choices=[view.value for view in RenderView],
@@ -1278,7 +1369,7 @@ def main() -> None:
         default=None,
         help=(
             "Optional JSON split report path. Defaults to "
-            "data/3dsg/{scene_id}/reports/split.report.json."
+            "data/datasets/{scene_id}/{version}/reports/dataset/split.report.json."
         ),
     )
     split_parser.set_defaults(func=split_command)

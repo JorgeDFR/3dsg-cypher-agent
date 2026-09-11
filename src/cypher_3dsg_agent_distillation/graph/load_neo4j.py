@@ -223,7 +223,9 @@ def command(args: argparse.Namespace) -> None:
     uri = args.uri or os.environ.get("NEO4J_URI")
     scene = args.scene
     if scene is None:
-        scene = load_data_config(args.data_config)["scene_path"]
+        scene = load_data_config(
+            args.data_config, dataset_version=args.dataset_version
+        )["scene_path"]
     summary = load_scene(
         scene_path=scene,
         uri=neo4j_uri_candidates(uri),
@@ -256,6 +258,7 @@ def main() -> None:
         help="Scene JSON path. Defaults to scene_path from --data-config.",
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--uri",
         default=None,

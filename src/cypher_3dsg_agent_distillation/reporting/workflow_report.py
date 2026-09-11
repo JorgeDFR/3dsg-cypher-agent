@@ -17,10 +17,15 @@ from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
     load_data_config,
-    load_yaml,
+    load_student_config,
+    model_reports_dir,
     resolve_project_path,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
+from cypher_3dsg_agent_distillation.core.versioning import (
+    confirm_dataset_lineage,
+    read_metadata,
+)
 from cypher_3dsg_agent_distillation.cypher.cypher_match_diagnostics import (
     result_match_diagnostics,
 )
@@ -49,9 +54,15 @@ CLEAN_DETAIL_FIELD_TOKENS = ("answer", "cypher", "solution")
 PRE_TABLE_KEYS = {"gold_cypher", "model_cypher", "sample", "solution"}
 
 
-def workflow_report_output_path(data_config: dict[str, Any], output: str | None = None) -> Path:
+def workflow_report_output_path(
+    data_config: dict[str, Any],
+    output: str | None = None,
+    student_config: dict[str, Any] | None = None,
+) -> Path:
     if output:
         return Path(output)
+    if student_config is not None and student_config.get("model_version"):
+        return model_reports_dir(data_config, student_config) / DEFAULT_REPORT_NAME
     return Path(data_config["test_report_path"]).with_name(DEFAULT_REPORT_NAME)
 
 
@@ -637,10 +648,11 @@ def report_path(data_config: dict[str, Any], name: str) -> Path:
 
 
 def collect_report_files(data_config: dict[str, Any]) -> list[dict[str, Any]]:
-    directory = reports_dir(data_config)
+    dataset_reports = reports_dir(data_config)
+    directory = dataset_reports.parent if dataset_reports.name == "dataset" else dataset_reports
     if not directory.exists():
         return []
-    return [file_info(path) for path in sorted(directory.glob("*.report.json"))]
+    return [file_info(path) for path in sorted(directory.rglob("*.report.json"))]
 
 
 def report_quantization(report: dict[str, Any], path: Path) -> str:
@@ -666,8 +678,13 @@ def report_quantization(report: dict[str, Any], path: Path) -> str:
 
 def collect_quantization_reports(
     data_config: dict[str, Any],
+    student_config: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    directory = reports_dir(data_config)
+    directory = (
+        model_reports_dir(data_config, student_config)
+        if student_config and student_config.get("model_version")
+        else reports_dir(data_config)
+    )
     if not directory.exists():
         return {}
 
@@ -744,6 +761,16 @@ def collect_workflow_report_data(
         split: read_jsonl_if_exists(data_config["splits"][split]) for split in SPLITS
     }
     split_report = read_json_if_exists(report_path(data_config, "split.report.json"))
+    selected_model_reports_dir = (
+        model_reports_dir(data_config, student_config)
+        if student_config and student_config.get("model_version")
+        else reports_dir(data_config)
+    )
+    baseline_reports_dir = (
+        model_reports_dir(data_config, student_config, baseline=True)
+        if student_config and student_config.get("model_family")
+        else reports_dir(data_config)
+    )
     derived_optimized = [
         optimized
         for split, records in split_records.items()
@@ -752,23 +779,25 @@ def collect_workflow_report_data(
     ]
     eval_loss_reports = {
         split: read_json_if_exists(
-            report_path(data_config, f"{split}.student.eval-loss.report.json")
+            selected_model_reports_dir / f"{split}.student.eval-loss.report.json"
         )
         for split in SPLITS
     }
     raw_generation_reports = {
         split: read_json_if_exists(
-            report_path(data_config, f"{split}.student.raw-generation.report.json")
+            selected_model_reports_dir / f"{split}.student.raw-generation.report.json"
         )
         for split in SPLITS
     }
     baseline_raw_generation_reports = {
         split: read_json_if_exists(
-            report_path(data_config, f"{split}.baseline.raw-generation.report.json")
+            baseline_reports_dir / f"{split}.baseline.raw-generation.report.json"
         )
         for split in SPLITS
     }
-    quantization_raw_generation_reports = collect_quantization_reports(data_config)
+    quantization_raw_generation_reports = collect_quantization_reports(
+        data_config, student_config
+    )
     agent_reports = {
         split: read_json_if_exists(report_path(data_config, f"{split}.agent.report.json"))
         for split in SPLITS
@@ -793,6 +822,8 @@ def collect_workflow_report_data(
         "metadata": {
             "created_at": datetime.now(UTC).isoformat(),
             "scene_id": data_config.get("scene_id"),
+            "dataset_version": data_config.get("dataset_version"),
+            "model_version": (student_config or {}).get("model_version"),
             "data_config": relative_path(data_config.get("data_config_path")),
             "scene_path": relative_path(data_config.get("scene_path")),
         },
@@ -861,7 +892,7 @@ def collect_workflow_report_data(
             "student_config": student_config or {},
             "trainer_state": collect_trainer_state(student_config),
             "aggregate_eval_loss": read_json_if_exists(
-                report_path(data_config, "student.eval-loss.report.json")
+                selected_model_reports_dir / "student.eval-loss.report.json"
             ),
             "eval_loss_reports": eval_loss_reports,
         },
@@ -3318,20 +3349,30 @@ def write_workflow_report(
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
-    data_config["data_config_path"] = args.data_config
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     student_config = None
     if args.student_config:
-        student_config = load_yaml(resolve_project_path(args.student_config))
+        student_config = load_student_config(
+            args.student_config, model_version=args.model_version
+        )
+        confirm_dataset_lineage(
+            model_metadata=read_metadata(student_config["model_metadata_path"]),
+            data_config=data_config,
+            allow_mismatch=args.allow_dataset_mismatch,
+        )
     output_path = write_workflow_report(
         data_config,
         student_config,
-        workflow_report_output_path(data_config, args.output),
+        workflow_report_output_path(data_config, args.output, student_config),
     )
     print_summary(
         "Workflow report generated",
         [
             ("Scene", data_config["scene_id"]),
+            ("Dataset version", data_config["dataset_version"]),
+            ("Model version", (student_config or {}).get("model_version", "none")),
             ("Output", output_path),
             ("Size", f"{output_path.stat().st_size / (1024 * 1024):.1f} MiB"),
             ("Open", f"file://{output_path}"),
@@ -3344,17 +3385,20 @@ def main() -> None:
         description="Generate a static HTML report for a configured 3DSG workflow scene."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",
         help="Optional student config used to show training settings and trainer state.",
     )
+    parser.add_argument("--model-version", default=None)
+    parser.add_argument("--allow-dataset-mismatch", action="store_true")
     parser.add_argument(
         "--output",
         default=None,
         help=(
             "Optional HTML output path. Defaults to "
-            "data/3dsg/{scene_id}/reports/workflow_report.html."
+            "the selected dataset/model report directory."
         ),
     )
     args = parser.parse_args()

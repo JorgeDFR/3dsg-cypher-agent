@@ -10,7 +10,7 @@ __pycache__
 .env.*
 !.env.example
 
-data/3dsg
+data/datasets
 outputs
 
 external/llama.cpp

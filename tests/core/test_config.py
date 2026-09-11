@@ -2,14 +2,19 @@ from pathlib import Path
 
 import pytest
 
+from cypher_3dsg_agent_distillation.core import config as config_module
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     data_paths_from_config,
     load_data_config,
+    model_reports_dir,
+    ollama_export_metadata,
+    teacher_name_from_config,
 )
 
 
 def test_data_paths_keep_scene_path_explicit_and_derive_generated_scene_dir():
+    version = "2026-09-08-T-12-05-47-Z"
     paths = data_paths_from_config(
         {
             "scene_id": "office_scene",
@@ -17,7 +22,8 @@ def test_data_paths_keep_scene_path_explicit_and_derive_generated_scene_dir():
             "schema_path": "schema_3dsg.yaml",
             "experiment_profile_path": "cypher_qa_template.yaml",
             "question_templates_path": "cypher_qa_3dsg.yaml",
-        }
+        },
+        dataset_version=version,
     )
 
     assert paths.scene_path == Path("/tmp/hydra/scene_graph.json")
@@ -29,32 +35,55 @@ def test_data_paths_keep_scene_path_explicit_and_derive_generated_scene_dir():
         PROJECT_ROOT / "configs" / "question_templates" / "cypher_qa_3dsg.yaml"
     )
     assert paths.raw_questions_path == (
-        PROJECT_ROOT / "data" / "3dsg" / "office_scene" / "generated_questions.yaml"
+        PROJECT_ROOT
+        / "data"
+        / "datasets"
+        / "office_scene"
+        / version
+        / "generated_questions.yaml"
     )
     assert paths.seed_records_jsonl_path == (
         PROJECT_ROOT
         / "data"
-        / "3dsg"
+        / "datasets"
         / "office_scene"
+        / version
         / "cypher_seed_records.jsonl"
     )
     assert paths.teacher_traces_jsonl_path == (
         PROJECT_ROOT
         / "data"
-        / "3dsg"
+        / "datasets"
         / "office_scene"
+        / version
         / "traces"
         / "teacher_traces.jsonl"
     )
     assert paths.accepted_traces_path == (
-        PROJECT_ROOT / "data" / "3dsg" / "office_scene" / "traces" / "accepted.json"
+        PROJECT_ROOT
+        / "data"
+        / "datasets"
+        / "office_scene"
+        / version
+        / "traces"
+        / "accepted.json"
     )
     assert paths.splits["test"] == (
-        PROJECT_ROOT / "data" / "3dsg" / "office_scene" / "splits" / "test.jsonl"
+        PROJECT_ROOT
+        / "data"
+        / "datasets"
+        / "office_scene"
+        / version
+        / "splits"
+        / "test.jsonl"
     )
 
 
-def test_load_data_config_expands_derived_paths(tmp_path):
+def test_load_data_config_expands_derived_paths(tmp_path, monkeypatch):
+    generated_root = tmp_path / "generated"
+    version = "2026-09-08-T-12-05-47-Z"
+    (generated_root / "uhumans2" / version).mkdir(parents=True)
+    monkeypatch.setattr(config_module, "GENERATED_DATASETS_ROOT", generated_root)
     config_path = tmp_path / "data.yaml"
     config_path.write_text(
         "\n".join(
@@ -72,13 +101,13 @@ def test_load_data_config_expands_derived_paths(tmp_path):
     assert config["scene_path"] == str(PROJECT_ROOT / "data" / "scenes" / "uhumans2_office.json")
     assert config["schema_path"] == str(PROJECT_ROOT / "configs" / "schema_3dsg.yaml")
     assert config["teacher_traces_jsonl_path"] == str(
-        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "teacher_traces.jsonl"
+        generated_root / "uhumans2" / version / "traces" / "teacher_traces.jsonl"
     )
     assert config["accepted_traces_path"] == str(
-        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "traces" / "accepted.json"
+        generated_root / "uhumans2" / version / "traces" / "accepted.json"
     )
     assert config["splits"]["train"] == str(
-        PROJECT_ROOT / "data" / "3dsg" / "uhumans2" / "splits" / "train.jsonl"
+        generated_root / "uhumans2" / version / "splits" / "train.jsonl"
     )
 
 
@@ -90,6 +119,13 @@ def test_scene_id_must_not_be_a_path():
                 "scene_path": "/tmp/scene.json",
             }
         )
+
+
+def test_teacher_folder_uses_model_name_or_synthetic_provider():
+    assert teacher_name_from_config(
+        {"provider": "openrouter", "model": "openai/gpt-oss-120b"}
+    ) == "gpt-oss-120b"
+    assert teacher_name_from_config({"provider": "synthetic"}) == "synthetic"
 
 
 def test_data_paths_resolve_multiple_question_sets():
@@ -136,3 +172,37 @@ def test_duplicate_question_set_names_are_rejected():
                 ],
             }
         )
+
+
+def test_ollama_metadata_identifies_source_model_version_and_report_directory(tmp_path):
+    export_dir = tmp_path / "ollama" / "qwen-agent"
+    export_dir.mkdir(parents=True)
+    (export_dir / "metadata.yaml").write_text(
+        "\n".join(
+            [
+                "model_name: qwen-agent",
+                "source_model:",
+                "  family: qwen-family",
+                "  version: 2026-09-08-T-15-05-21-Z",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    student = {
+        "model_family": "qwen-family",
+        "model_version": "2026-09-08-T-15-05-21-Z",
+        "ollama_export": {"export_root": str(tmp_path / "ollama")},
+    }
+    data = {"dataset_dir": str(tmp_path / "dataset")}
+
+    metadata = ollama_export_metadata(student, "qwen-agent-q4_k_m")
+
+    assert metadata["source_model"]["version"] == "2026-09-08-T-15-05-21-Z"
+    assert model_reports_dir(data, student) == (
+        tmp_path
+        / "dataset"
+        / "reports"
+        / "models"
+        / "qwen-family"
+        / "2026-09-08-T-15-05-21-Z"
+    )

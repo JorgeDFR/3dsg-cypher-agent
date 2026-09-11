@@ -7,9 +7,19 @@ from typing import Any
 
 import yaml
 
+from cypher_3dsg_agent_distillation.core.versioning import (
+    create_version_dir,
+    read_metadata,
+    resolve_version_dir,
+    slugify,
+    validate_version,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
-GENERATED_3DSG_ROOT = PROJECT_ROOT / "data" / "3dsg"
+GENERATED_DATASETS_ROOT = PROJECT_ROOT / "data" / "datasets"
+# Kept as a compatibility alias for callers which imported the old constant.
+GENERATED_3DSG_ROOT = GENERATED_DATASETS_ROOT
 
 
 @dataclass(frozen=True)
@@ -22,11 +32,15 @@ class QuestionSetPaths:
 @dataclass(frozen=True)
 class DataPaths:
     scene_id: str
+    dataset_version: str
     scene_path: Path
     schema_path: Path
     experiment_profile_path: Path | None
     question_templates_path: Path
     question_sets: tuple[QuestionSetPaths, ...]
+    dataset_root: Path
+    dataset_dir: Path
+    metadata_path: Path
     scene_dir: Path
     scene_template_values_path: Path
     raw_questions_path: Path
@@ -36,6 +50,17 @@ class DataPaths:
     rejected_traces_path: Path
     splits: dict[str, Path]
     test_report_path: Path
+
+
+@dataclass(frozen=True)
+class TeacherRunPaths:
+    teacher_name: str
+    teacher_run: str
+    run_dir: Path
+    metadata_path: Path
+    teacher_traces_jsonl_path: Path
+    accepted_traces_path: Path
+    rejected_traces_path: Path
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -86,12 +111,35 @@ def scene_id_from_config(config: dict[str, Any]) -> str:
     return scene_id
 
 
-def data_paths_from_config(config: dict[str, Any]) -> DataPaths:
+def data_paths_from_config(
+    config: dict[str, Any],
+    *,
+    dataset_version: str | None = None,
+    create_version: bool = False,
+    require_existing: bool = False,
+) -> DataPaths:
     scene_id = scene_id_from_config(config)
     if "scene_path" not in config:
         raise KeyError("data config requires `scene_path` for the user-provided 3DSG file.")
 
-    scene_dir = GENERATED_3DSG_ROOT / scene_id
+    dataset_root = GENERATED_DATASETS_ROOT / scene_id
+    requested_version = dataset_version or config.get("dataset_version")
+    if create_version:
+        resolved_version, scene_dir = create_version_dir(
+            dataset_root,
+            None if requested_version in (None, "latest") else str(requested_version),
+        )
+    elif require_existing:
+        resolved_version, scene_dir = resolve_version_dir(
+            dataset_root,
+            None if requested_version is None else str(requested_version),
+            artifact_label="dataset version",
+        )
+    else:
+        resolved_version = str(requested_version or "latest")
+        if resolved_version != "latest":
+            resolved_version = validate_version(resolved_version)
+        scene_dir = dataset_root / resolved_version
     raw_question_sets = config.get("question_sets")
     if raw_question_sets is not None:
         if not isinstance(raw_question_sets, list) or not raw_question_sets:
@@ -145,11 +193,15 @@ def data_paths_from_config(config: dict[str, Any]) -> DataPaths:
     first_question_set = resolved_question_sets[0]
     return DataPaths(
         scene_id=scene_id,
+        dataset_version=resolved_version,
         scene_path=resolve_project_path(config["scene_path"]),
         schema_path=resolve_config_path(config.get("schema_path", "schema_3dsg.yaml")),
         experiment_profile_path=first_question_set.experiment_profile_path,
         question_templates_path=first_question_set.question_templates_path,
         question_sets=resolved_question_sets,
+        dataset_root=dataset_root,
+        dataset_dir=scene_dir,
+        metadata_path=scene_dir / "metadata.yaml",
         scene_dir=scene_dir,
         scene_template_values_path=scene_dir / "scene_template_values.yaml",
         raw_questions_path=scene_dir / "generated_questions.yaml",
@@ -163,16 +215,32 @@ def data_paths_from_config(config: dict[str, Any]) -> DataPaths:
             "test": scene_dir / "splits" / "test.jsonl",
             "challenge": scene_dir / "splits" / "challenge.jsonl",
         },
-        test_report_path=scene_dir / "reports" / "test.agent.report.json",
+        test_report_path=scene_dir / "reports" / "dataset" / "test.agent.report.json",
     )
 
 
-def load_data_config(path: str | Path) -> dict[str, Any]:
-    config = load_yaml(resolve_project_path(path))
-    paths = data_paths_from_config(config)
+def load_data_config(
+    path: str | Path,
+    *,
+    dataset_version: str | None = None,
+    create_version: bool = False,
+) -> dict[str, Any]:
+    config_path = resolve_project_path(path)
+    config = load_yaml(config_path)
+    paths = data_paths_from_config(
+        config,
+        dataset_version=dataset_version,
+        create_version=create_version,
+        require_existing=not create_version,
+    )
     resolved = dict(config)
     resolved.update(
         {
+            "data_config_path": str(config_path),
+            "dataset_version": paths.dataset_version,
+            "dataset_root": str(paths.dataset_root),
+            "dataset_dir": str(paths.dataset_dir),
+            "metadata_path": str(paths.metadata_path),
             "scene_path": str(paths.scene_path),
             "schema_path": str(paths.schema_path),
             "question_templates_path": str(paths.question_templates_path),
@@ -196,4 +264,195 @@ def load_data_config(path: str | Path) -> dict[str, Any]:
     )
     if paths.experiment_profile_path is not None:
         resolved["experiment_profile_path"] = str(paths.experiment_profile_path)
+    try:
+        dataset_metadata = read_metadata(paths.metadata_path)
+    except (FileNotFoundError, TypeError, yaml.YAMLError):
+        dataset_metadata = {}
+    active_teacher = dataset_metadata.get("active_teacher_run")
+    if isinstance(active_teacher, dict):
+        teacher_name = active_teacher.get("teacher_name")
+        teacher_run = active_teacher.get("version")
+        if teacher_name and teacher_run:
+            try:
+                resolved = with_teacher_run(
+                    resolved,
+                    teacher_name=str(teacher_name),
+                    teacher_run=str(teacher_run),
+                )
+            except (FileNotFoundError, ValueError):
+                pass
     return resolved
+
+
+def teacher_name_from_config(config: dict[str, Any]) -> str:
+    provider = str(config.get("provider") or "openrouter").strip().lower()
+    if provider == "synthetic":
+        return "synthetic"
+    model = str(config.get("model") or provider).strip().rstrip("/")
+    return slugify(model.rsplit("/", 1)[-1], fallback=provider)
+
+
+def teacher_run_paths(
+    data_config: dict[str, Any],
+    *,
+    teacher_name: str,
+    teacher_run: str | None = None,
+    create_version: bool = False,
+) -> TeacherRunPaths:
+    name = slugify(teacher_name, fallback="teacher")
+    root = Path(data_config["dataset_dir"]) / "traces" / name
+    if create_version:
+        version, run_dir = create_version_dir(
+            root,
+            None if teacher_run in (None, "latest") else teacher_run,
+        )
+    else:
+        version, run_dir = resolve_version_dir(
+            root,
+            teacher_run,
+            completed_only=True,
+            artifact_label=f"{name} teacher run",
+        )
+    return TeacherRunPaths(
+        teacher_name=name,
+        teacher_run=version,
+        run_dir=run_dir,
+        metadata_path=run_dir / "metadata.yaml",
+        teacher_traces_jsonl_path=run_dir / "teacher_traces.jsonl",
+        accepted_traces_path=run_dir / "accepted.json",
+        rejected_traces_path=run_dir / "rejected.json",
+    )
+
+
+def with_teacher_run(
+    data_config: dict[str, Any],
+    *,
+    teacher_name: str,
+    teacher_run: str | None = None,
+    create_version: bool = False,
+) -> dict[str, Any]:
+    paths = teacher_run_paths(
+        data_config,
+        teacher_name=teacher_name,
+        teacher_run=teacher_run,
+        create_version=create_version,
+    )
+    resolved = dict(data_config)
+    resolved.update(
+        {
+            "teacher_name": paths.teacher_name,
+            "teacher_run": paths.teacher_run,
+            "teacher_run_dir": str(paths.run_dir),
+            "teacher_metadata_path": str(paths.metadata_path),
+            "teacher_traces_jsonl_path": str(paths.teacher_traces_jsonl_path),
+            "accepted_traces_path": str(paths.accepted_traces_path),
+            "rejected_traces_path": str(paths.rejected_traces_path),
+        }
+    )
+    return resolved
+
+
+def load_student_config(
+    path: str | Path,
+    *,
+    model_version: str | None = None,
+    create_version: bool = False,
+) -> dict[str, Any]:
+    config = load_student_family_config(path)
+    config_path = Path(config["student_config_path"])
+    training = dict(config.get("training") or {})
+    family_root = Path(config["model_family_root"])
+    if create_version:
+        version, output_dir = create_version_dir(
+            family_root,
+            None if model_version in (None, "latest") else model_version,
+        )
+    else:
+        version, output_dir = resolve_version_dir(
+            family_root,
+            model_version,
+            completed_only=True,
+            artifact_label="LoRA model version",
+        )
+    training["output_dir"] = str(output_dir)
+    resolved = dict(config)
+    resolved["training"] = training
+    resolved.update(
+        {
+            "student_config_path": str(config_path),
+            "model_family": family_root.name,
+            "model_family_root": str(family_root),
+            "model_version": version,
+            "model_dir": str(output_dir),
+            "model_metadata_path": str(output_dir / "metadata.yaml"),
+        }
+    )
+    return resolved
+
+
+def load_student_family_config(path: str | Path) -> dict[str, Any]:
+    config_path = resolve_project_path(path)
+    config = load_yaml(config_path)
+    training = dict(config.get("training") or {})
+    if "output_dir" not in training:
+        raise KeyError("student config requires training.output_dir.")
+    family_root = resolve_project_path(training["output_dir"])
+    resolved = dict(config)
+    resolved.update(
+        {
+            "student_config_path": str(config_path),
+            "model_family": family_root.name,
+            "model_family_root": str(family_root),
+        }
+    )
+    return resolved
+
+
+def model_reports_dir(
+    data_config: dict[str, Any],
+    student_config: dict[str, Any],
+    *,
+    baseline: bool = False,
+    model_version: str | None = None,
+) -> Path:
+    family = slugify(str(student_config.get("model_family") or "student"), fallback="student")
+    version = (
+        "baseline"
+        if baseline
+        else slugify(
+            str(model_version or student_config.get("model_version") or "unknown"),
+            fallback="unknown",
+        )
+    )
+    dataset_dir_value = data_config.get("dataset_dir")
+    if dataset_dir_value:
+        reports_root = Path(dataset_dir_value) / "reports"
+    else:
+        legacy_reports = Path(data_config["test_report_path"]).parent
+        reports_root = (
+            legacy_reports.parent if legacy_reports.name == "dataset" else legacy_reports
+        )
+    return reports_root / "models" / family / version
+
+
+def ollama_export_metadata(
+    student_config: dict[str, Any], ollama_model: str
+) -> dict[str, Any]:
+    export_config = student_config.get("ollama_export") or {}
+    export_root = resolve_project_path(export_config.get("export_root", "outputs/ollama"))
+    matches: list[tuple[int, dict[str, Any]]] = []
+    if export_root.is_dir():
+        for path in export_root.glob("*/metadata.yaml"):
+            try:
+                metadata = load_yaml(path)
+            except (OSError, TypeError, yaml.YAMLError):
+                continue
+            exported_name = str(metadata.get("model_name") or path.parent.name)
+            if ollama_model == exported_name or ollama_model.startswith(f"{exported_name}-"):
+                matches.append((len(exported_name), metadata))
+    if not matches:
+        raise FileNotFoundError(
+            f"No outputs/ollama metadata.yaml matches registered model `{ollama_model}`. "
+            "Export the model with this repository before evaluating it."
+        )
+    return max(matches, key=lambda item: item[0])[1]

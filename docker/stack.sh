@@ -467,7 +467,18 @@ import yaml
 
 config_path = Path(sys.argv[1])
 config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-adapter_dir = Path(config["training"]["output_dir"])
+model_root = Path(config["training"]["output_dir"])
+versions = []
+for candidate in model_root.iterdir() if model_root.is_dir() else []:
+    metadata_path = candidate / "metadata.yaml"
+    if not metadata_path.is_file():
+        continue
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}
+    if metadata.get("status") == "complete":
+        versions.append(candidate)
+if not versions:
+    raise SystemExit(f"No completed trained student version found in {model_root}")
+adapter_dir = sorted(versions, key=lambda path: path.name)[-1]
 has_weights = any(
     (adapter_dir / filename).is_file()
     for filename in ("adapter_model.safetensors", "adapter_model.bin")

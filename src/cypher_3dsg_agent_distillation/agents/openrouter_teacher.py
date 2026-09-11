@@ -35,8 +35,24 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
     render_profile_messages,
 )
 from cypher_3dsg_agent_distillation.core.cli_output import print_summary
-from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
+    ensure_parent,
+    load_data_config,
+    load_yaml,
+    resolve_project_path,
+    teacher_name_from_config,
+    with_teacher_run,
+)
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
+from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
+    config_record,
+    file_fingerprint,
+    git_provenance,
+    iso_now,
+    serializable_arguments,
+)
 from cypher_3dsg_agent_distillation.cypher.evaluation import (
     ResultShapeError,
     normalize_answer,
@@ -1296,7 +1312,9 @@ def debug_trace_record(
 def generate_command(args: argparse.Namespace) -> None:
     teacher_config = load_yaml(args.teacher_config)
     provider = configured_teacher_provider(teacher_config)
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     profiles = load_experiment_profiles_from_config(data_config)
     if not profiles:
         raise ValueError(
@@ -1318,7 +1336,59 @@ def generate_command(args: argparse.Namespace) -> None:
         raise ValueError("The synthetic teacher requires traces_per_seed=1.")
     if provider == "synthetic" and args.static_only:
         raise ValueError("The synthetic teacher requires Neo4j execution; disable --static-only.")
-
+    effective_teacher_config = dict(teacher_config)
+    if model is not None:
+        effective_teacher_config["model"] = model
+    data_config = with_teacher_run(
+        data_config,
+        teacher_name=args.teacher or teacher_name_from_config(effective_teacher_config),
+        teacher_run=args.teacher_run,
+        create_version=True,
+    )
+    profile_inputs = {}
+    for question_set in data_config.get("question_sets") or []:
+        profile_path = question_set["experiment_profile_path"]
+        profile_inputs[f"profile:{question_set['name']}"] = config_record(
+            profile_path, project_root=PROJECT_ROOT
+        )
+        for key, value in load_yaml(profile_path).items():
+            if key.endswith("_path") and value:
+                profile_inputs[f"{question_set['name']}:{key}"] = config_record(
+                    resolve_project_path(value), project_root=PROJECT_ROOT
+                )
+    created_at = iso_now()
+    atomic_write_yaml(
+        {
+            "schema_version": 1,
+            "artifact_type": "teacher_run",
+            "teacher_name": data_config["teacher_name"],
+            "version": data_config["teacher_run"],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "status": "running",
+            "dataset": {
+                "scene_id": data_config["scene_id"],
+                "version": data_config["dataset_version"],
+            },
+            "teacher_config": config_record(
+                resolve_project_path(args.teacher_config), project_root=PROJECT_ROOT
+            ),
+            "data_config": config_record(
+                data_config["data_config_path"], project_root=PROJECT_ROOT
+            ),
+            "profile_inputs": profile_inputs,
+            "effective": {
+                "provider": provider,
+                "model": model,
+                "arguments": serializable_arguments(args),
+            },
+            "input_seed_records": file_fingerprint(
+                data_config["seed_records_jsonl_path"], relative_to=PROJECT_ROOT
+            ),
+            "code": git_provenance(PROJECT_ROOT),
+        },
+        data_config["teacher_metadata_path"],
+    )
     client_context = (
         OpenRouterTeacherClient(
             # The model is always resolved for the OpenRouter provider above.
@@ -1442,11 +1512,45 @@ def generate_command(args: argparse.Namespace) -> None:
         json.dumps(rejected_debug_records, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    teacher_metadata = load_yaml(data_config["teacher_metadata_path"])
+    teacher_metadata.update(
+        {
+            "updated_at": iso_now(),
+            "status": "complete",
+            "counts": {
+                "seeds": len(seeds),
+                "attempts": total_attempts,
+                "accepted": len(teacher_records),
+                "rejected": len(rejected_debug_records),
+            },
+            "outputs": {
+                "teacher_traces": file_fingerprint(
+                    data_config["teacher_traces_jsonl_path"], relative_to=PROJECT_ROOT
+                ),
+                "accepted": file_fingerprint(
+                    data_config["accepted_traces_path"], relative_to=PROJECT_ROOT
+                ),
+                "rejected": file_fingerprint(
+                    data_config["rejected_traces_path"], relative_to=PROJECT_ROOT
+                ),
+            },
+        }
+    )
+    atomic_write_yaml(teacher_metadata, data_config["teacher_metadata_path"])
+    dataset_metadata = load_yaml(data_config["metadata_path"])
+    dataset_metadata["active_teacher_run"] = {
+        "teacher_name": data_config["teacher_name"],
+        "version": data_config["teacher_run"],
+    }
+    dataset_metadata["updated_at"] = iso_now()
+    atomic_write_yaml(dataset_metadata, data_config["metadata_path"])
     acceptance_rate = len(teacher_records) / total_attempts if total_attempts else 0.0
     print_summary(
         "Teacher traces generated",
         [
             ("Provider", provider),
+            ("Dataset version", data_config["dataset_version"]),
+            ("Teacher run", f"{data_config['teacher_name']}/{data_config['teacher_run']}"),
             ("Seeds", len(seeds)),
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
@@ -1501,6 +1605,17 @@ def main() -> None:
         default="configs/teacher_gpt_oss_120b.yaml",
     )
     generate_parser.add_argument("--data-config", default="configs/data.yaml")
+    generate_parser.add_argument("--dataset-version", default=None)
+    generate_parser.add_argument(
+        "--teacher",
+        default=None,
+        help="Optional path-safe teacher folder name.",
+    )
+    generate_parser.add_argument(
+        "--teacher-run",
+        default=None,
+        help="Optional new run version in YYYY-MM-DD-T-HH-MM-SS-Z format.",
+    )
     generate_parser.add_argument("--teacher-model", default=None)
     generate_parser.add_argument("--traces-per-seed", type=int, default=None)
     generate_parser.add_argument("--preflight", action="store_true")

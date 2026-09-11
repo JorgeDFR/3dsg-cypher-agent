@@ -13,10 +13,19 @@ from pathlib import Path
 from typing import Any
 
 from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
     ensure_parent,
     expanded_path,
+    load_student_config,
+    load_student_family_config,
     load_yaml,
     resolve_project_path,
+)
+from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
+    git_provenance,
+    iso_now,
+    read_metadata,
 )
 from cypher_3dsg_agent_distillation.training.train import dtype_from_name
 
@@ -49,6 +58,7 @@ class OllamaExportSettings:
     model_name: str
     base_model: str
     base_only: bool
+    export_dir: Path
     tokenizer: str | None
     trust_remote_code: bool
     adapter_dir: Path | None
@@ -241,7 +251,7 @@ def build_export_settings(
     training_config = student_config.get("training") or {}
     configured_adapter_dir = adapter_dir or training_config.get("output_dir")
     if not base_only and configured_adapter_dir is None:
-        raise ValueError("Fine-tuned exports require --adapter-dir or training.output_dir.")
+        raise ValueError("Fine-tuned exports require a resolved LoRA adapter directory.")
 
     resolved_model_name = model_name or export_config.get("model_name") or DEFAULT_MODEL_NAME
     export_root = export_root_from_config(export_config)
@@ -291,6 +301,7 @@ def build_export_settings(
         model_name=str(resolved_model_name),
         base_model=str(model_config["base_model"]),
         base_only=base_only,
+        export_dir=export_dir,
         tokenizer=model_config.get("tokenizer"),
         trust_remote_code=bool(model_config.get("trust_remote_code", False)),
         adapter_dir=(None if base_only else resolve_project_path(configured_adapter_dir)),
@@ -762,8 +773,39 @@ def run_export(
             write_settings_modelfile(settings)
 
 
+def replace_stale_export_directory(
+    settings: OllamaExportSettings,
+    *,
+    export_root: Path,
+    source_version: str,
+    stages: Sequence[str],
+    dry_run: bool = False,
+) -> bool:
+    starts_new_export = "merge" in stages or "convert" in stages
+    if not starts_new_export or dry_run or not settings.export_dir.exists():
+        return False
+    existing_metadata_path = settings.export_dir / "metadata.yaml"
+    existing_version = None
+    if existing_metadata_path.is_file():
+        existing = load_yaml(existing_metadata_path)
+        existing_version = (existing.get("source_model") or {}).get("version")
+    if existing_version == source_version:
+        return False
+    if settings.export_dir.parent.resolve() != export_root.resolve():
+        raise ValueError(
+            f"Refusing to replace Ollama directory outside {export_root}: "
+            f"{settings.export_dir}"
+        )
+    shutil.rmtree(settings.export_dir)
+    return True
+
+
 def command(args: argparse.Namespace) -> None:
-    student_config = load_yaml(resolve_project_path(args.student_config))
+    student_config = (
+        load_student_family_config(args.student_config)
+        if args.base_only
+        else load_student_config(args.student_config, model_version=args.model_version)
+    )
     settings = build_export_settings(
         student_config,
         model_name=args.model_name,
@@ -777,9 +819,29 @@ def command(args: argparse.Namespace) -> None:
         quantizations=args.quantizations,
         gguf_outtype=args.outtype,
     )
+    selected_stages = expand_stages(args.stages)
+    source_metadata = None
+    if not args.base_only:
+        source_metadata = read_metadata(student_config["model_metadata_path"])
+        replace_stale_export_directory(
+            settings,
+            export_root=export_root_from_config(student_config.get("ollama_export") or {}),
+            source_version=student_config["model_version"],
+            stages=selected_stages,
+            dry_run=args.dry_run,
+        )
+    elif "merge" in selected_stages or "convert" in selected_stages:
+        replace_stale_export_directory(
+            settings,
+            export_root=export_root_from_config(student_config.get("ollama_export") or {}),
+            source_version=f"base:{settings.base_model}",
+            stages=selected_stages,
+            dry_run=args.dry_run,
+        )
+
     run_export(
         settings,
-        stages=args.stages,
+        stages=selected_stages,
         llama_cpp_dir=args.llama_cpp_dir,
         convert_script=args.convert_script,
         quantize_bin=args.quantize_bin,
@@ -789,6 +851,34 @@ def command(args: argparse.Namespace) -> None:
         max_shard_size=args.max_shard_size,
         dry_run=args.dry_run,
     )
+    if not args.dry_run:
+        timestamp = iso_now()
+        metadata = {
+            "schema_version": 1,
+            "artifact_type": "ollama_export",
+            "model_name": settings.model_name,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "model_variant": "base" if args.base_only else "fine-tuned",
+            "base_model": settings.base_model,
+            "source_model": None,
+            "dataset": None,
+            "artifacts": export_metadata(settings),
+            "code": git_provenance(PROJECT_ROOT),
+        }
+        if source_metadata is not None:
+            model_dir = Path(student_config["model_dir"])
+            try:
+                source_path = model_dir.resolve().relative_to(PROJECT_ROOT.resolve())
+            except ValueError:
+                source_path = model_dir
+            metadata["source_model"] = {
+                "family": student_config["model_family"],
+                "version": student_config["model_version"],
+                "path": str(source_path),
+            }
+            metadata["dataset"] = source_metadata.get("dataset")
+        atomic_write_yaml(metadata, settings.export_dir / "metadata.yaml")
 
 
 def main() -> None:
@@ -798,6 +888,11 @@ def main() -> None:
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",
+    )
+    parser.add_argument(
+        "--model-version",
+        default=None,
+        help="LoRA version. Defaults to the latest completed version.",
     )
     parser.add_argument(
         "--stages",

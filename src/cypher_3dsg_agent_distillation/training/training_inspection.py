@@ -177,7 +177,9 @@ def print_text_report(report: dict[str, Any]) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     student_config = load_yaml(args.student_config)
     loss_mode = normalize_loss_mode(args.loss_mode)
     max_length = args.max_length or int(student_config["training"].get("max_length", 4096))
@@ -202,6 +204,7 @@ def main() -> None:
         description="Inspect rendered training text and supervised token spans."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",

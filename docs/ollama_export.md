@@ -127,8 +127,9 @@ Each `student_*.yaml` model profile contains its own `ollama_export` settings:
 
 Explicit CLI overrides remain available for adapter, merged checkpoint, GGUF,
 and Modelfile paths. The same student config also supplies `model.base_model`,
-optional tokenizer and remote-code settings, and the default adapter
-`training.output_dir`.
+optional tokenizer and remote-code settings. The default adapter is the latest
+completed version below `training.output_dir`; use `--model-version` to select a
+specific UTC timestamp.
 
 ## Qwen3.5 MTP metadata
 
@@ -170,9 +171,12 @@ challenge validation, and report pipeline with:
 docker/stack.sh demo-deploy
 ```
 
-This command requires the adapter referenced by `training.output_dir` in the
-student config to already exist. The commands below show the equivalent manual
-workflow and remain useful when running only selected stages.
+This command requires a completed adapter version below `training.output_dir`
+in the student config. GGUF output remains in one
+`outputs/ollama/{model_name}` directory. Exporting a different LoRA version
+deletes the previous directory first and writes the new source lineage to
+`metadata.yaml`. The commands below show the equivalent manual workflow and
+remain useful when running only selected stages.
 
 After exporting BF16, Q8_0, and Q4_K_M in one `--stages all` run, create one Modelfile
 per artifact. Keeping distinct files and registered model names prevents one

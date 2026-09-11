@@ -147,7 +147,9 @@ def write_report(evaluated: list[dict[str, Any]], output: str | Path) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
     split_path = data_config["splits"][args.split]
     report_path = Path(data_config["test_report_path"]).with_name(
         f"{args.split}.agent.report.json"
@@ -160,6 +162,7 @@ def command(args: argparse.Namespace) -> None:
         "Agent traces evaluated",
         [
             ("Split", args.split),
+            ("Dataset version", data_config["dataset_version"]),
             ("Records", summary["total"]),
             (
                 "Final-answer matches",
@@ -193,6 +196,7 @@ def command(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate agent trace records.")
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--split",
         choices=["train", "eval", "test", "challenge"],

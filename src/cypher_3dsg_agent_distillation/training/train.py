@@ -3,14 +3,29 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from cypher_3dsg_agent_distillation.agents.agent_prompts import run_cypher_tool_schema
 from cypher_3dsg_agent_distillation.core.cli_output import phase_progress, print_summary
-from cypher_3dsg_agent_distillation.core.config import load_data_config, load_yaml
+from cypher_3dsg_agent_distillation.core.config import (
+    PROJECT_ROOT,
+    load_data_config,
+    load_student_config,
+)
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
+)
+from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
+    config_record,
+    file_fingerprint,
+    git_provenance,
+    iso_now,
+    read_metadata,
+    serializable_arguments,
+    split_fingerprints,
 )
 
 DEFAULT_LORA_TARGETS = [
@@ -691,8 +706,48 @@ def command(args: argparse.Namespace) -> None:
     LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer = (
         require_training_dependencies()
     )
-    config = load_yaml(args.student_config)
-    data_config = load_data_config(args.data_config)
+    data_config = load_data_config(
+        args.data_config, dataset_version=args.dataset_version
+    )
+    config = load_student_config(
+        args.student_config,
+        model_version=args.model_version,
+        create_version=True,
+    )
+    split_files, split_fingerprint = split_fingerprints(
+        data_config["splits"], project_root=PROJECT_ROOT
+    )
+    created_at = iso_now()
+    atomic_write_yaml(
+        {
+            "schema_version": 1,
+            "artifact_type": "lora_model",
+            "model_family": config["model_family"],
+            "version": config["model_version"],
+            "created_at": created_at,
+            "updated_at": created_at,
+            "status": "running",
+            "dataset": {
+                "scene_id": data_config["scene_id"],
+                "version": data_config["dataset_version"],
+                "teacher_name": data_config.get("teacher_name"),
+                "teacher_run": data_config.get("teacher_run"),
+                "split_fingerprint": split_fingerprint,
+                "split_files": split_files,
+            },
+            "student_config": config_record(
+                config["student_config_path"], project_root=PROJECT_ROOT
+            ),
+            "effective_config": {
+                "model": config["model"],
+                "lora": config["lora"],
+                "training": config["training"],
+            },
+            "arguments": serializable_arguments(args),
+            "code": git_provenance(PROJECT_ROOT),
+        },
+        config["model_metadata_path"],
+    )
     with phase_progress("Loading student model", 2) as (progress, task_id):
         model, tokenizer = load_model_and_tokenizer(
             config,
@@ -752,6 +807,11 @@ def command(args: argparse.Namespace) -> None:
             has_eval_dataset=eval_dataset is not None,
         )
     )
+    metadata = read_metadata(config["model_metadata_path"])
+    metadata["effective_training_arguments"] = json.loads(
+        json.dumps(training_args.to_dict(), default=str)
+    )
+    atomic_write_yaml(metadata, config["model_metadata_path"])
     callbacks = []
     stopping_callback = early_stopping_callback(
         training_config,
@@ -810,6 +870,35 @@ def command(args: argparse.Namespace) -> None:
         summary_rows.append(("Best checkpoint", trainer.state.best_model_checkpoint))
     if trainer.state.best_metric is not None:
         summary_rows.append(("Best eval metric", f"{trainer.state.best_metric:.6f}"))
+    metadata = read_metadata(config["model_metadata_path"])
+    metadata.update(
+        {
+            "updated_at": iso_now(),
+            "status": "complete",
+            "resolved_base_model_revision": getattr(model.config, "_commit_hash", None),
+            "training_result": {
+                "metrics": metrics,
+                "best_model_checkpoint": trainer.state.best_model_checkpoint,
+                "best_metric": trainer.state.best_metric,
+            },
+            "artifacts": {
+                name: file_fingerprint(
+                    str(Path(config["model_dir"]) / name), relative_to=PROJECT_ROOT
+                )
+                for name in (
+                    "adapter_config.json",
+                    "adapter_model.safetensors",
+                    "adapter_model.bin",
+                    "tokenizer_config.json",
+                    "trainer_state.json",
+                )
+                if (Path(config["model_dir"]) / name).is_file()
+            },
+        }
+    )
+    atomic_write_yaml(metadata, config["model_metadata_path"])
+    summary_rows.append(("Dataset version", data_config["dataset_version"]))
+    summary_rows.append(("Model version", config["model_version"]))
     summary_rows.append(("Adapter output", training_config["output_dir"]))
     print_summary("Student LoRA training complete", summary_rows)
 
@@ -823,6 +912,12 @@ def main() -> None:
         default="configs/student_qwen3.5_4b.yaml",
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--dataset-version", default=None)
+    parser.add_argument(
+        "--model-version",
+        default=None,
+        help="Optional new model version in YYYY-MM-DD-T-HH-MM-SS-Z format.",
+    )
     args = parser.parse_args()
     command(args)
 

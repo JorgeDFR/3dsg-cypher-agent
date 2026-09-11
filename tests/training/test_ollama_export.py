@@ -12,6 +12,7 @@ from cypher_3dsg_agent_distillation.training.ollama_export import (
     expand_stages,
     merge_dtype_from_gguf_outtype,
     quantize_gguf,
+    replace_stale_export_directory,
     resolve_converter_python_bin,
     run_export,
     write_settings_modelfile,
@@ -75,6 +76,40 @@ def test_build_export_settings_separates_models_by_name(tmp_path):
     assert first.modelfile_path.parent == tmp_path / "agent-distilled"
     assert second.modelfile_path.parent == tmp_path / "another-agent"
     assert first.modelfile_gguf_path.parent != second.modelfile_gguf_path.parent
+
+
+def test_new_lora_version_replaces_single_ollama_export_directory(tmp_path):
+    settings = build_export_settings(student_config(tmp_path))
+    settings.export_dir.mkdir(parents=True)
+    old_file = settings.export_dir / "large-old-model.gguf"
+    old_file.touch()
+
+    replaced = replace_stale_export_directory(
+        settings,
+        export_root=tmp_path,
+        source_version="2026-09-08-T-12-05-47-Z",
+        stages=["merge", "convert"],
+    )
+
+    assert replaced is True
+    assert not settings.export_dir.exists()
+
+
+def test_modelfile_stage_does_not_delete_existing_ollama_export(tmp_path):
+    settings = build_export_settings(student_config(tmp_path))
+    settings.export_dir.mkdir(parents=True)
+    old_file = settings.export_dir / "model.gguf"
+    old_file.touch()
+
+    replaced = replace_stale_export_directory(
+        settings,
+        export_root=tmp_path,
+        source_version="2026-09-08-T-12-05-47-Z",
+        stages=["modelfile"],
+    )
+
+    assert replaced is False
+    assert old_file.exists()
 
 
 def test_write_settings_modelfile_writes_metadata(tmp_path):

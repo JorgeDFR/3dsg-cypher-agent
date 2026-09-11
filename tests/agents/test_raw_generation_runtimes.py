@@ -77,7 +77,7 @@ def test_ollama_messages_preserve_native_tool_history():
 
 def test_ollama_runtime_validates_server_and_registered_model():
     opener = RecordingOpener(
-        {"version": "0.32.4"},
+        {"version": "0.33.3"},
         {"details": {"format": "gguf", "quantization_level": "Q4_K_M"}},
     )
     runtime = OllamaRawGenerationRuntime(
@@ -93,7 +93,7 @@ def test_ollama_runtime_validates_server_and_registered_model():
         "http://ollama:11434/api/show",
     ]
     assert opener.requests[1][1] == {"model": "student-q4"}
-    assert runtime.metadata()["server_version"] == "0.32.4"
+    assert runtime.metadata()["server_version"] == "0.33.3"
     assert runtime.metadata()["model_details"]["quantization_level"] == "Q4_K_M"
 
 
