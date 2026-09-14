@@ -214,7 +214,7 @@ run_sweep() {
   provision_models
   log "Running the current Heracles Benchmark QA and PDDL experiments."
   "${COMPOSE[@]}" run --rm --no-deps main \
-    /home/benchmark/workspace/benchmark/docker/benchmark/benchmark_runner.sh \
+    /home/benchmark/workspace/benchmark_runner.sh \
     0 1 "${BENCHMARK_CONFIG_IN_CONTAINER}"
   printf '\nBenchmark output root:\n  %s\n' "${HERACLES_BENCHMARK_OUTPUT_ROOT}"
 }

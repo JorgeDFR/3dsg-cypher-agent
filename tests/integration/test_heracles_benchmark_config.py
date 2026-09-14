@@ -160,6 +160,7 @@ def test_benchmark_image_uses_only_packages_pinned_by_benchmark_submodule():
     assert "COPY external/heracles_agents" in dockerfile
     assert "COPY configs" in dockerfile
     assert "COPY data" in dockerfile
+    assert "/home/benchmark/workspace/benchmark_runner.sh" in dockerfile
 
 
 def test_heracles_benchmark_is_a_declared_submodule():
@@ -307,7 +308,7 @@ def test_launcher_uses_upstream_question_config_and_creates_local_models():
     assert "mapfile -t provisioning_records" in launcher
     assert 'ollama create "${model}" -f "${modelfile}" </dev/null' in launcher
     assert "Provisioned and verified" in launcher
-    assert "/benchmark/docker/benchmark/benchmark_runner.sh" in launcher
+    assert "/home/benchmark/workspace/benchmark_runner.sh" in launcher
     assert "check_required_gpu" in launcher
     assert "--gpus all" in launcher
     assert "NVIDIA Container Toolkit" in launcher

@@ -10,6 +10,9 @@ models:
       reasoning_efforts: null
       temperature: true
       seed: true
+    parameters: &qwen-parameters
+      reasoning:
+        mode: disabled
 
   - alias: qwen3-5-4b-finetune
     model: qwen3.5-4b-finetune
@@ -18,6 +21,7 @@ models:
     artifact_dir: qwen3.5-4b-finetune
     enabled: true
     capabilities: *qwen-capabilities
+    parameters: *qwen-parameters
 
   - alias: granite4-1-3b-baseline
     model: granite4.1-3b-baseline
@@ -30,6 +34,9 @@ models:
       reasoning_efforts: null
       temperature: true
       seed: true
+    parameters: &granite-parameters
+      reasoning:
+        mode: disabled
 
   - alias: granite4-1-3b-finetune
     model: granite4.1-3b-finetune
@@ -38,3 +45,4 @@ models:
     artifact_dir: granite4.1-3b-finetune
     enabled: false
     capabilities: *granite-capabilities
+    parameters: *granite-parameters

@@ -1,435 +1,152 @@
 # 3DSG Cypher Agent Distillation
 
-This repository fine-tunes and distills small tool-using agents for querying
-Neo4j-backed 3D Scene Graphs. A dataset can mix direct question answering and
-robot-planning instructions: both call
-`run_cypher_query(cypher_string: str)`, then return either an SLDP answer or a
-grounded PDDL goal. Tool calls use either Ollama-native calls or a custom XML
-fallback interface.
+This project fine-tunes small tool-using agents to query Neo4j-backed 3D Scene
+Graphs (3DSGs). The agents call `run_cypher_query(cypher_string: str)` and
+produce either a direct SLDP answer or a grounded PDDL goal for robot planning.
 
-- Teacher options: `openai/gpt-oss-120b` through OpenRouter, or a deterministic
-  `synthetic` teacher using gold Cypher and live Neo4j results
-- Primary student: `qwen-3.5-4b` through Hugging Face, and exported to Ollama
+Teacher traces can come from another model through OpenRouter or from a
+deterministic synthetic teacher. Student models are trained with LoRA or QLoRA
+through Hugging Face and can be exported to GGUF for Ollama deployment.
 
-## Scope
+## Project overview
 
-The active workflow is:
+The repository covers the complete distillation workflow:
 
-1. Generate or load validated 3DSG Cypher seed records from one or more question sets.
-2. Generate tool-using traces with either an OpenRouter teacher or the deterministic
-   synthetic teacher.
-3. Execute teacher Cypher tool calls locally through Neo4j validation.
-4. Allow bounded repair attempts, then keep only interactions that pass static
-   safety, execution, and task-specific checks. QA rows are compared with the
-   expected answer; PDDL rows must satisfy their grounding contract and the final
-   goal must be valid for the configured robot domain.
-5. Render accepted traces as `ollama_native` or `custom_xml`, optionally pruning
-   unnecessary failed repair turns for student training.
-6. Train QLoRA student agents on grouped, leakage-checked splits.
-7. Export project-local Ollama artifacts and benchmark them against versioned
-   Heracles Benchmark question sets.
+- **[3DSG data extraction and question generation](docs/dataset_generation.md#prepare-a-dataset-version)** —
+  extract 3D scene graph data, render question templates, and prepare validated
+  seed records.
+- **[Teacher trace generation](docs/dataset_generation.md#generate-teacher-traces)** —
+  collect tool-using traces, execute Cypher against Neo4j, and retain
+  interactions that pass safety and task checks.
+- **[Dataset splitting](docs/dataset_generation.md#create-student-splits)** —
+  build grouped, leakage-checked train, evaluation, test, and challenge splits.
+- **[LoRA and QLoRA training](docs/training.md)** — fine-tune a configured
+  Hugging Face student and inspect its supervised token spans.
+- **[Model validation](docs/validation.md)** — evaluate trace quality, held-out
+  loss, and raw generation through Transformers or Ollama.
+- **[GGUF model export](docs/ollama_export.md)** — merge adapters, convert
+  models, quantize GGUF artifacts, and register them in Ollama.
 
-Cypher seed records remain as internal support for teacher trace generation.
-The public training and evaluation surface is agent-trace based.
+## Repository structure
 
-## Quick Start
+| Path | Description |
+| --- | --- |
+| `configs/` | Data, teacher, student, prompt, and schema configuration |
+| `data/` | Input scenes and versioned generated datasets |
+| `docker/` | Main development Compose stack and command wrapper |
+| `docs/` | Detailed project documentation |
+| `examples/herables_benchmark/` | Local-model overlay for Heracles Benchmark |
+| `external/` | Pinned external dependencies and benchmark submodules |
+| `outputs/` | Versioned LoRA outputs, reports, GGUF exports, and benchmark results |
+| `scripts/` | Command-line entry points for each workflow stage |
+| `src/` | Python package implementation |
+| `tests/` | Unit and integration tests |
 
-The supported default interface is the GPU-required Docker stack. It provides
-the project Python environment, Neo4j, CUDA-enabled PyTorch, and llama.cpp
-without requiring host Python package installation. An optional main-stack
-Ollama service validates exported GGUFs on project splits. Heracles performance
-sweeps retain a separate Ollama instance as an isolated, stable metrics target.
+## Setup
 
-Create the local environment file and set `OPENROUTER_API_KEY` when teacher
-generation is required:
+The project supports two execution environments:
 
-```bash
-cp docker/.env.example docker/.env
-```
+- **[Docker (recommended)](docker/README.md)** provides the project Python environment, Neo4j,
+  CUDA-enabled PyTorch, llama.cpp, and an optional Ollama service. It is the
+  supported path for the complete GPU training and deployment workflow.
+- **[Native setup](docs/setup.md)** installs the Python package and dependencies directly on the
+  host. Use it when Docker is unavailable or for host-side development; CUDA,
+  PyTorch, Neo4j, and llama.cpp may require separate setup.
 
-Validate the host, build the main image, and start the development services:
+Both approaches use the same YAML configuration and versioned artifacts. The
+commands below use Docker.
 
-```bash
-docker/stack.sh setup
-```
+## Configuration and versioning
 
-Load the configured scene and inspect service status:
+The workflow is driven by a small set of YAML files. Data configuration selects
+the scene, question families, and splits; teacher configuration controls trace
+generation; and student configuration defines the base model, LoRA/QLoRA
+training, and GGUF export. Experiment profiles and prompt fragments define the
+task-specific behavior shared across generation, training, and validation.
+
+| Path | Purpose |
+| --- | --- |
+| `configs/data.yaml` | Scene, question sets, split proportions, and challenge task types |
+| `configs/teacher_*.yaml` | Teacher provider, model, sampling, and tool-call limits |
+| `configs/student_*.yaml` | Base model, LoRA/QLoRA, training, and export settings |
+| `configs/experiment_profiles/` | Task-specific prompts and output contracts |
+| `configs/prompts/` | Shared agent instructions, domain descriptions, and label spaces |
+| `configs/question_templates/` | QA and PDDL question templates |
+| `configs/schema_3dsg.yaml` | Scene graph schema used for generation and validation |
+
+Dataset extraction, teacher generation, and model training create timestamped
+artifact versions. Downstream commands select the latest compatible version by
+default and accept explicit dataset, teacher-run, or model selectors for
+reproducible experiments. See [Artifact versioning](docs/artifact_versioning.md)
+for the directory layout, selection rules, lineage checks, and legacy migration.
+
+The source scene is configured separately from its artifact identifier. Reload
+Neo4j whenever `scene_path` changes:
 
 ```bash
 docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
-docker/stack.sh status
 ```
 
-The Docker stack provides `main` and `neo4j` services. Neo4j is
-available inside Docker at `neo4j://neo4j:7683` and from the host at
-`neo4j://127.0.0.1:7683`; HTTP is exposed at `http://127.0.0.1:7469`. The
-username is `neo4j` and the password is `neo4j_pw`. The trace generator
-validates teacher Cypher tool calls against this database, so reload the
-database whenever `scene_path` changes.
+## Quick start
 
-Run the complete demo from database loading through baseline evaluation,
-student training, validation, and static HTML report generation:
+The Docker workflow requires an NVIDIA GPU, a compatible driver, Docker Compose
+v2, and NVIDIA Container Toolkit.
+
+Clone the repository and its submodules:
+
+```bash
+git clone --recursive https://github.com/JorgeDFR/3dsg-cypher-agent.git
+cd 3dsg-cypher-agent
+```
+
+Create the local environment file, then validate and start the stack:
+
+```bash
+cp docker/.env.example docker/.env
+docker/stack.sh setup
+```
+
+Set `OPENROUTER_API_KEY` in `docker/.env` only when using an OpenRouter teacher.
+The default demonstration uses the synthetic teacher and needs no API key:
 
 ```bash
 docker/stack.sh demo-train
 ```
 
-The demo uses the deterministic synthetic teacher, so it does not require an
-OpenRouter key. It establishes a base-model raw-generation baseline, trains the
-configured student, and runs eval-loss plus fine-tuned raw-generation validation
-on the test and challenge splits. Set `DEMO_SCENE`,
-`DEMO_DATA_CONFIG`, `DEMO_TEACHER_CONFIG`, or `DEMO_STUDENT_CONFIG` to use
-alternative inputs.
+This loads the configured scene, prepares the dataset, trains the student,
+runs baseline and fine-tuned validation, and generates an HTML workflow report.
 
-Once the trained adapter exists, run the deploy/quantization extension:
+After an adapter has been trained, export and validate BF16, Q8_0, and Q4_K_M
+GGUF variants:
 
 ```bash
 docker/stack.sh demo-deploy
 ```
 
-This exports and registers the BF16, Q8_0, and Q4_K_M GGUF models in Ollama,
-validates each one on the challenge split, and updates the workflow report. The
-inputs and model name can be overridden with the `DEPLOY_*` environment
-variables documented by `docker/stack.sh help`.
-
-Run `docker/stack.sh help` for the ordered first-run guide and command groups.
-See [docker/README.md](docker/README.md) for the complete command reference and
-[docs/ollama_export.md](docs/ollama_export.md) for model export and registration.
-
-## Agent Records
-
-Canonical training data is validated by `AgentTraceRecord`. Answerable examples
-call `run_cypher_query`; refusal examples call no tool and answer
-`<answer>WRITE_QUERY_NOT_ALLOWED</answer>`.
-
-Each record carries `task_family`, `output_type`, and `experiment_profile`.
-`cypher_qa` records use `SLDP`; `cypher_pddl` records use `PDDL` and additionally
-carry a `grounding` contract. The contract declares which result aliases and
-symbol types the Cypher tool must return. It prevents a syntactically correct
-goal from being accepted when the query retrieved the wrong scene entities.
-
-Teacher-generated traces are captured from real interactions. The
-training-ready accepted teacher traces are written to `teacher_traces.jsonl`.
-Debug copies are written to `accepted.json` and `rejected.json`; both include
-the seed `real_solution`, the executed `cypher_solution`, and the parsed
-`final_answer`. Student split rendering can optionally use a pruned view that
-keeps the successful tool call and final answer while leaving raw traces
-unchanged.
-
-Supported render views:
-
-- `ollama_native`
-- `custom_xml`
-
-## Workflow
-
-Generated dataset artifacts are resolved from `scene_id` in `configs/data.yaml`
-and written under `data/datasets/{scene_id}/{dataset_version}/...`. Versions use
-readable UTC timestamps such as `2026-09-08-T-12-05-47-Z`. The source 3DSG JSON
-is not derived from `scene_id`; configure the user-provided Hydra/Spark DSG file
-with `scene_path`.
-
-`extract_3dsg_values.py` starts a new dataset version by default. Every later
-command selects the latest dataset version unless `--dataset-version` is passed.
-Teacher traces are stored below `traces/{teacher_name}/{teacher_run}/`. Trace
-generation creates a new run; splitting uses the dataset's active run unless
-`--teacher` and/or `--teacher-run` select another run.
-
-LoRA training creates a new timestamp below the configured
-`training.output_dir`. Evaluation, workflow reporting, and export use the latest
-completed model unless `--model-version` is passed. A model records the dataset
-and exact split hashes used for training. Evaluating it against different data
-shows an interactive warning; non-interactive jobs must explicitly pass
-`--allow-dataset-mismatch`.
-
-Reports are isolated by dataset, model family, and model version:
-
-```text
-data/datasets/{scene}/{dataset_version}/reports/
-  dataset/
-  models/{model_family}/baseline/
-  models/{model_family}/{model_version}/
-```
-
-Ollama/GGUF exports intentionally remain unversioned at
-`outputs/ollama/{model_name}` because the files are large. Starting an export
-from a different LoRA version removes that model's previous export directory.
-Its `metadata.yaml` records the source model and dataset lineage so Ollama
-validation reports are still routed to the correct model-version report folder.
-
-List the available IDs and see which versions are currently selected as latest:
-
-```bash
-docker/stack.sh main python scripts/list_artifact_versions.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
-```
-
-For a checkout that still uses the former flat directories, preview and then
-apply the one-time migration with:
-
-```bash
-docker/stack.sh main python scripts/migrate_versioned_artifacts.py
-docker/stack.sh main python scripts/migrate_versioned_artifacts.py --apply
-```
-
-Question sources are configured as a list, so one generated file and its later
-training splits can contain multiple task families:
-
-```yaml
-question_sets:
-  - name: cypher_qa
-    experiment_profile_path: cypher_qa_template.yaml
-    question_templates_path: cypher_qa_3dsg.yaml
-  - name: cypher_pddl
-    experiment_profile_path: cypher_pddl_template.yaml
-    question_templates_path: cypher_pddl_3dsg.yaml
-```
-
-The legacy singular `experiment_profile_path` and `question_templates_path`
-keys remain supported and are interpreted as one question set.
-
-Extract template values from the configured 3DSG scene:
-
-```bash
-docker/stack.sh main python scripts/extract_3dsg_values.py \
-  --data-config configs/data.yaml
-```
-
-Generate raw 3DSG questions from those template values:
-
-```bash
-docker/stack.sh main python scripts/generate_3dsg_seed_templates.py \
-  --data-config configs/data.yaml
-```
-
-Prepare seed records from the configured raw 3DSG questions:
-
-```bash
-docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
-  --data-config configs/data.yaml
-```
-
-Check OpenRouter model availability (OpenRouter teacher only):
-
-```bash
-docker/stack.sh main python scripts/generate_traces.py preflight \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml
-```
-
-Generate and validate teacher traces:
-
-```bash
-docker/stack.sh main python scripts/generate_traces.py generate \
-  --data-config configs/data.yaml \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml
-```
-
-The OpenRouter teacher receives the profile-rendered agent prompt and the
-`run_cypher_query` tool schema. It does not receive seed gold Cypher or expected
-answers. `max_tool_calls` defaults to `3` in the teacher config and can be overridden
-with `--max-tool-calls`.
-
-To generate traces without an LLM teacher:
-
-```bash
-docker/stack.sh main python scripts/generate_traces.py generate \
-  --data-config configs/data.yaml \
-  --teacher-config configs/teacher_synthetic.yaml
-```
-
-The `synthetic` provider renders the same experiment profile, inserts the seed's gold
-Cypher as the tool call, executes it against Neo4j, stores the real returned rows as
-the tool output, and uses the gold solution as the final answer.
-
-Create grouped splits:
-
-```bash
-docker/stack.sh main python scripts/prepare_dataset.py split \
-  --data-config configs/data.yaml \
-  --render-view ollama_native
-```
-
-Splitting is stratified by task family and query type. Task types that share
-normalized-equivalent Cypher queries are assigned jointly, preserving the
-configured per-type proportions while keeping each equivalent query in one
-split. Split and workflow reports include counts by task family.
-
-To optimize the student dataset by pruning failed repair attempts during
-split/render output and adding rejected `invalid_answer_format` traces that can
-be repaired by replacing only the final answer text:
-
-```bash
-docker/stack.sh main python scripts/prepare_dataset.py split \
-  --data-config configs/data.yaml \
-  --render-view ollama_native \
-  --optimize-student-traces
-```
-
-Evaluate traces:
-
-```bash
-docker/stack.sh main python scripts/evaluate_traces.py \
-  --data-config configs/data.yaml \
-  --split train
-```
-
-Train the primary student:
-
-```bash
-docker/stack.sh main python scripts/train_agent_lora.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
-```
-
-Student training defaults to `training.loss_mode: assistant-only`, which masks
-user/system/tool-response tokens from the loss and supervises only assistant
-turns, including generated tool calls and final answers. The split's declared
-`run_cypher_query` tool is resolved to its native JSON schema and passed once to
-the tokenizer chat template; it is not copied into the stored trace messages.
-To inspect the exact
-rendered text and supervised token spans for a split record:
-
-```bash
-docker/stack.sh main python scripts/inspect_training_dataset.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --split train \
-  --index 0
-```
-
-Evaluate the primary student:
-
-```bash
-docker/stack.sh main python scripts/evaluate_student.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --split all \
-  --mode eval-loss
-```
-
-```bash
-docker/stack.sh main python scripts/evaluate_student.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --split test \
-  --mode raw-generation \
-  --max-new-tokens 1024
-```
-
-Evaluate the same split and generation settings with the base student model,
-without loading the trained LoRA adapter:
-
-```bash
-docker/stack.sh main python scripts/evaluate_student.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --split test \
-  --mode raw-generation \
-  --baseline \
-  --max-new-tokens 1024
-```
-
-Raw-generation validation can also use a GGUF model registered in the optional
-Ollama service. This reuses the same split records, tool schema, Neo4j checks,
-retry policy, and report format as Transformers evaluation:
-
-```bash
-docker/stack.sh ollama-up
-docker/stack.sh main python scripts/evaluate_student.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --split challenge \
-  --mode raw-generation \
-  --runtime ollama \
-  --ollama-model qwen3.5-4b-finetune-bf16 \
-  --max-new-tokens 1024
-```
-
-The Ollama model must already be registered from an exported GGUF. See
-[docs/ollama_export.md](docs/ollama_export.md#validate-bf16-versus-quantized-gguf-on-project-splits)
-for the BF16-versus-Q4_K_M registration and paired validation workflow.
-
-Generate a static HTML workflow report for the configured scene:
-
-```bash
-docker/stack.sh main python scripts/generate_workflow_report.py \
-  --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
-```
-
-See [docs/ollama_export.md](docs/ollama_export.md) for LoRA merge, GGUF
-conversion, quantization, and Ollama model creation.
-
-## Host-Only Setup
-
-Host execution is optional and intended for environments where the Docker
-stack cannot be used:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-git submodule update --init --recursive
-pip install -e '.[dev,train]'
-```
-
-Install a PyTorch build matching the host CUDA or JetPack environment
-separately. Host-side GGUF conversion also requires a separate llama.cpp setup;
-see the host-only section in [docs/ollama_export.md](docs/ollama_export.md).
+Run `docker/stack.sh help` for available commands and environment overrides.
 
 ## Heracles Benchmark
 
-The integration under `examples/herables_benchmark/` combines question and
-scene artifacts from the pinned `external/heracles_benchmark` submodule with
-the exported baseline and fine-tuned Ollama models in this repository. The
-benchmark image uses that submodule's manifest validator, runner, metrics,
-report implementation, and nested Heracles package revisions directly; those
-package sources are baked into the image rather than mounted at runtime.
+The integration under `examples/herables_benchmark/` evaluates exported local
+models on the pinned Heracles Benchmark scenes, QA/PDDL questions, manifests,
+and metrics. It uses an isolated Neo4j and Ollama stack so benchmark sweeps do
+not interfere with the main development services.
 
-Run the QA and PDDL question sets selected by the upstream default config with:
+Run the configured model and question sweep with:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh
 ```
 
-Select another benchmark-owned question set with `--config`, for example
-`--config configs/benchmark-smoke.yaml`. Select another repository-owned model
-list with `--models`. The launcher registers enabled local exports inside its
-isolated GPU-only Ollama container and writes results below
-`outputs/heracles_benchmark/` using the upstream config's output layout. See
-the [benchmark guide](examples/herables_benchmark/README.md).
+See the [Heracles Benchmark integration guide](examples/herables_benchmark/README.md)
+for model preparation, alternate question sets, output locations, and stack
+commands.
 
-Expected fine-tuned Ollama model names include:
+## Additional tools and reports
 
-- `qwen3.5-4b-finetune`
-- `granite4.1-3b-finetune`
-
-Their base-model counterparts use the `-baseline` suffix (e.g. `qwen3.5-4b-baseline`).
-
-## Validation Gates
-
-Use `pytest`, `ruff`, the import smoke test, and the repository naming tests
-before treating a refactor as complete.
-
-The optional host `dev` installation provides `pytest` and `ruff` for these
-repository checks.
-
-## Additional Tools
-
-### Label room regions
-
-Interactively add or update room classifications in a Spark DSG scene:
-
-```bash
-docker/stack.sh main python scripts/edit_3dsg_room_labels.py data/scenes/uhumans2_office.json \
-  --output data/scenes/uhumans2_office.updated.json \
-  --figure-output data/scenes/uhumans2_office_rooms.png
-```
-
-The editor opens a top-down view with red room bounding boxes, room symbols,
-and blue object triangles. It then walks through the rooms in symbol order,
-prints contained-object counts by class, and accepts either a listed
-single-word label or its number. The source is preserved by default and the
-result is written beside it as `*.room_labels.json`. Use `--output` to choose a
-different path, `--figure-output` to save the visualization, `--no-show` for a
-headless terminal, and `--list-labels` to inspect the controlled vocabulary.
+- **[HTML workflow report](docs/workflow_report.md)** — browse the 3DSG,
+  generated questions, trace outcomes, dataset splits, training state,
+  validation results, baseline comparisons, deployment comparisons, and
+  artifact inventory in one static report.
+- **[Scene utilities](docs/scene_tools.md)** — inspect and update room labels in
+  a Spark DSG scene before generating a dataset.

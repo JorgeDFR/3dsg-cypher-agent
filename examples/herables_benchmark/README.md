@@ -1,134 +1,117 @@
-# Heracles Benchmark model overlay
+# Heracles Benchmark Model Overlay
 
-This integration runs this repository's exported baseline and fine-tuned
-Ollama models against questions owned by the current
-[`heracles-benchmark`](https://github.com/JorgeDFR/heracles-benchmark) project.
-The pinned `external/heracles_benchmark` submodule remains the source of truth
-for the scene graph, question files and metadata, prompts, manifest schema,
-runner, metrics, report generation, and compatible Heracles package revisions.
-This directory only supplies the local model list and the Docker integration
-needed to register local GGUF exports.
+This integration evaluates locally exported baseline and fine-tuned Ollama
+models against questions owned by the pinned
+[`heracles-benchmark`](https://github.com/JorgeDFR/heracles-benchmark)
+submodule.
 
-The main project also uses the nested Heracles and Heracles Agents checkouts
-for scene loading and SLDP/PDDL answer validation outside this benchmark
-integration. Keeping those dependencies under `external/heracles_benchmark`
-means a recursive clone fetches each repository only once. The benchmark image
-installs the same nested revisions; those package sources are baked into the
-image and are not mounted at runtime.
+## Responsibility split
 
-## 1. Prepare the submodules
+| Component | Source of truth |
+| --- | --- |
+| Local model list and GGUF directories | This repository |
+| Docker integration and generated overlay manifest | `examples/herables_benchmark/` |
+| Scene graph, QA/PDDL questions, metadata, and prompts | Pinned Heracles Benchmark submodule |
+| Manifest schema, runner, metrics, and report generation | Pinned Heracles Benchmark submodule |
+| Compatible Heracles and Heracles Agents revisions | Nested pinned submodules |
 
-Initialize all top-level and nested submodules and install this project so the
-small host-side manifest adapter can import PyYAML:
+The nested Heracles packages are also used by the main project for scene loading
+and SLDP/PDDL answer validation. A recursive clone fetches each dependency once.
 
-```bash
-git submodule update --init --recursive
-source .venv/bin/activate
-pip install -e '.[dev]'
-```
+## Prerequisites
 
-The benchmark repository currently declares its nested submodules with GitHub
-SSH URLs. On a host without GitHub SSH access, initialize them through HTTPS
-without changing the recorded URLs:
+- NVIDIA GPU and NVIDIA Container Toolkit
+- Enabled GGUF exports under `outputs/ollama/`
+- All top-level and nested submodules initialized
 
-```bash
-git -c url.https://github.com/.insteadOf=git@github.com: \
-  submodule update --init --recursive
-```
+Prepare the submodules, virtual environment, and development dependencies using
+the centralized [Native setup](../../docs/setup.md). The benchmark launcher uses
+that environment for its small host-side manifest adapter.
 
-Detached HEADs inside submodules are expected. Git records each submodule as an
-exact commit in the parent repository, and `git submodule update` checks out
-that commit directly for reproducible builds. A branch checkout is only needed
-when actively developing and committing inside a submodule.
+## Prepare models
 
-The selected Heracles Benchmark config identifies a matched scene graph, QA
-questions, PDDL questions, and question metadata. Its own validator verifies
-the paths, checksums, scene ID, and expected question counts after the local
-models have been overlaid.
-
-## 2. Export and select models
-
-Enabled entries in `config/model_lists/students.yaml` are created from
-directories below `outputs/ollama`. The default Qwen baseline/fine-tune pair
-expects:
+Enabled entries in `config/model_lists/students.yaml` resolve model artifacts
+below `outputs/ollama/`. The default list expects:
 
 ```text
 outputs/ollama/
 |-- qwen3.5-4b-baseline/
 |   |-- Modelfile
 |   |-- Modelfile.json
-|   `-- <selected model>.gguf
+|   `-- <selected-model>.gguf
 `-- qwen3.5-4b-finetune/
     |-- Modelfile
     |-- Modelfile.json
-    `-- <selected model>.gguf
+    `-- <selected-model>.gguf
 ```
 
-Export the pair with:
+Follow [Ollama GGUF export](../../docs/ollama_export.md#quick-export) to create
+the baseline and fine-tuned directories.
 
-```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --model-name qwen3.5-4b-baseline \
-  --stages all \
-  --base-only
+Each model-list entry declares:
 
-docker/stack.sh main python scripts/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
-  --model-name qwen3.5-4b-finetune \
-  --stages all
-```
+| Field | Purpose |
+| --- | --- |
+| `alias` | Stable name used in benchmark results |
+| `model` | Ollama model name |
+| `artifact_dir` | Local export directory |
+| `enabled` | Whether the launcher includes the model |
+| `capabilities` | Parameters supported by the model and required by the manifest schema |
+| `parameters` | Optional upstream per-model inference overrides |
 
-Each model-list entry has the stable result `alias`, Ollama `model` name,
-local `artifact_dir`, `enabled` switch, and the parameter `capabilities`
-required by the current benchmark schema. Optional `parameters` use the
-upstream per-model override format. Keep capabilities accurate when adding a
-model; the upstream manifest validator rejects incompatible reasoning,
-temperature, or seed settings.
+Keep `capabilities` accurate. The upstream validator rejects incompatible
+reasoning, temperature, or seed settings.
 
-Use another model list inside this repository with `--models`:
+Select another repository-owned model list with:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh \
   --models path/to/models.yaml
 ```
 
-## 3. Select questions and run
+## Select questions
 
-The default uses `configs/benchmark.yaml` in the pinned Heracles Benchmark
-submodule and runs both QA and PDDL experiments:
+The default uses `configs/benchmark.yaml` from the submodule and includes both
+QA and PDDL experiments:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh
 ```
 
-Use any other benchmark-owned config, including its small smoke set:
+Select another benchmark-owned configuration, such as the smoke set:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh \
   --config configs/benchmark-smoke.yaml
 ```
 
-The path must be a YAML file below that submodule's `configs/` directory. This
-ensures all question paths stay relative to the project that generated and
-versioned them. Compose uses `external/heracles_benchmark` as its build context
-and invokes that repository's own `docker/benchmark/Dockerfile.benchmark`,
-which copies its `configs/` and `data/` trees into
-`/home/benchmark/workspace/benchmark`. The adapter reads the selected source
-config from the same submodule, writes a generated manifest under
-`outputs/heracles_benchmark/.runtime/`, mounts it at
-`configs/3dsg-cypher-agent.yaml`, and lets the upstream
-`scripts/benchmark_manifest.py` resolve the QA, PDDL, metadata, and scene paths
-against the copied benchmark tree before performing final validation and
-experiment materialization.
+The configuration must be a YAML file below the submodule's `configs/`
+directory. Its validator checks scene ID, paths, checksums, and expected
+question counts after the local models are overlaid.
 
-An NVIDIA GPU and the NVIDIA Container Toolkit are required. The launcher
-checks both host GPU availability and GPU access from Docker before starting
-the benchmark; there is intentionally no CPU fallback.
+## Runtime flow
 
-Results retain the `benchmark.output_dir` layout from the selected config,
-rooted on the host at `outputs/heracles_benchmark/`. For the default config the
-report is therefore:
+1. The adapter reads the selected upstream configuration.
+2. It overlays the enabled local model entries.
+3. It writes a generated manifest under `outputs/heracles_benchmark/.runtime/`.
+4. Compose mounts the manifest at `configs/3dsg-cypher-agent.yaml`.
+5. The upstream validator materializes the experiments against its copied
+   benchmark tree.
+6. The isolated Neo4j and Ollama services run the selected sweeps.
+
+The image uses `external/heracles_benchmark` as its build context. Package
+sources are baked into the image instead of being mounted at runtime.
+separate mount replaces the installed Heracles or Heracles Agents packages.
+
+There is no CPU fallback. The launcher verifies host GPU availability and
+Docker GPU access before starting.
+
+## Results
+
+Results retain `benchmark.output_dir` from the selected upstream configuration
+and are rooted on the host at `outputs/heracles_benchmark/`.
+
+For the default configuration, open:
 
 ```text
 outputs/heracles_benchmark/example_dsg/model_sweep/report.html
@@ -136,22 +119,18 @@ outputs/heracles_benchmark/example_dsg/model_sweep/report.html
 
 ## Stack utilities
 
-```bash
-# Validate/create enabled local models without running questions.
-examples/herables_benchmark/run_benchmark.sh models
+| Command | Action |
+| --- | --- |
+| `run_benchmark.sh models` | Validate and create enabled local models without running questions |
+| `run_benchmark.sh ollama list` | Inspect the isolated Ollama instance |
+| `run_benchmark.sh run --keep-stack` | Keep services running after a sweep |
+| `run_benchmark.sh config` | Print the resolved configuration |
+| `run_benchmark.sh status` | Inspect service status |
+| `run_benchmark.sh build` | Rebuild the benchmark image |
+| `run_benchmark.sh down` | Stop the isolated stack |
 
-# Inspect the isolated Ollama instance.
-examples/herables_benchmark/run_benchmark.sh ollama list
+Run these from the repository root, prefixed with
+`examples/herables_benchmark/` as shown in earlier examples.
 
-# Keep services after a run for inspection.
-examples/herables_benchmark/run_benchmark.sh run --keep-stack
-
-# Print configuration, inspect status, rebuild, or stop the stack.
-examples/herables_benchmark/run_benchmark.sh config
-examples/herables_benchmark/run_benchmark.sh status
-examples/herables_benchmark/run_benchmark.sh build
-examples/herables_benchmark/run_benchmark.sh down
-```
-
-The Ollama cache survives `down`. Neo4j and Ollama do not publish host ports,
-so this isolated stack does not collide with the normal development stack.
+The Ollama cache survives `down`. Neo4j and Ollama publish no host ports, so the
+benchmark stack does not collide with the normal development stack.
