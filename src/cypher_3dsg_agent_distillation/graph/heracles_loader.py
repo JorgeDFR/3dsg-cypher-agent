@@ -9,7 +9,9 @@ import spark_dsg
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-HERACLES_SRC = PROJECT_ROOT / "external" / "heracles" / "heracles" / "src"
+HERACLES_SRC = (
+    PROJECT_ROOT / "external" / "heracles_benchmark" / "external" / "heracles" / "heracles" / "src"
+)
 
 OBJECT_LABELSPACE_KEYS = ["_l2p0", "_l3p1", "mesh"]
 ROOM_LABELSPACE_KEYS = ["room_labelspace", "_l4p0"]
@@ -19,7 +21,7 @@ def ensure_heracles_on_path() -> None:
     if not HERACLES_SRC.exists():
         raise RuntimeError(
             "Heracles submodule is missing. Run "
-            "`git submodule update --init --recursive external/heracles`."
+            "`git submodule update --init --recursive external/heracles_benchmark`."
         )
     src = str(HERACLES_SRC)
     if src not in sys.path:

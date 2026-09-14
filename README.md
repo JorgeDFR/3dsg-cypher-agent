@@ -26,7 +26,8 @@ The active workflow is:
 5. Render accepted traces as `ollama_native` or `custom_xml`, optionally pruning
    unnecessary failed repair turns for student training.
 6. Train QLoRA student agents on grouped, leakage-checked splits.
-7. Export project-local Ollama metadata and Heracles Agents example configs.
+7. Export project-local Ollama artifacts and benchmark them against versioned
+   Heracles Benchmark question sets.
 
 Cypher seed records remain as internal support for teacher trace generation.
 The public training and evaluation surface is agent-trace based.
@@ -378,21 +379,24 @@ see the host-only section in [docs/ollama_export.md](docs/ollama_export.md).
 
 ## Heracles Benchmark
 
-This repository does not modify or mount
-`/home/coder/workspace/heracles_devel`. The equivalent isolated Docker setup,
-launcher, model manifest, and experiment YAML files live under
-`examples/herables_benchmark/`.
+The integration under `examples/herables_benchmark/` combines question and
+scene artifacts from the pinned `external/heracles_benchmark` submodule with
+the exported baseline and fine-tuned Ollama models in this repository. The
+benchmark image uses that submodule's manifest validator, runner, metrics,
+report implementation, and nested Heracles package revisions directly; those
+package sources are baked into the image rather than mounted at runtime.
 
-Run both base-versus-fine-tuned Ollama benchmark variants with:
+Run the QA and PDDL question sets selected by the upstream default config with:
 
 ```bash
 examples/herables_benchmark/run_benchmark.sh
 ```
 
-The launcher also accepts `--benchmarks cypher-qa` or
-`--benchmarks cypher-pddl` to run only one variant. It registers enabled exports
-inside its own GPU Ollama container, records Heracles local/GPU metrics and raw
-samples, and writes `outputs/heracles_benchmark/model_sweep/report.html`. See
+Select another benchmark-owned question set with `--config`, for example
+`--config configs/benchmark-smoke.yaml`. Select another repository-owned model
+list with `--models`. The launcher registers enabled local exports inside its
+isolated GPU-only Ollama container and writes results below
+`outputs/heracles_benchmark/` using the upstream config's output layout. See
 the [benchmark guide](examples/herables_benchmark/README.md).
 
 Expected fine-tuned Ollama model names include:

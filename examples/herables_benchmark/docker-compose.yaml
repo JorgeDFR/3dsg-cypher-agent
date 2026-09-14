@@ -6,6 +6,7 @@ x-benchmark-environment: &benchmark-environment
   HERACLES_NEO4J_PASSWORD: neo4j_pw
   HERACLES_NEO4J_URI: neo4j://neo4j:7683
   HERACLES_AGENTS_PATH: /home/benchmark/workspace/heracles_agents
+  HERACLES_BENCHMARK_PATH: /home/benchmark/workspace/benchmark
   ADT4_HERACLES_IP: neo4j
   ADT4_HERACLES_PORT: 7683
   OLLAMA_HOST: http://ollama:11434
@@ -14,8 +15,8 @@ x-benchmark-environment: &benchmark-environment
 x-benchmark-common: &benchmark-common
   image: "${BENCHMARK_IMAGE:-3dsg-heracles-benchmark-main:latest}"
   build:
-    context: ../..
-    dockerfile: examples/herables_benchmark/Dockerfile.benchmark
+    context: ../../external/heracles_benchmark
+    dockerfile: docker/benchmark/Dockerfile.benchmark
     args:
       HOST_UID: "${HOST_UID:-1000}"
       HOST_GID: "${HOST_GID:-1000}"
@@ -24,7 +25,10 @@ x-benchmark-common: &benchmark-common
   stop_signal: SIGINT
   stop_grace_period: 20s
   volumes:
-    - ../../outputs/heracles_benchmark:/home/benchmark/workspace/heracles_agents/output
+    - ${HERACLES_BENCHMARK_OUTPUT_ROOT:?}:/home/benchmark/workspace/benchmark/output
+    - ${BENCHMARK_CONFIG_HOST:?}:/home/benchmark/workspace/benchmark/configs/3dsg-cypher-agent.yaml:ro
+    - ./model_manifest.py:/home/benchmark/workspace/model_manifest.py:ro
+    - ${MODEL_MANIFEST_HOST:?}:/home/benchmark/workspace/integration/models.yaml:ro
     - ../../outputs/ollama:/models:ro
   networks: [benchmark_net]
   stdin_open: true
@@ -53,6 +57,7 @@ services:
     gpus: all
     restart: unless-stopped
     environment:
+      OLLAMA_KEEP_ALIVE: "-1"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:

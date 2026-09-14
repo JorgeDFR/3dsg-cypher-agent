@@ -9,6 +9,11 @@ from typing import Any, Literal
 
 from cypher_3dsg_agent_distillation.agents.agent_records import feedback_answer
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+HERACLES_AGENTS_SRC = (
+    PROJECT_ROOT / "external" / "heracles_benchmark" / "external" / "heracles_agents" / "src"
+)
+
 
 def ensure_heracles_agents_importable() -> None:
     try:
@@ -19,10 +24,8 @@ def ensure_heracles_agents_importable() -> None:
     except ModuleNotFoundError:
         pass
 
-    repo_root = Path(__file__).resolve().parents[3]
-    submodule_src = repo_root / "external" / "heracles_agents" / "src"
-    if submodule_src.is_dir():
-        sys.path.insert(0, str(submodule_src))
+    if HERACLES_AGENTS_SRC.is_dir():
+        sys.path.insert(0, str(HERACLES_AGENTS_SRC))
 
 
 ensure_heracles_agents_importable()
@@ -80,9 +83,7 @@ def pddl_goal_domain_issues(goal: Any) -> list[str]:
                 return
             for value, symbol_type in zip(node.params, signature, strict=True):
                 if not PDDL_SYMBOL_PATTERNS[symbol_type].fullmatch(value):
-                    issues.append(
-                        f"invalid {symbol_type} symbol `{value}` for {node.head}"
-                    )
+                    issues.append(f"invalid {symbol_type} symbol `{value}` for {node.head}")
             return
         if isinstance(node, Conjunction | Disjunction):
             if not node.clauses:
@@ -202,10 +203,7 @@ def top_k_with_ties_matches(
     if not isinstance(raw_scores, dict) or not raw_scores:
         return False
     try:
-        scores = {
-            str(value).strip().lower(): float(score)
-            for value, score in raw_scores.items()
-        }
+        scores = {str(value).strip().lower(): float(score) for value, score in raw_scores.items()}
         requested_limit = int(answer_validation["limit"])
     except (KeyError, TypeError, ValueError):
         return False

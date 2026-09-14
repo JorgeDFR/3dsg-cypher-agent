@@ -4,9 +4,11 @@ from pathlib import Path
 import spark_dsg
 
 from cypher_3dsg_agent_distillation.graph.heracles_loader import (
+    HERACLES_SRC,
     labelspace_from_metadata,
     write_heracles_labelspace,
 )
+from cypher_3dsg_agent_distillation.graph.heracles_validation import HERACLES_AGENTS_SRC
 from cypher_3dsg_agent_distillation.graph.load_neo4j import (
     extract_graph_records,
     relationship_for,
@@ -21,6 +23,13 @@ from cypher_3dsg_agent_distillation.graph.scene_graph import (
 )
 
 SCENE_PATH = Path("data/scenes/uhumans2_office.json")
+
+
+def test_heracles_dependencies_resolve_through_benchmark_submodule():
+    nested_root = Path("external/heracles_benchmark/external")
+
+    assert HERACLES_SRC.resolve() == (nested_root / "heracles/heracles/src").resolve()
+    assert HERACLES_AGENTS_SRC.resolve() == (nested_root / "heracles_agents/src").resolve()
 
 
 def test_node_symbol_matches_spark_dsg_encoding():
@@ -51,9 +60,9 @@ def test_extract_scene_values_from_spark_dsg():
     index = SceneIndex(SCENE_PATH)
     assert len(values["bboxes"]) == 50
     assert len(values["room_containing_object_cases"]) == 50
-    assert {
-        case["region"] for case in values["room_containing_object_cases"][:8]
-    } == {f"R{index}" for index in range(8)}
+    assert {case["region"] for case in values["room_containing_object_cases"][:8]} == {
+        f"R{index}" for index in range(8)
+    }
     assert all(len(objects_in_bbox(index, bbox)) <= 20 for bbox in values["bboxes"])
     assert len(values["place_object_cases"]) == 50
     assert len(values["object_radius_cases"]) == 50
@@ -61,10 +70,13 @@ def test_extract_scene_values_from_spark_dsg():
     assert len(values["nearest_object_cases"]) == 50
     assert len(values["mesh_place_hop_cases"]) == 50
     assert len(values["place_hop_cases"]) == 50
-    assert sum(
-        case["object"] in values["invalid_values"]
-        for case in values["room_containing_object_cases"]
-    ) == 5
+    assert (
+        sum(
+            case["object"] in values["invalid_values"]
+            for case in values["room_containing_object_cases"]
+        )
+        == 5
+    )
     assert {case["hops"] for case in values["mesh_place_hop_cases"]} <= {2, 3, 4}
     assert {case["hops"] for case in values["place_hop_cases"]} <= {2, 3, 4}
     assert all(
@@ -167,25 +179,19 @@ def test_room_pddl_solutions_support_class_and_object_containment_references():
     index = SceneIndex(SCENE_PATH)
 
     assert [node_symbol(node.id) for node in index.containing_rooms("O0")] == ["R0"]
-    assert index.solution_for("pddl_visit_room_containing_object", {"object": "O0"}) == [
-        "R0"
-    ]
-    assert index.solution_for("pddl_end_in_room_class", {"room_class": "lounge"}) == [
-        "R0"
-    ]
+    assert index.solution_for("pddl_visit_room_containing_object", {"object": "O0"}) == ["R0"]
+    assert index.solution_for("pddl_end_in_room_class", {"room_class": "lounge"}) == ["R0"]
 
 
 def test_room_containing_object_cases_are_balanced_across_regions():
     values = scene_values(SCENE_PATH, 30, 50, 10, 10, 3)
-    region_counts = Counter(
-        case["region"] for case in values["room_containing_object_cases"][:20]
-    )
+    region_counts = Counter(case["region"] for case in values["room_containing_object_cases"][:20])
 
     assert set(region_counts) == {f"R{index}" for index in range(8)}
     assert max(region_counts.values()) - min(region_counts.values()) <= 1
-    assert len(
-        {case["object"] for case in values["room_containing_object_cases"]}
-    ) == len(values["room_containing_object_cases"])
+    assert len({case["object"] for case in values["room_containing_object_cases"]}) == len(
+        values["room_containing_object_cases"]
+    )
 
 
 def test_curated_cases_include_empty_and_non_empty_solutions():

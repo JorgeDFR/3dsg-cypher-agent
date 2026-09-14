@@ -9,6 +9,12 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_DIR = PROJECT_ROOT / "examples" / "herables_benchmark"
+CAPABILITIES = {
+    "reasoning": "optional",
+    "reasoning_efforts": None,
+    "temperature": True,
+    "seed": True,
+}
 
 
 def load_manifest_module():
@@ -54,18 +60,21 @@ def test_manifest_validates_enabled_artifacts_and_container_paths(tmp_path):
                         "model": "base",
                         "artifact_dir": "base",
                         "enabled": True,
+                        "capabilities": CAPABILITIES,
                     },
                     {
                         "alias": "fine-tuned",
                         "model": "fine-tuned",
                         "artifact_dir": "fine-tuned",
                         "enabled": True,
+                        "capabilities": CAPABILITIES,
                     },
                     {
                         "alias": "disabled",
                         "model": "disabled",
                         "artifact_dir": "missing",
                         "enabled": False,
+                        "capabilities": CAPABILITIES,
                     },
                 ]
             }
@@ -90,6 +99,7 @@ def test_manifest_rejects_artifact_directory_traversal(tmp_path):
                         "alias": "outside",
                         "model": "outside",
                         "artifact_dir": "../outside",
+                        "capabilities": CAPABILITIES,
                     }
                 ]
             }
@@ -107,9 +117,8 @@ def test_benchmark_compose_requires_gpu_and_owns_ollama():
 
     assert services["ollama"]["gpus"] == "all"
     assert services["main"]["gpus"] == "all"
-    assert compose["x-benchmark-common"]["image"].endswith(
-        "3dsg-heracles-benchmark-main:latest}"
-    )
+    assert not (BENCHMARK_DIR / "docker-compose.gpu.yaml").exists()
+    assert compose["x-benchmark-common"]["image"].endswith("3dsg-heracles-benchmark-main:latest}")
     assert services["ollama"]["container_name"] == "3dsg-heracles-benchmark-ollama"
     assert "ports" not in services["ollama"]
     assert "ports" not in services["neo4j"]
@@ -120,15 +129,45 @@ def test_benchmark_paths_resolve_from_relocated_directory():
     compose = yaml.safe_load((BENCHMARK_DIR / "docker-compose.yaml").read_text(encoding="utf-8"))
     common = compose["x-benchmark-common"]
     build_root = (BENCHMARK_DIR / common["build"]["context"]).resolve()
-    volume_sources = [
-        (BENCHMARK_DIR / volume.split(":", 1)[0]).resolve() for volume in common["volumes"]
-    ]
+    volumes = common["volumes"]
 
-    assert build_root == PROJECT_ROOT
-    assert common["build"]["dockerfile"] == ("examples/herables_benchmark/Dockerfile.benchmark")
-    assert PROJECT_ROOT / "outputs" / "heracles_benchmark" in volume_sources
-    assert PROJECT_ROOT / "outputs" / "ollama" in volume_sources
-    assert not (PROJECT_ROOT / "examples" / "heracles_agents").exists()
+    assert build_root == PROJECT_ROOT / "external" / "heracles_benchmark"
+    assert common["build"]["dockerfile"] == "docker/benchmark/Dockerfile.benchmark"
+    assert not any("HERACLES_BENCHMARK_ROOT" in volume for volume in volumes)
+    assert not any("external/heracles" in volume for volume in volumes)
+    assert any("BENCHMARK_CONFIG_HOST" in volume for volume in volumes)
+    assert any("MODEL_MANIFEST_HOST" in volume for volume in volumes)
+    assert any(
+        "model_manifest.py:/home/benchmark/workspace/model_manifest.py:ro" in volume
+        for volume in volumes
+    )
+    assert any("../../outputs/ollama:/models:ro" == volume for volume in volumes)
+    assert compose["x-benchmark-environment"]["HERACLES_BENCHMARK_PATH"].endswith("/benchmark")
+
+
+def test_benchmark_image_uses_only_packages_pinned_by_benchmark_submodule():
+    dockerfile = (
+        PROJECT_ROOT
+        / "external"
+        / "heracles_benchmark"
+        / "docker"
+        / "benchmark"
+        / "Dockerfile.benchmark"
+    ).read_text(encoding="utf-8")
+
+    assert not (BENCHMARK_DIR / "Dockerfile.benchmark").exists()
+    assert "COPY external/heracles/heracles" in dockerfile
+    assert "COPY external/heracles_agents" in dockerfile
+    assert "COPY configs" in dockerfile
+    assert "COPY data" in dockerfile
+
+
+def test_heracles_benchmark_is_a_declared_submodule():
+    gitmodules = (PROJECT_ROOT / ".gitmodules").read_text(encoding="utf-8")
+
+    assert gitmodules.count("[submodule ") == 1
+    assert "path = external/heracles_benchmark" in gitmodules
+    assert "url = https://github.com/JorgeDFR/heracles-benchmark.git" in gitmodules
 
 
 def test_main_compose_has_profiled_ollama_for_project_split_validation():
@@ -176,26 +215,68 @@ def test_main_stack_exposes_demo_train_and_demo_deploy_workflows():
     assert 'run_demo_deploy "$@"' in launcher
 
 
-@pytest.mark.parametrize(
-    ("filename", "task", "questions"),
-    [
-        ("cypher_qa_student_model_sweep.yaml", "cypher", "qa_questions.yaml"),
-        ("cypher_pddl_student_model_sweep.yaml", "pddl", "pddl_questions.yaml"),
-    ],
-)
-def test_experiment_configs_share_models_and_collect_local_metrics(filename, task, questions):
-    experiment = yaml.safe_load((BENCHMARK_DIR / "config" / filename).read_text(encoding="utf-8"))
-    sweep = next(iter(experiment["model_sweeps"].values()))
-
-    assert experiment["metadata"]["task"] == task
-    assert experiment["metadata"]["local_metrics"]["enabled"] is True
-    assert (
-        experiment["metadata"]["local_metrics"]["ollama_container_name"]
-        == "3dsg-heracles-benchmark-ollama"
+def test_materialized_config_keeps_questions_and_overlays_local_models(tmp_path):
+    module = load_manifest_module()
+    source = tmp_path / "benchmark.yaml"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "benchmark": {
+                    "scene_id": "scene",
+                    "questions": {
+                        "qa": "data/questions/scene/qa.yaml",
+                        "pddl": "data/questions/scene/pddl.yaml",
+                        "metadata": "data/questions/scene/metadata.yaml",
+                    },
+                },
+                "providers": {
+                    "ollama": {
+                        "enabled": True,
+                        "models": [],
+                        "local_metrics": {"ollama_container_name": "ollama"},
+                    },
+                    "openrouter": {"enabled": True, "models": []},
+                },
+            }
+        ),
+        encoding="utf-8",
     )
-    assert sweep["provider"] == "ollama"
-    assert sweep["models_path"].endswith("model_lists/students.yaml")
-    assert sweep["template"]["questions"].endswith(questions)
+    models = tmp_path / "models.yaml"
+    models.write_text(
+        yaml.safe_dump(
+            {
+                "models": [
+                    {
+                        "alias": "student",
+                        "model": "student",
+                        "artifact_dir": "student",
+                        "enabled": True,
+                        "capabilities": CAPABILITIES,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = module.materialize_benchmark_config(
+        source,
+        models,
+        tmp_path / "resolved.yaml",
+        ollama_container_name="project-ollama",
+    )
+
+    assert (
+        resolved["benchmark"]["questions"]
+        == yaml.safe_load(source.read_text(encoding="utf-8"))["benchmark"]["questions"]
+    )
+    assert resolved["providers"]["ollama"]["models"][0]["model"] == "student:latest"
+    assert "artifact_dir" not in resolved["providers"]["ollama"]["models"][0]
+    assert resolved["providers"]["ollama"]["local_metrics"]["ollama_container_name"] == (
+        "project-ollama"
+    )
+    assert resolved["providers"]["openrouter"]["enabled"] is False
 
 
 def test_student_manifest_uses_stable_base_and_fine_tuned_directories():
@@ -212,30 +293,29 @@ def test_student_manifest_uses_stable_base_and_fine_tuned_directories():
     assert qwen[1]["variant"] == "finetune"
     assert all(entry["enabled"] is True for entry in qwen)
     assert all("q4km" not in entry["artifact_dir"].lower() for entry in qwen)
+    assert all(set(entry["capabilities"]) == set(CAPABILITIES) for entry in qwen)
 
 
-def test_launcher_defaults_to_both_benchmarks_and_creates_models_in_benchmark_ollama():
+def test_launcher_uses_upstream_question_config_and_creates_local_models():
     launcher = (BENCHMARK_DIR / "run_benchmark.sh").read_text(encoding="utf-8")
 
-    assert "--benchmarks cypher-qa" in launcher
-    assert "--benchmarks cypher-pddl" in launcher
-    assert "--benchmarks both" in launcher
-    assert "RUN_CYPHER_QA=1\nRUN_CYPHER_PDDL=1" in launcher
-    assert "select_benchmarks" not in launcher
-    assert "compose exec -T ollama ollama create" in launcher
+    assert 'HERACLES_BENCHMARK_ROOT="${PROJECT_ROOT}/external/heracles_benchmark"' in launcher
+    assert "--config PATH" in launcher
+    assert "--models PATH" in launcher
+    assert "model_manifest.py" in launcher
+    assert "ollama create" in launcher
     assert "mapfile -t provisioning_records" in launcher
     assert 'ollama create "${model}" -f "${modelfile}" </dev/null' in launcher
     assert "Provisioned and verified" in launcher
-    assert 'docker image inspect "${BENCHMARK_IMAGE}"' in launcher
-    assert "Reusing existing benchmark image" in launcher
-    assert "force_build_benchmark_image" in launcher
-    assert "CPU mode" not in launcher
+    assert "/benchmark/docker/benchmark/benchmark_runner.sh" in launcher
+    assert "check_required_gpu" in launcher
+    assert "--gpus all" in launcher
+    assert "NVIDIA Container Toolkit" in launcher
+    assert "CPU" not in launcher
 
 
-def test_report_uses_only_results_written_by_current_run():
-    runner = (BENCHMARK_DIR / "benchmark_runner.sh").read_text(encoding="utf-8")
+def test_integration_does_not_keep_a_forked_benchmark_runner_or_experiments():
+    assert not (BENCHMARK_DIR / "benchmark_runner.sh").exists()
 
-    assert 'RUN_CYPHER_QA="${1:-1}"' in runner
-    assert 'RUN_CYPHER_PDDL="${2:-1}"' in runner
-    assert 'RUN_MARKER="$(mktemp)"' in runner
-    assert '-newer "${RUN_MARKER}"' in runner
+    assert not (BENCHMARK_DIR / "config" / "cypher_qa_student_model_sweep.yaml").exists()
+    assert not (BENCHMARK_DIR / "config" / "cypher_pddl_student_model_sweep.yaml").exists()
