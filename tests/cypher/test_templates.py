@@ -9,6 +9,7 @@ from cypher_3dsg_agent_distillation.cypher.templates import (
     SolutionBlock,
     apply_dataset_question_targets,
     dataset_question_target,
+    effective_dataset_question_target,
     evenly_select_scene_records,
     format_solution_field,
     generate_records,
@@ -124,6 +125,33 @@ def test_dataset_question_target_is_not_multiplied_by_scene_count():
 
     assert dataset_question_target(template, None) == 5
     assert dataset_question_target(template, 3) == 3
+
+
+def test_challenge_quota_overrides_template_question_target():
+    template = {
+        "query_type": "place_hops",
+        "target_questions": 20,
+        "variables": {"value": "values"},
+    }
+
+    assert (
+        effective_dataset_question_target(
+            template,
+            None,
+            challenge_task_types={"place_hops"},
+            challenge_questions_per_task_type=10,
+        )
+        == 10
+    )
+    assert (
+        effective_dataset_question_target(
+            template,
+            4,
+            challenge_task_types={"place_hops"},
+            challenge_questions_per_task_type=10,
+        )
+        == 4
+    )
 
 
 def test_scene_record_selection_is_even_and_redistributes_unused_capacity():
@@ -346,6 +374,11 @@ def test_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
 
     assert len(records) == 10
     assert sum(str(record["solution"]).strip() != "<>" for record in records) >= 9
+    assert all(
+        ("invalid_input" in record["tags"])
+        == (str(record["solution"]).strip() == "<>")
+        for record in records
+    )
 
 
 def test_invalid_inputs_use_empty_answers_with_template_empty_ratio(monkeypatch):
@@ -384,6 +417,7 @@ def test_invalid_inputs_use_empty_answers_with_template_empty_ratio(monkeypatch)
     invalid_records = [record for record in records if "invalid_input" in record["tags"]]
     assert len(records) == 10
     assert len(invalid_records) == 2
+    assert all(record["tags"] == ["invalid_input"] for record in invalid_records)
     assert {str(record["solution"]).strip() for record in invalid_records} == {"<>"}
     assert all("empty_result_feedback" not in record for record in invalid_records)
 
@@ -440,6 +474,7 @@ def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch
     invalid_records = [record for record in records if "invalid_input" in record["tags"]]
     assert len(records) == 10
     assert len(invalid_records) == 3
+    assert all(record["tags"] == ["invalid_input"] for record in invalid_records)
     assert all(record["solution"] == "" for record in invalid_records)
     assert all(record["grounding"]["expected"] == {"object": []} for record in invalid_records)
     assert all("empty_result_feedback" not in record for record in invalid_records)

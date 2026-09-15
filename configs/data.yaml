@@ -1,4 +1,4 @@
-dataset_id: uhumans2_spot
+dataset_id: dataset_demo
 scenes:
   - scene_id: uhumans2_office
     scene_path: data/scenes/uhumans2_office.json
@@ -22,7 +22,6 @@ split:
   test_size: 0.1
   seed: 42
   split_by_scene: false
-  train_scene_interleave_ratio: 1.0
   challenge_questions_per_task_type: 10
   challenge_task_types:
     - nearest_object_to_object

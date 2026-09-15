@@ -43,7 +43,9 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     messages = render_profile_messages(profile, seed, tool_interface="openrouter")
     text = rendered_text(messages)
 
-    assert [message["role"] for message in messages] == ["user"] * len(messages)
+    assert messages[0]["role"] == "system"
+    assert all(message["role"] == "user" for message in messages[1:])
+    assert "mapping from natural language queries to Cypher queries" in messages[0]["content"]
     assert text.index(
         "mapping from natural language queries to Cypher queries"
     ) < text.index("<Scene Graph Description>")

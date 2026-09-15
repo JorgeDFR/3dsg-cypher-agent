@@ -197,7 +197,7 @@ def test_grouped_split_keeps_challenge_task_out_of_main_splits():
     assert "three" not in {record.uid for record in train + eval_records + test}
 
 
-def test_grouped_split_caps_challenge_records_and_keeps_the_remainder_for_training():
+def test_grouped_split_assigns_every_challenge_task_record_to_challenge():
     records = [
         make_record(
             f"hops-{index}",
@@ -214,45 +214,56 @@ def test_grouped_split_caps_challenge_records_and_keeps_the_remainder_for_traini
         test_size=0.1,
         seed=7,
         challenge_task_types={"place_hops"},
-        challenge_questions_per_task_type=10,
     )
 
-    assert len(challenge) == 10
-    assert len(train + eval_records + test) == 10
+    assert len(challenge) == 20
+    assert not train
+    assert not eval_records
+    assert not test
     assert {record.uid for record in challenge}.isdisjoint(
         record.uid for record in train + eval_records + test
     )
 
 
-def test_grouped_split_applies_training_scene_interleave_ratio():
+def test_grouped_split_keeps_identical_cypher_from_multiple_scenes_together():
+    shared_cypher = "MATCH (o:Object) RETURN count(o) AS count"
     records = [
-        make_record(
-            f"{scene_id}-{index}",
-            "count",
-            f"MATCH (n) RETURN {scene_index * 10 + index} AS count",
-        ).model_copy(update={"scene_id": scene_id})
-        for scene_index, scene_id in enumerate(("scene-1", "scene-2", "scene-3"))
-        for index in range(4)
+        make_record(f"shared-{scene}", "count", shared_cypher).model_copy(
+            update={
+                "scene_id": scene,
+                "split_group": f"{scene}:count:shared",
+            }
+        )
+        for scene in ("scene-1", "scene-2")
     ]
-
-    train, eval_records, test, challenge = grouped_split_records(
-        records,
-        train_size=1.0,
-        eval_size=0.0,
-        test_size=0.0,
-        seed=3,
-        train_scene_interleave_ratio=1.0,
-        scene_order=["scene-1", "scene-2", "scene-3"],
+    records.extend(
+        make_record(
+            f"unique-{index}",
+            "count",
+            f"MATCH (o:Object) RETURN {index} AS count",
+        )
+        for index in range(18)
     )
 
-    assert [record.scene_id for record in train] == [
-        "scene-1",
-        "scene-2",
-        "scene-3",
-    ] * 4
-    assert not eval_records
-    assert not test
-    assert not challenge
+    train, eval_records, test, _challenge = grouped_split_records(
+        records,
+        train_size=0.8,
+        eval_size=0.1,
+        test_size=0.1,
+        seed=42,
+        scene_order=["scene-1", "scene-2"],
+    )
+
+    locations = [
+        name
+        for name, split_records in {
+            "train": train,
+            "eval": eval_records,
+            "test": test,
+        }.items()
+        if any(record.gold_cypher == shared_cypher for record in split_records)
+    ]
+    assert len(locations) == 1
 
 
 def test_grouped_split_rejects_split_sizes_that_do_not_sum_to_one():
@@ -369,6 +380,20 @@ def test_optimize_student_trace_leaves_one_tool_trace_unchanged():
     optimized = optimize_student_trace(record)
 
     assert optimized is record
+
+
+def test_optimize_student_trace_preserves_controlled_repair_context():
+    record = AgentTraceRecord.model_validate(
+        answerable_trace(
+            metadata={
+                "controlled_repair": True,
+                "tool_call_count": 2,
+                "successful_tool_call_index": 2,
+            }
+        )
+    )
+
+    assert optimize_student_trace(record) is record
 
 
 def test_optimize_student_trace_prunes_failed_tool_attempts():
@@ -622,8 +647,10 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
     assert "final answer repairs from invalid_answer_format rejects: 1" in text
     assert "pruned failed tool attempts: 2 traces, 3 tool calls dropped" in text
     assert "dropped by max_per_task_type: count=1" in text
-    assert "train: 1 questions (count=1) -> train.jsonl" in text
-    assert "test: 0 questions (none) -> test.jsonl" in text
+    assert "train: 1 traces -> train.jsonl" in text
+    assert "test: 0 traces -> test.jsonl" in text
+    assert text.count("count=1") == 1
+    assert "lookup=1" not in text
 
 
 def test_split_report_payload_lists_optimized_questions():

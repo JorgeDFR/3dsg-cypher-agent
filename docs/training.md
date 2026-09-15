@@ -45,12 +45,20 @@ Each `configs/student_*.yaml` file has four main sections:
 `run_cypher_query` JSON schema once through its chat template; the schema is not
 duplicated in each stored trace message.
 
-The training example order is controlled by
-`split.train_scene_interleave_ratio` in `configs/data.yaml`. A value of `0`
-keeps each scene in one contiguous block, `1` cycles through scenes one example
-at a time, and intermediate values use progressively smaller scene chunks. The
-trainer deliberately uses a sequential sampler so this prepared order is not
-randomized again at training time.
+Controlled-repair traces identify the initial mutated Cypher call and syntax
+error as context-only messages. Their token spans are masked in both loss modes.
+The corrected Cypher call and final answer remain supervised, teaching the model
+to use tool feedback without training it to reproduce the intentional error.
+
+The training split does not apply scene-specific ordering. The standard SFT
+sampler shuffles the prepared traces in every training epoch.
+
+`training.warmup_ratio` controls scheduler warmup as a fraction of the total
+optimizer steps, so changes to the split size, batch size, gradient accumulation,
+or epoch count automatically change the number of warmup steps. Before training,
+every rendered trace is tokenized and checked against `training.max_length`.
+Overlength traces are excluded without truncation, and a warning reports the
+number rejected from each split.
 
 ## Inspect the rendered dataset
 
@@ -101,13 +109,13 @@ For a reproducible end-to-end demonstration, run:
 docker/stack.sh demo-train
 ```
 
-The command performs scene loading, question and trace generation, splitting,
-base-model raw-generation validation, training, fine-tuned eval-loss and raw
-generation, and HTML report generation. Override its inputs with:
+The command performs question and trace generation, splitting, base-model
+raw-generation validation, training, fine-tuned eval-loss and raw generation,
+and HTML report generation. Database-backed stages load every configured scene
+when needed. Override its inputs with:
 
 | Variable | Default |
 | --- | --- |
-| `DEMO_SCENE` | `data/scenes/uhumans2_office.json` |
 | `DEMO_DATA_CONFIG` | `configs/data.yaml` |
 | `DEMO_TEACHER_CONFIG` | `configs/teacher_synthetic.yaml` |
 | `DEMO_STUDENT_CONFIG` | `configs/student_qwen3.5_4b.yaml` |

@@ -176,6 +176,7 @@ def test_synthetic_teacher_config_does_not_define_a_model():
 
     assert configured_teacher_provider(config) == "synthetic"
     assert "model" not in config
+    assert config["max_tool_calls"] == 2
 
 
 def test_synthetic_teacher_constructs_trace_from_gold_and_database_rows():
@@ -205,6 +206,117 @@ def test_synthetic_teacher_constructs_trace_from_gold_and_database_rows():
     assert "teacher_model" not in decision.record.model_dump(exclude_none=True)
     assert decision.record.metadata["teacher_provider"] == "synthetic"
     assert decision.record.metadata["generation_mode"] == "synthetic_gold_cypher"
+
+
+def test_synthetic_teacher_constructs_controlled_repair_trace():
+    invalid_cypher = "MATC (o:Object) RETURN count(o) AS count"
+    validator = FakeValidator(
+        [
+            {
+                "syntax_error": True,
+                "executable": False,
+                "rows": [],
+                "error": "Neo.ClientError.Statement.SyntaxError: Invalid input 'MATC'",
+            },
+            {"executable": True, "rows": [{"count": 3}], "error": None},
+        ]
+    )
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            task_family="cypher_qa",
+            output_type="SLDP",
+            metadata={
+                "controlled_repair": True,
+                "repair_template": "misspelled_match_clause",
+                "repair_cypher": invalid_cypher,
+            },
+            tags=["controlled_repair"],
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+        max_tool_calls=2,
+    )
+
+    assert decision.accepted
+    assert validator.cyphers == [
+        invalid_cypher,
+        "MATCH (o:Object) RETURN count(o) AS count",
+    ]
+    assert decision.record.metadata["tool_call_count"] == 2
+    assert decision.record.metadata["successful_tool_call_index"] == 2
+    assert decision.record.metadata["repair_context_message_count"] > 2
+    repair_indices = decision.record.metadata["non_trainable_message_indices"]
+    assert repair_indices[1] == repair_indices[0] + 1
+    assert decision.record.messages[repair_indices[0]].tool_calls[0].function.arguments == {
+        "cypher_string": invalid_cypher
+    }
+    assert "Statement.SyntaxError" in decision.record.messages[repair_indices[1]].content
+    assert decision.record.messages[-1].content == "<answer>3</answer>"
+
+
+def test_controlled_repair_requires_a_database_syntax_error():
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            metadata={
+                "controlled_repair": True,
+                "repair_template": "undefined_return_variable",
+                "repair_cypher": "MATCH (n) RETURN missing.value",
+            }
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=FakeValidator(
+            [
+                {
+                    "syntax_error": False,
+                    "executable": False,
+                    "error": "A non-syntax database failure",
+                }
+            ]
+        ),
+        policy=None,
+    )
+
+    assert not decision.accepted
+    assert decision.reason == "invalid_controlled_repair"
+
+
+def test_openrouter_teacher_receives_controlled_repair_context():
+    invalid_cypher = "MATC (o:Object) RETURN count(o) AS count"
+    validator = FakeValidator(
+        [
+            {
+                "syntax_error": True,
+                "executable": False,
+                "rows": [],
+                "error": "Neo.ClientError.Statement.SyntaxError: Invalid input 'MATC'",
+            },
+            {"executable": True, "rows": [{"count": 3}], "error": None},
+        ]
+    )
+    decision, client = run_interaction(
+        seed_record(
+            metadata={
+                "controlled_repair": True,
+                "repair_template": "misspelled_match_clause",
+                "repair_cypher": invalid_cypher,
+            }
+        ),
+        [tool_assistant(tool_call_id="call_2"), final_assistant()],
+        validator=validator,
+    )
+
+    assert decision.accepted
+    first_call_messages = client.calls[0]["messages"]
+    assert first_call_messages[-2]["tool_calls"][0]["function"]["arguments"] == {
+        "cypher_string": invalid_cypher
+    }
+    assert "Statement.SyntaxError" in first_call_messages[-1]["content"]
+    assert decision.record.metadata["tool_call_count"] == 2
 
 
 def test_synthetic_teacher_accepts_empty_qa_answer_for_invalid_input():

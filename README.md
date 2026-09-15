@@ -117,8 +117,9 @@ The default demonstration uses the synthetic teacher and needs no API key:
 docker/stack.sh demo-train
 ```
 
-This loads the configured scene, prepares the dataset, trains the student,
-runs baseline and fine-tuned validation, and generates an HTML workflow report.
+This prepares the configured multi-scene dataset, trains the student, loads each
+scene when required for database-backed stages, runs baseline and fine-tuned
+validation, and generates an HTML workflow report.
 
 After an adapter has been trained, export and validate BF16, Q8_0, and Q4_K_M
 GGUF variants:

@@ -3,33 +3,33 @@ model:
   tokenizer: null
   trust_remote_code: true
   dtype: bfloat16
-  load_in_4bit: false #true
+  load_in_4bit: false
 
 lora:
   r: 8
   alpha: 16
-  dropout: 0.1
-  target_modules: auto
+  dropout: 0.05
+  target_modules: auto #all-linear
 
 training:
   output_dir: outputs/lora/qwen3.5-4b-finetune
   loss_mode: assistant-only
-  max_length: 4096
+  max_length: 5000
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 0.00005
-  num_train_epochs: 2
-  warmup_steps: 0
-  logging_steps: 10
-  eval_steps: 10
-  save_steps: 10
-  save_total_limit: 5
+  learning_rate: 1e-4
+  num_train_epochs: 3
+  warmup_ratio: 0.05
+  logging_steps: 5
+  eval_steps: 20
+  save_steps: 20
+  save_total_limit: 3
   load_best_model_at_end: true
   metric_for_best_model: eval_loss
   greater_is_better: false
-  early_stopping_patience: 2
-  early_stopping_threshold: 0.0001
+  early_stopping_patience: 4
+  early_stopping_threshold: 1e-4
   bf16: true
   fp16: false
   gradient_checkpointing: true

@@ -159,6 +159,24 @@ def count_tags(records: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counter.items()))
 
 
+def generated_question_supervision_counts(
+    records: list[dict[str, Any]],
+) -> dict[str, int]:
+    empty_questions = 0
+    repair_questions = 0
+    for record in records:
+        tags = {str(tag) for tag in record.get("tags") or []}
+        metadata = record.get("metadata") or {}
+        empty_questions += int("invalid_input" in tags)
+        repair_questions += int(
+            "controlled_repair" in tags or bool(metadata.get("controlled_repair"))
+        )
+    return {
+        "empty questions": empty_questions,
+        "Cypher repair questions": repair_questions,
+    }
+
+
 def one_line_text(value: Any) -> str:
     return " ".join(str(value).split())
 
@@ -1589,6 +1607,7 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
 def render_generated_questions_tab(data: dict[str, Any]) -> str:
     section = data["generated_questions"]
     rows = [compact_question_record(record) for record in section["records"]]
+    supervision_counts = generated_question_supervision_counts(section["records"])
     details = [
         question_detail(record, title="Generated Question Details")
         for record in section["records"]
@@ -1600,6 +1619,7 @@ def render_generated_questions_tab(data: dict[str, Any]) -> str:
                 "generated questions": len(section["records"]),
                 "task types": len(section["by_task_type"]),
                 "task families": len(section["by_task_family"]),
+                **supervision_counts,
             }
         )
         + render_counter_grid(

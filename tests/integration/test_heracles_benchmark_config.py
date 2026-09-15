@@ -196,6 +196,12 @@ def test_main_stack_exposes_explicit_ollama_lifecycle_and_cli_commands():
 
 def test_main_stack_exposes_demo_train_and_demo_deploy_workflows():
     launcher = (PROJECT_ROOT / "docker" / "stack.sh").read_text(encoding="utf-8")
+    train_workflow = launcher.split("run_demo_train()", 1)[1].split(
+        "require_trained_student()", 1
+    )[0]
+    deploy_workflow = launcher.split("run_demo_deploy()", 1)[1].split(
+        'if [[ $# -lt 1 ]]', 1
+    )[0]
 
     assert "run_demo_train()" in launcher
     assert "demo-train)" in launcher
@@ -214,6 +220,10 @@ def test_main_stack_exposes_demo_train_and_demo_deploy_workflows():
     assert launcher.count("--split challenge") >= 3
     assert "demo-deploy)" in launcher
     assert 'run_demo_deploy "$@"' in launcher
+    assert "load_3dsg_neo4j.py" not in train_workflow
+    assert "load_3dsg_neo4j.py" not in deploy_workflow
+    assert "DEMO_SCENE" not in launcher
+    assert "DEPLOY_SCENE" not in launcher
 
 
 def test_materialized_config_keeps_questions_and_overlays_local_models(tmp_path):

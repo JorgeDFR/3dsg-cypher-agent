@@ -76,6 +76,13 @@ validators. Records are grouped by `scene_id` before execution, and Neo4j is
 cleared and loaded only when that scene changes. A complete validation pass
 therefore performs one database load per represented scene.
 
+For controlled-repair records, the standalone Cypher generation and end-to-end
+checks start after the stored mutated call and Neo4j syntax-error response, so
+the first generated query must be a correction. The final-answer check receives
+that same repair context plus the corrected Cypher call and successful tool
+response. Reports include `controlled_repair` and `repair_template` fields for
+filtering these cases.
+
 ### Raw generation with Ollama
 
 First [export and register](ollama_export.md#register-models-in-the-project-stack)

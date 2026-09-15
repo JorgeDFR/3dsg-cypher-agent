@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -52,20 +53,6 @@ def require_training_dependencies():
         msg = "Install training dependencies with `pip install -e '.[train]'` before fine-tuning."
         raise RuntimeError(msg) from exc
     return LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer
-
-
-def dataset_order_trainer_class(base_trainer):
-    """Create a trainer that respects the scene ordering stored in the split."""
-
-    class DatasetOrderTrainer(base_trainer):
-        def _get_train_sampler(self, train_dataset=None):
-            from torch.utils.data import SequentialSampler
-
-            dataset = train_dataset if train_dataset is not None else self.train_dataset
-            return None if dataset is None else SequentialSampler(dataset)
-
-    DatasetOrderTrainer.__name__ = f"DatasetOrder{base_trainer.__name__}"
-    return DatasetOrderTrainer
 
 
 def dtype_from_name(name: str | None):
@@ -345,35 +332,53 @@ def common_prefix_length(left: Sequence[int], right: Sequence[int]) -> int:
     return length
 
 
+def message_token_span(
+    tokenizer,
+    messages: list[dict[str, Any]],
+    input_ids: list[int],
+    message_index: int,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> tuple[int, int]:
+    before_ids = tokenize_rendered_text(
+        tokenizer,
+        to_chat_text(tokenizer, messages[:message_index], tools=tools),
+    )
+    after_ids = tokenize_rendered_text(
+        tokenizer,
+        to_chat_text(tokenizer, messages[: message_index + 1], tools=tools),
+    )
+    start = common_prefix_length(input_ids, before_ids)
+    end = common_prefix_length(input_ids, after_ids)
+    if start != len(before_ids) or end != len(after_ids) or end <= start:
+        raise ValueError(
+            f"Could not locate rendered message span at index {message_index}. "
+            "Check that the tokenizer chat template renders partial transcripts "
+            "as prefixes of the full transcript."
+        )
+    return start, end
+
+
 def assistant_token_spans(
     tokenizer,
     messages: list[dict[str, Any]],
     input_ids: list[int],
     *,
     tools: list[dict[str, Any]] | None = None,
+    excluded_message_indices: set[int] | None = None,
 ) -> list[tuple[int, int]]:
-    spans = []
-    for index, message in enumerate(messages):
-        if message.get("role") != "assistant":
-            continue
-        before_ids = tokenize_rendered_text(
+    excluded_message_indices = excluded_message_indices or set()
+    return [
+        message_token_span(
             tokenizer,
-            to_chat_text(tokenizer, messages[:index], tools=tools),
+            messages,
+            input_ids,
+            index,
+            tools=tools,
         )
-        after_ids = tokenize_rendered_text(
-            tokenizer,
-            to_chat_text(tokenizer, messages[: index + 1], tools=tools),
-        )
-        start = common_prefix_length(input_ids, before_ids)
-        end = common_prefix_length(input_ids, after_ids)
-        if start != len(before_ids) or end != len(after_ids) or end <= start:
-            raise ValueError(
-                "Could not locate rendered assistant span. "
-                "Check that the tokenizer chat template renders partial transcripts "
-                "as prefixes of the full transcript."
-            )
-        spans.append((start, end))
-    return spans
+        for index, message in enumerate(messages)
+        if message.get("role") == "assistant" and index not in excluded_message_indices
+    ]
 
 
 def labels_for_loss_mode(
@@ -383,10 +388,22 @@ def labels_for_loss_mode(
     input_ids: list[int],
     loss_mode: str,
     tools: list[dict[str, Any]] | None = None,
+    non_trainable_message_indices: Sequence[int] = (),
 ) -> list[int]:
     loss_mode = normalize_loss_mode(loss_mode)
+    excluded_indices = {int(index) for index in non_trainable_message_indices}
     if loss_mode == FULL_LOSS_MODE:
-        return list(input_ids)
+        labels = list(input_ids)
+        for index in excluded_indices:
+            start, end = message_token_span(
+                tokenizer,
+                messages,
+                input_ids,
+                index,
+                tools=tools,
+            )
+            labels[start:end] = [IGNORE_INDEX] * (end - start)
+        return labels
 
     labels = [IGNORE_INDEX] * len(input_ids)
     for start, end in assistant_token_spans(
@@ -394,21 +411,72 @@ def labels_for_loss_mode(
         messages,
         input_ids,
         tools=tools,
+        excluded_message_indices=excluded_indices,
     ):
         labels[start:end] = input_ids[start:end]
     return labels
 
 
-def truncate_training_example(
-    example: dict[str, Any],
+class OverlengthTrainingTraceError(ValueError):
+    def __init__(self, uid: str, token_length: int, max_length: int):
+        self.uid = uid
+        self.token_length = token_length
+        self.max_length = max_length
+        super().__init__(
+            f"Trace {uid or '<unknown>'} has {token_length} tokens, which exceeds "
+            f"max_length={max_length}."
+        )
+
+
+class OverlengthTrainingTraceWarning(UserWarning):
+    pass
+
+
+def validate_training_length(
     *,
+    uid: str,
+    token_length: int,
     max_length: int | None,
-) -> dict[str, Any]:
+) -> None:
     if max_length is None:
-        return example
-    for key in ("input_ids", "attention_mask", "labels"):
-        example[key] = example[key][:max_length]
-    return example
+        return
+    if max_length <= 0:
+        raise ValueError("training.max_length must be greater than zero.")
+    if token_length > max_length:
+        raise OverlengthTrainingTraceError(uid, token_length, max_length)
+
+
+def warn_about_rejected_traces(
+    *,
+    path: str,
+    rejected_count: int,
+    total_count: int,
+    max_length: int | None,
+) -> None:
+    if rejected_count == 0:
+        return
+    warnings.warn(
+        f"Rejected {rejected_count} of {total_count} traces from {path} because their "
+        f"rendered token length exceeds max_length={max_length}. Overlength traces are "
+        "excluded instead of truncated.",
+        OverlengthTrainingTraceWarning,
+        stacklevel=2,
+    )
+
+
+def require_retained_traces(
+    *,
+    path: str,
+    retained_count: int,
+    total_count: int,
+    max_length: int | None,
+) -> None:
+    if retained_count > 0 or total_count == 0:
+        return
+    raise ValueError(
+        f"All {total_count} traces from {path} exceed max_length={max_length}. "
+        "Increase training.max_length before training."
+    )
 
 
 def active_label_count(labels: Sequence[int]) -> int:
@@ -438,6 +506,11 @@ def build_training_example(
             )
         text = to_chat_text(tokenizer, messages, tools=tools)
     input_ids = tokenize_rendered_text(tokenizer, text)
+    validate_training_length(
+        uid=str(record.get("uid", "")),
+        token_length=len(input_ids),
+        max_length=max_length,
+    )
     example = {
         "input_ids": input_ids,
         "attention_mask": [1] * len(input_ids),
@@ -447,38 +520,64 @@ def build_training_example(
             input_ids=input_ids,
             loss_mode=loss_mode,
             tools=tools,
+            non_trainable_message_indices=(
+                (record.get("metadata") or {}).get("non_trainable_message_indices") or []
+            ),
         ),
         "uid": str(record.get("uid", "")),
     }
-    example = truncate_training_example(example, max_length=max_length)
     if active_label_count(example["labels"]) == 0:
         raise ValueError(
             f"Record {record.get('uid', '<unknown>')} has no supervised tokens after "
-            f"applying loss mode `{loss_mode}` and max_length={max_length}."
+            f"applying loss mode `{loss_mode}`."
         )
     return example
 
 
-def build_dataset(path: str, tokenizer):
+def rendered_record_text(record: dict[str, Any], tokenizer) -> str:
+    return (
+        to_chat_text(
+            tokenizer,
+            record["messages"],
+            tools=training_tool_schemas(record),
+        )
+        if record.get("messages")
+        else str(record.get("text") or "")
+    )
+
+
+def build_dataset(path: str, tokenizer, *, max_length: int | None = None):
     from datasets import Dataset
 
     records = read_jsonl(path)
-    return Dataset.from_list(
-        [
-            {
-                "text": (
-                    to_chat_text(
-                        tokenizer,
-                        record["messages"],
-                        tools=training_tool_schemas(record),
-                    )
-                    if record.get("messages")
-                    else str(record.get("text") or "")
+    examples = []
+    rejected_count = 0
+    for record in records:
+        text = rendered_record_text(record, tokenizer)
+        try:
+            if max_length is not None:
+                validate_training_length(
+                    uid=str(record.get("uid", "")),
+                    token_length=len(tokenize_rendered_text(tokenizer, text)),
+                    max_length=max_length,
                 )
-            }
-            for record in records
-        ]
+        except OverlengthTrainingTraceError:
+            rejected_count += 1
+            continue
+        examples.append({"text": text})
+    warn_about_rejected_traces(
+        path=path,
+        rejected_count=rejected_count,
+        total_count=len(records),
+        max_length=max_length,
     )
+    require_retained_traces(
+        path=path,
+        retained_count=len(examples),
+        total_count=len(records),
+        max_length=max_length,
+    )
+    return Dataset.from_list(examples)
 
 
 def build_training_dataset(
@@ -491,17 +590,33 @@ def build_training_dataset(
     from datasets import Dataset
 
     records = read_jsonl(path)
-    return Dataset.from_list(
-        [
-            build_training_example(
+    examples = []
+    rejected_count = 0
+    for record in records:
+        try:
+            example = build_training_example(
                 record,
                 tokenizer,
                 loss_mode=loss_mode,
                 max_length=max_length,
             )
-            for record in records
-        ]
+        except OverlengthTrainingTraceError:
+            rejected_count += 1
+            continue
+        examples.append(example)
+    warn_about_rejected_traces(
+        path=path,
+        rejected_count=rejected_count,
+        total_count=len(records),
+        max_length=max_length,
     )
+    require_retained_traces(
+        path=path,
+        retained_count=len(examples),
+        total_count=len(records),
+        max_length=max_length,
+    )
+    return Dataset.from_list(examples)
 
 
 def pad_causal_lm_features(
@@ -576,6 +691,9 @@ def training_arguments_kwargs(
     training_config: dict[str, Any],
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
+    warmup_ratio = float(training_config.get("warmup_ratio", 0.05))
+    if not 0.0 <= warmup_ratio <= 1.0:
+        raise ValueError("training.warmup_ratio must be between 0 and 1.")
     kwargs = {
         "output_dir": training_config["output_dir"],
         "per_device_train_batch_size": int(training_config.get("per_device_train_batch_size", 1)),
@@ -583,7 +701,7 @@ def training_arguments_kwargs(
         "gradient_accumulation_steps": int(training_config.get("gradient_accumulation_steps", 8)),
         "learning_rate": float(training_config.get("learning_rate", 2e-4)),
         "num_train_epochs": float(training_config.get("num_train_epochs", 3)),
-        "warmup_steps": int(training_config.get("warmup_steps", 0)),
+        "warmup_steps": warmup_ratio,
         "logging_steps": int(training_config.get("logging_steps", 10)),
         "eval_steps": int(training_config.get("eval_steps", 100)),
         "save_steps": int(training_config.get("save_steps", 100)),
@@ -619,14 +737,10 @@ def sft_config_kwargs(
 ) -> dict[str, Any]:
     kwargs = training_arguments_kwargs(training_config, has_eval_dataset)
     kwargs["max_length"] = int(training_config.get("max_length", 4096))
-    loss_mode = loss_mode_from_training_config(training_config)
-    if loss_mode == FULL_LOSS_MODE:
-        kwargs["dataset_text_field"] = "text"
-    else:
-        dataset_kwargs = dict(training_config.get("dataset_kwargs") or {})
-        dataset_kwargs["skip_prepare_dataset"] = True
-        kwargs["dataset_kwargs"] = dataset_kwargs
-        kwargs["remove_unused_columns"] = False
+    dataset_kwargs = dict(training_config.get("dataset_kwargs") or {})
+    dataset_kwargs["skip_prepare_dataset"] = True
+    kwargs["dataset_kwargs"] = dataset_kwargs
+    kwargs["remove_unused_columns"] = False
     return kwargs
 
 
@@ -795,26 +909,20 @@ def command(args: argparse.Namespace) -> None:
     max_length = int(training_config.get("max_length", 4096))
     loss_mode = loss_mode_from_training_config(training_config)
     with phase_progress("Preparing training datasets", 2) as (progress, task_id):
-        if loss_mode == FULL_LOSS_MODE:
-            train_dataset = build_dataset(data_config["splits"]["train"], tokenizer)
-            progress.update(task_id, advance=1, description="Preparing evaluation dataset")
-            eval_dataset = build_dataset(data_config["splits"]["eval"], tokenizer)
-            data_collator = None
-        else:
-            train_dataset = build_training_dataset(
-                data_config["splits"]["train"],
-                tokenizer,
-                loss_mode=loss_mode,
-                max_length=max_length,
-            )
-            progress.update(task_id, advance=1, description="Preparing evaluation dataset")
-            eval_dataset = build_training_dataset(
-                data_config["splits"]["eval"],
-                tokenizer,
-                loss_mode=loss_mode,
-                max_length=max_length,
-            )
-            data_collator = CausalLmDataCollator(tokenizer)
+        train_dataset = build_training_dataset(
+            data_config["splits"]["train"],
+            tokenizer,
+            loss_mode=loss_mode,
+            max_length=max_length,
+        )
+        progress.update(task_id, advance=1, description="Preparing evaluation dataset")
+        eval_dataset = build_training_dataset(
+            data_config["splits"]["eval"],
+            tokenizer,
+            loss_mode=loss_mode,
+            max_length=max_length,
+        )
+        data_collator = CausalLmDataCollator(tokenizer)
         progress.update(task_id, advance=1)
     training_args = SFTConfig(
         **sft_config_kwargs(
@@ -835,8 +943,7 @@ def command(args: argparse.Namespace) -> None:
     if stopping_callback is not None:
         callbacks.append(stopping_callback)
 
-    OrderedSFTTrainer = dataset_order_trainer_class(SFTTrainer)
-    trainer = OrderedSFTTrainer(
+    trainer = SFTTrainer(
         **sft_trainer_kwargs(
             model=model,
             tokenizer=tokenizer,

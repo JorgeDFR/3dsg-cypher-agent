@@ -28,7 +28,7 @@ For the directory and selection rules of generated artifacts, see
 | `question_sets` | One or more experiment profile and question-template pairs |
 | `max_per_task_type` | Optional cap on generated records per task type |
 | `split` | Train, evaluation, test, and challenge selection settings |
-| `optimize_student_traces` | Whether split rendering prunes repair turns and adds repairable traces |
+| `optimize_student_traces` | Whether split rendering prunes incidental failed turns and repairs eligible final answers |
 
 Multiple task families can share one dataset version:
 
@@ -63,9 +63,10 @@ a label-agnostic query that accepts either parent layer (`Place` or
 are divided as evenly as possible among compatible scenes, with unused capacity
 redistributed when a scene lacks the layer or values required by that question.
 The configured `empty_ratio` is enforced across the combined dataset rather
-than independently multiplying the target for every scene. The remaining
-share is normal supervision; this naming leaves room for future independent
-shares such as repair supervision.
+than independently multiplying the target for every scene. Empty-result and
+controlled-repair records are sampled as disjoint shares: an empty question is
+never selected for Cypher repair. Generated records use the `invalid_input` tag
+for empty questions and the `controlled_repair` tag for repair questions.
 
 The QA set covers 30 question types. In addition to the original inventory,
 containment, distance, and hop queries, it includes scene totals; object
@@ -117,6 +118,21 @@ Render the question templates from the extracted scene values:
 ```bash
 docker/stack.sh main python scripts/generate_3dsg_seed_templates.py \
   --data-config configs/data.yaml
+```
+
+Each question-template file sets `sampling.repair_cypher_ratio` independently
+from `empty_ratio`. The default `0.2` marks 20% of each eligible question type
+for controlled repair while keeping the same total question count. Override it
+for one generation run with `--repair-cypher-ratio`. Selected records receive a
+deterministic, balanced syntax-error mutation in their metadata. Safety-refusal
+questions are excluded because their gold value is not executable Cypher.
+
+The available mutations and their coverage across every configured question
+type are recorded in [Controlled Cypher repair supervision](cypher_repair_supervision.md).
+Regenerate that analysis after changing Cypher templates with:
+
+```bash
+python scripts/analyze_cypher_repair_templates.py
 ```
 
 ### 4. Prepare seed records
@@ -171,8 +187,10 @@ docker/stack.sh main python scripts/generate_traces.py generate \
 ### Teacher validation
 
 The OpenRouter teacher receives the rendered agent prompt and the
-`run_cypher_query` schema. It does not receive the seed's gold Cypher or
-expected answer. Each interaction is checked through these gates:
+`run_cypher_query` schema. It does not receive the unmodified seed gold Cypher
+or expected answer. The invariant instructions from the prompt template use
+the chat `system` role; scene context, examples, and the question use `user`
+messages. Each interaction is checked through these gates:
 
 1. Enforce static Cypher safety rules.
 2. Execute the tool call against the local Neo4j scene.
@@ -180,6 +198,19 @@ expected answer. Each interaction is checked through these gates:
 4. Compare QA answers with the expected answer.
 5. Verify that PDDL queries satisfy their grounding contract and that the final
    goal is valid for the configured robot domain.
+
+For a controlled-repair seed, trace generation first executes the mutated gold
+Cypher and requires Neo4j to return a syntax error. That failed assistant tool
+call and its real database error are added before the teacher or synthetic
+corrected call. The resulting conversation is:
+
+1. Base prompt and question.
+2. Mutated Cypher tool call and Neo4j syntax-error response.
+3. Corrected Cypher tool call and successful response.
+4. Final answer.
+
+Controlled repair therefore requires live Neo4j validation and at least two
+allowed tool calls.
 
 Accepted training traces are written to `teacher_traces.jsonl`. Debug artifacts
 include:
@@ -223,18 +254,15 @@ normalized-equivalent Cypher are assigned together so an equivalent query
 cannot leak across splits.
 
 `split.challenge_questions_per_task_type` controls how many records from each
-listed `challenge_task_types` entry are reserved for the challenge split. Any
-remaining records of those task types continue through the normal
-train/eval/test split, so their template-level `target_questions` does not need
-to be reduced manually.
+listed `challenge_task_types` entry are generated across all configured scenes,
+overriding that template's `target_questions`. Every record from those task
+types is assigned to the challenge split, and none appears in train, evaluation,
+or test.
 
 Validation-oriented splits are written with all records from one scene
 contiguously, minimizing database reloads to once per represented scene. The
-training split uses `split.train_scene_interleave_ratio`, which must be between
-`0` and `1`: `0` uses the same scene-grouped order, while `1` alternates scenes
-round-robin. Intermediate values deterministically divide each scene into
-progressively smaller chunks; records are still shuffled within each scene.
-Training consumes the stored order without an additional random sampler.
+training split does not apply scene-specific ordering; the standard SFT sampler
+shuffles its records in every training epoch.
 
 Set `split.split_by_scene: true`, or pass `--split-by-scene`, to request
 scene-held-out train/eval/test/challenge data. This interface is reserved for a
@@ -253,8 +281,8 @@ docker/stack.sh main python scripts/prepare_dataset.py split \
 ```
 
 This optimization changes only split/render output; the raw teacher traces are
-preserved. It can also be enabled with `optimize_student_traces: true` in the
-data configuration.
+preserved. Intentional controlled-repair prefixes are never pruned. It can also
+be enabled with `optimize_student_traces: true` in the data configuration.
 
 ## Select reproducible inputs
 

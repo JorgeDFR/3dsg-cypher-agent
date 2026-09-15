@@ -25,7 +25,6 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
 )
 from cypher_3dsg_agent_distillation.core.cli_output import (
     captured_warnings,
-    print_breakdown,
     print_summary,
 )
 from cypher_3dsg_agent_distillation.core.config import (
@@ -35,10 +34,7 @@ from cypher_3dsg_agent_distillation.core.config import (
     with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl, write_jsonl
-from cypher_3dsg_agent_distillation.core.scene_ordering import (
-    order_records_by_scene_interleave,
-    validate_scene_interleave_ratio,
-)
+from cypher_3dsg_agent_distillation.core.scene_ordering import group_records_by_scene
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
     config_record,
@@ -319,6 +315,8 @@ def read_student_trace_records(
 
 
 def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
+    if record.metadata.get("controlled_repair"):
+        return record
     raw_tool_call_count = int(record.metadata.get("tool_call_count") or len(record.tool_calls))
     if raw_tool_call_count <= 1 or record.metadata.get("incomplete_conversation"):
         return record
@@ -430,25 +428,11 @@ def grouped_split_records(
     test_size: float,
     seed: int,
     challenge_task_types: set[str] | None = None,
-    challenge_questions_per_task_type: int | None = None,
-    train_scene_interleave_ratio: float = 1.0,
     scene_order: list[str] | None = None,
 ) -> SplitResult:
     validate_split_sizes(train_size, eval_size, test_size)
-    train_scene_interleave_ratio = validate_scene_interleave_ratio(
-        train_scene_interleave_ratio
-    )
     challenge_task_types = challenge_task_types or set()
-    if challenge_questions_per_task_type is not None and challenge_questions_per_task_type < 0:
-        raise ValueError("challenge_questions_per_task_type must be non-negative.")
-    if challenge_questions_per_task_type is None:
-        challenge = [record for record in records if record.task_type in challenge_task_types]
-    else:
-        challenge = []
-        for task_type in sorted(challenge_task_types):
-            candidates = [record for record in records if record.task_type == task_type]
-            random.Random(f"{seed}:challenge:{task_type}").shuffle(candidates)
-            challenge.extend(candidates[:challenge_questions_per_task_type])
+    challenge = [record for record in records if record.task_type in challenge_task_types]
     challenge_uids = {record.uid for record in challenge}
     main_records = [record for record in records if record.uid not in challenge_uids]
 
@@ -535,16 +519,9 @@ def grouped_split_records(
         for split_name in split_lists:
             split_lists[split_name].extend(task_splits[split_name])
 
-    train[:] = order_records_by_scene_interleave(
-        train,
-        ratio=train_scene_interleave_ratio,
-        seed=seed,
-        scene_order=scene_order or (),
-    )
     for records_to_group in (eval_records, test, challenge):
-        records_to_group[:] = order_records_by_scene_interleave(
+        records_to_group[:] = group_records_by_scene(
             records_to_group,
-            ratio=0.0,
             seed=seed,
             scene_order=scene_order or (),
         )
@@ -572,7 +549,7 @@ def split_one_task_type(
     }
     task_groups: dict[str, list[AgentTraceRecord]] = defaultdict(list)
     for record in task_records:
-        task_groups[record.split_group or "unknown"].append(record)
+        task_groups[normalize_cypher(record.gold_cypher)].append(record)
 
     rng = random.Random(f"{seed}:{task_type}")
     group_items = list(task_groups.values())
@@ -1189,9 +1166,7 @@ def split_report_lines(
     for split_name in ("train", "eval", "test", "challenge"):
         records = split_records[split_name]
         lines.append(
-            f"    {split_name}: {len(records)} questions "
-            f"({format_counter(record_task_type_counts(records))}) -> "
-            f"{split_paths[split_name]}"
+            f"    {split_name}: {len(records)} traces -> {split_paths[split_name]}"
         )
     return lines
 
@@ -1245,12 +1220,6 @@ def split_command(args: argparse.Namespace) -> None:
             test_size=float(split_config.get("test_size", 0.1)),
             seed=int(split_config.get("seed", 42)),
             challenge_task_types=set(split_config.get("challenge_task_types", [])),
-            challenge_questions_per_task_type=split_config.get(
-                "challenge_questions_per_task_type"
-            ),
-            train_scene_interleave_ratio=float(
-                split_config.get("train_scene_interleave_ratio", 1.0)
-            ),
             scene_order=[str(scene["scene_id"]) for scene in config["scenes"]],
         )
     paths = config["splits"]
@@ -1313,6 +1282,13 @@ def split_command(args: argparse.Namespace) -> None:
         ("Rejected traces scanned", source_counts["rejected_total"] if optimize_enabled else 0),
         ("Optimization", "enabled" if optimize_enabled else "disabled"),
         ("Render view", args.render_view),
+        (
+            "Split traces",
+            ", ".join(
+                f"{name}={len(split_records[name])}"
+                for name in ("train", "eval", "test", "challenge")
+            ),
+        ),
     ]
     if optimize_enabled:
         summary_rows.extend(
@@ -1326,20 +1302,6 @@ def split_command(args: argparse.Namespace) -> None:
         summary_rows.append(("Dropped by task cap", format_counter(cap_dropped_counts)))
     summary_rows.append(("Report", report_path))
     print_summary("Dataset splits created", summary_rows)
-    print_breakdown(
-        "Split breakdown",
-        ("Split", "Records", "Task types", "Output"),
-        (
-            (
-                split_name,
-                len(split_records[split_name]),
-                format_counter(record_task_type_counts(split_records[split_name])),
-                paths[split_name],
-            )
-            for split_name in ("train", "eval", "test", "challenge")
-        ),
-        right_align=(1,),
-    )
 
 
 def prepare_seeds_command(args: argparse.Namespace) -> None:

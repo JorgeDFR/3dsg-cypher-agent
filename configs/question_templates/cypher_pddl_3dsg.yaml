@@ -1,6 +1,7 @@
 sampling:
   seed: 42
   empty_ratio: 0.1
+  repair_cypher_ratio: 0.2
 
 templates:
   - query_type: pddl_visit_object_symbol

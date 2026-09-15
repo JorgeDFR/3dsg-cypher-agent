@@ -45,9 +45,7 @@ from cypher_3dsg_agent_distillation.core.config import (
     with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
-from cypher_3dsg_agent_distillation.core.scene_ordering import (
-    order_records_by_scene_interleave,
-)
+from cypher_3dsg_agent_distillation.core.scene_ordering import group_records_by_scene
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
     config_record,
@@ -302,6 +300,67 @@ def tool_success_content(rows: list[dict[str, Any]]) -> str:
     return json.dumps({"ok": True, "rows": rows}, ensure_ascii=False, default=str)
 
 
+def controlled_repair_spec(seed: dict[str, Any]) -> tuple[str, str] | None:
+    metadata = seed.get("metadata") or {}
+    if not metadata.get("controlled_repair"):
+        return None
+    template_name = str(metadata.get("repair_template") or "").strip()
+    invalid_cypher = str(metadata.get("repair_cypher") or "").strip()
+    if not template_name or not invalid_cypher:
+        raise ValueError(
+            "Controlled repair seeds require metadata.repair_template and "
+            "metadata.repair_cypher."
+        )
+    return template_name, invalid_cypher
+
+
+def append_controlled_repair_context(
+    messages: list[dict[str, Any]],
+    seed: dict[str, Any],
+    *,
+    validator,
+) -> int | None:
+    spec = controlled_repair_spec(seed)
+    if spec is None:
+        return None
+    if validator is None:
+        raise ValueError("Controlled repair supervision requires Neo4j validation.")
+
+    _template_name, invalid_cypher = spec
+    tool_call_id = f"controlled_repair_{seed.get('uid', 'seed')}"
+    validation = validator.validate(invalid_cypher, execute=True)
+    if validation.get("executable"):
+        raise ValueError("Configured repair mutation unexpectedly produced executable Cypher.")
+    if validation.get("syntax_error") is not True:
+        raise ValueError("Configured repair mutation did not produce a Cypher syntax error.")
+
+    messages.append(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": DEFAULT_AGENT_TOOL,
+                        "arguments": {"cypher_string": invalid_cypher},
+                    },
+                }
+            ],
+        }
+    )
+    messages.append(
+        build_tool_result_message(
+            tool_call_id,
+            tool_error_content(
+                "execution_failed",
+                [str(validation.get("error") or "Cypher syntax error")],
+            ),
+        )
+    )
+    return len(messages)
+
+
 def seed_expected_solution(seed: dict[str, Any]) -> Any:
     if "solution" in seed:
         return seed["solution"]
@@ -419,6 +478,19 @@ def build_interaction_trace(
         "cypher_solution": cypher_solution,
         "repair_attempted": tool_call_count > 1,
     }
+    if metadata.get("controlled_repair"):
+        repair_cypher = str(metadata.get("repair_cypher") or "").strip()
+        for index, message in enumerate(messages[:-1]):
+            calls = message.get("tool_calls") or []
+            arguments = (calls[0].get("function") or {}).get("arguments") if calls else None
+            is_repair_call = (
+                isinstance(arguments, dict)
+                and str(arguments.get("cypher_string") or "").strip() == repair_cypher
+            )
+            if is_repair_call:
+                metadata["repair_context_message_count"] = index + 2
+                metadata["non_trainable_message_indices"] = [index, index + 1]
+                break
     if static_only:
         metadata["static_only"] = True
         metadata["incomplete_conversation"] = True
@@ -682,12 +754,31 @@ def run_teacher_interaction(
 
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
 
+    try:
+        repair_context_message_count = append_controlled_repair_context(
+            messages,
+            seed,
+            validator=validator,
+        )
+    except ValueError as exc:
+        return rejected(
+            "invalid_controlled_repair",
+            messages=messages,
+            extra={"error": str(exc)},
+        )
+    if repair_context_message_count is not None and max_tool_calls < 2:
+        return rejected(
+            "invalid_controlled_repair",
+            messages=messages,
+            extra={"error": "Controlled repair supervision requires max_tool_calls >= 2."},
+        )
+
     task_family = str(seed.get("task_family") or profile.task_family)
     output_type = str(seed.get("output_type") or profile.output_type)
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     real_solution = seed_real_solution(seed)
     expected_refusal = is_safe_refusal(seed_cypher)
-    tool_call_count = 0
+    tool_call_count = 1 if repair_context_message_count is not None else 0
     successful_tool_call_index: int | None = None
     final_successful_cypher: str | None = None
     final_validation: dict[str, Any] | None = None
@@ -1026,7 +1117,7 @@ def run_synthetic_teacher_interaction(
     tool_interface: ToolInterface = "openrouter",
     validator: Neo4jValidator,
     policy: dict[str, Any] | None,
-    max_tool_calls: int = 1,
+    max_tool_calls: int = 2,
 ) -> TraceDecision:
     """Construct a validated trace from gold Cypher, gold solution, and Neo4j rows."""
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
@@ -1073,6 +1164,27 @@ def run_synthetic_teacher_interaction(
             messages=messages,
             cypher=cypher,
             validation={"static_valid": False, "static_issues": static_issues},
+        )
+
+    try:
+        repair_context_message_count = append_controlled_repair_context(
+            messages,
+            seed,
+            validator=validator,
+        )
+    except ValueError as exc:
+        return rejected(
+            "invalid_controlled_repair",
+            messages=messages,
+            cypher=cypher,
+            extra={"error": str(exc)},
+        )
+    if repair_context_message_count is not None and max_tool_calls < 2:
+        return rejected(
+            "invalid_controlled_repair",
+            messages=messages,
+            cypher=cypher,
+            extra={"error": "Controlled repair supervision requires max_tool_calls >= 2."},
         )
 
     tool_call_id = f"synthetic_{seed.get('uid', 'seed')}"
@@ -1210,8 +1322,8 @@ def run_synthetic_teacher_interaction(
         cypher=cypher,
         validation=checked_validation,
         max_tool_calls=max_tool_calls,
-        tool_call_count=1,
-        successful_tool_call_index=1,
+        tool_call_count=2 if repair_context_message_count is not None else 1,
+        successful_tool_call_index=2 if repair_context_message_count is not None else 1,
         cypher_solution=cypher_solution,
     )
     record.metadata["teacher_provider"] = "synthetic"
@@ -1425,9 +1537,8 @@ def generate_command(args: argparse.Namespace) -> None:
         scene_database_reloads = 0
         try:
             seeds = read_jsonl(data_config["seed_records_jsonl_path"])
-            seeds = order_records_by_scene_interleave(
+            seeds = group_records_by_scene(
                 seeds,
-                ratio=0.0,
                 seed=0,
                 scene_order=[str(scene["scene_id"]) for scene in data_config["scenes"]],
             )

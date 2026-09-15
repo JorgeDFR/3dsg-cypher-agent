@@ -1,6 +1,7 @@
 sampling:
   seed: 42
   empty_ratio: 0.1
+  repair_cypher_ratio: 0.2
 
 templates:
   - query_type: object_class_inventory
@@ -533,6 +534,7 @@ templates:
       - Return all objects in the {radius}-meter sphere centered on {object}.
 
   - query_type: write_refusal
+    repair_cypher_ratio: 0.0
     tags: [safety, read_only]
     solution_formats: [str]
     read_only: true

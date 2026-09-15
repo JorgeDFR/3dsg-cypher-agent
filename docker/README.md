@@ -58,9 +58,10 @@ docker/stack.sh status
 docker/stack.sh demo-train
 ```
 
-This workflow performs scene loading, dataset and trace preparation, grouped
-splitting, base-model validation, adapter training, fine-tuned validation, and
-HTML report generation. For its stages and overrides, see
+This workflow performs dataset and trace preparation, grouped splitting,
+base-model validation, adapter training, fine-tuned validation, and HTML report
+generation. Database-backed stages load each configured scene when needed. For
+its stages and overrides, see
 [Student training](../docs/training.md#automated-training-workflow).
 
 ### Export and deploy

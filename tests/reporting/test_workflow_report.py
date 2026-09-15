@@ -3,6 +3,7 @@ import json
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     collect_workflow_report_data,
+    render_generated_questions_tab,
     render_record_detail,
     render_scene_graph_tab,
     render_workflow_report,
@@ -10,6 +11,38 @@ from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     validation_example_rows,
     workflow_report_output_path,
 )
+
+
+def test_generated_questions_tab_reports_empty_and_repair_counts():
+    html = render_generated_questions_tab(
+        {
+            "generated_questions": {
+                "records": [
+                    {
+                        "uid": "empty",
+                        "query_type": "lookup",
+                        "tags": ["invalid_input"],
+                    },
+                    {
+                        "uid": "repair",
+                        "query_type": "lookup",
+                        "tags": ["controlled_repair"],
+                    },
+                    {"uid": "normal", "query_type": "lookup", "tags": []},
+                ],
+                "by_task_type": {"lookup": 3},
+                "by_task_family": {"cypher_qa": 3},
+                "tag_counts": {
+                    "controlled_repair": 1,
+                    "invalid_input": 1,
+                },
+            }
+        }
+    )
+
+    assert '<div class="metric-label">Empty Questions</div>' in html
+    assert '<div class="metric-label">Cypher Repair Questions</div>' in html
+    assert html.count('<div class="metric-value">1</div>') >= 2
 
 
 def minimal_data_config(tmp_path):

@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from cypher_3dsg_agent_distillation.training.train import (
     ASSISTANT_ONLY_LOSS_MODE,
     FULL_LOSS_MODE,
+    OverlengthTrainingTraceError,
+    OverlengthTrainingTraceWarning,
     align_model_token_ids,
     build_dataset,
+    build_training_dataset,
     build_training_example,
-    dataset_order_trainer_class,
     gemma4_effective_target_modules,
     is_gemma4_effective_model,
     lora_target_modules,
@@ -143,6 +147,57 @@ def test_build_training_example_masks_context_and_supervises_assistant_turns():
     assert "[{'n': 1}]" not in supervised_text
 
 
+@pytest.mark.parametrize("loss_mode", [ASSISTANT_ONLY_LOSS_MODE, FULL_LOSS_MODE])
+def test_build_training_example_masks_controlled_repair_context(loss_mode):
+    tokenizer = CharTokenizer()
+    record = {
+        "uid": "repair",
+        "metadata": {"non_trainable_message_indices": [2, 3]},
+        "messages": [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "Question"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "run_cypher_query",
+                            "arguments": {"cypher_string": "MATC (n) RETURN n"},
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "content": "Syntax error near MATC"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "run_cypher_query",
+                            "arguments": {"cypher_string": "MATCH (n) RETURN n"},
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "content": "[]"},
+            {"role": "assistant", "content": "<answer><></answer>"},
+        ],
+    }
+
+    example = build_training_example(
+        record,
+        tokenizer,
+        loss_mode=loss_mode,
+        max_length=4096,
+    )
+    supervised_text = active_label_text(example, tokenizer)
+
+    assert "MATC (n) RETURN n" not in supervised_text
+    assert "Syntax error near MATC" not in supervised_text
+    assert "MATCH (n) RETURN n" in supervised_text
+    assert "<answer><></answer>" in supervised_text
+
+
 def test_training_renders_native_tool_schema_once_without_mutating_messages():
     tokenizer = NativeToolTokenizer()
     record = {
@@ -190,7 +245,7 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     kwargs = training_arguments_kwargs(
         {
             "output_dir": "out",
-            "warmup_steps": 2,
+            "warmup_ratio": 0.05,
             "load_best_model_at_end": True,
             "metric_for_best_model": "eval_loss",
             "greater_is_better": False,
@@ -201,12 +256,27 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     assert kwargs["eval_strategy"] == "steps"
     assert kwargs["save_strategy"] == "steps"
     assert kwargs["disable_tqdm"] is True
-    assert kwargs["warmup_steps"] == 2
+    assert kwargs["warmup_ratio"] == 0.05
     assert kwargs["load_best_model_at_end"] is True
     assert kwargs["metric_for_best_model"] == "eval_loss"
     assert kwargs["greater_is_better"] is False
     assert "evaluation_strategy" not in kwargs
-    assert "warmup_ratio" not in kwargs
+    assert "warmup_steps" not in kwargs
+
+
+def test_training_arguments_kwargs_defaults_to_five_percent_warmup():
+    kwargs = training_arguments_kwargs({"output_dir": "out"}, has_eval_dataset=False)
+
+    assert kwargs["warmup_ratio"] == 0.05
+
+
+@pytest.mark.parametrize("warmup_ratio", [-0.01, 1.01])
+def test_training_arguments_kwargs_rejects_invalid_warmup_ratio(warmup_ratio):
+    with pytest.raises(ValueError, match="warmup_ratio must be between 0 and 1"):
+        training_arguments_kwargs(
+            {"output_dir": "out", "warmup_ratio": warmup_ratio},
+            has_eval_dataset=False,
+        )
 
 
 def test_sft_config_kwargs_uses_current_sft_config_fields():
@@ -216,12 +286,14 @@ def test_sft_config_kwargs_uses_current_sft_config_fields():
     )
 
     assert kwargs["eval_strategy"] == "steps"
-    assert kwargs["dataset_text_field"] == "text"
     assert kwargs["max_length"] == 2048
+    assert kwargs["dataset_kwargs"] == {"skip_prepare_dataset": True}
+    assert kwargs["remove_unused_columns"] is False
+    assert "dataset_text_field" not in kwargs
     assert "max_seq_length" not in kwargs
 
 
-def test_sft_config_kwargs_skips_trl_preparation_for_assistant_only_labels():
+def test_sft_config_kwargs_skips_trl_preparation_for_pretokenized_labels():
     kwargs = sft_config_kwargs(
         {"output_dir": "out", "max_length": 2048, "loss_mode": ASSISTANT_ONLY_LOSS_MODE},
         has_eval_dataset=True,
@@ -282,32 +354,81 @@ def test_sft_trainer_kwargs_passes_configured_callbacks():
     assert kwargs["callbacks"] == [callback]
 
 
-def test_dataset_order_trainer_uses_a_sequential_sampler(monkeypatch):
-    import sys
-    from types import ModuleType
+def test_build_training_example_rejects_overlength_trace_without_truncating():
+    with pytest.raises(OverlengthTrainingTraceError) as exc_info:
+        build_training_example(
+            {
+                "uid": "too-long",
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "A" * 100},
+                ],
+            },
+            CharTokenizer(),
+            loss_mode=ASSISTANT_ONLY_LOSS_MODE,
+            max_length=40,
+        )
 
-    class SequentialSampler:
-        def __init__(self, dataset):
-            self.dataset = dataset
+    assert exc_info.value.uid == "too-long"
+    assert exc_info.value.token_length > exc_info.value.max_length
 
-    torch_module = ModuleType("torch")
-    utils_module = ModuleType("torch.utils")
-    data_module = ModuleType("torch.utils.data")
-    data_module.SequentialSampler = SequentialSampler
-    monkeypatch.setitem(sys.modules, "torch", torch_module)
-    monkeypatch.setitem(sys.modules, "torch.utils", utils_module)
-    monkeypatch.setitem(sys.modules, "torch.utils.data", data_module)
 
-    class BaseTrainer:
-        pass
+def test_build_training_dataset_rejects_overlength_traces_with_total_warning(tmp_path):
+    path = tmp_path / "train.jsonl"
+    write_jsonl(
+        [
+            {
+                "uid": "retained",
+                "messages": [
+                    {"role": "user", "content": "Q"},
+                    {"role": "assistant", "content": "A"},
+                ],
+            },
+            {
+                "uid": "rejected",
+                "messages": [
+                    {"role": "user", "content": "Q"},
+                    {"role": "assistant", "content": "A" * 100},
+                ],
+            },
+        ],
+        path,
+    )
 
-    trainer_class = dataset_order_trainer_class(BaseTrainer)
-    trainer = trainer_class()
-    trainer.train_dataset = ["first", "second"]
+    with pytest.warns(OverlengthTrainingTraceWarning, match="Rejected 1 of 2 traces"):
+        dataset = build_training_dataset(
+            str(path),
+            CharTokenizer(),
+            loss_mode=ASSISTANT_ONLY_LOSS_MODE,
+            max_length=40,
+        )
 
-    sampler = trainer._get_train_sampler()
+    assert len(dataset) == 1
+    assert dataset[0]["uid"] == "retained"
+    assert len(dataset[0]["input_ids"]) < 40
 
-    assert sampler.dataset == ["first", "second"]
+
+def test_build_full_loss_dataset_also_rejects_overlength_traces(tmp_path):
+    path = tmp_path / "train.jsonl"
+    write_jsonl(
+        [
+            {"uid": "retained", "text": "short"},
+            {"uid": "rejected", "text": "x" * 41},
+        ],
+        path,
+    )
+
+    with pytest.warns(OverlengthTrainingTraceWarning, match="Rejected 1 of 2 traces"):
+        dataset = build_training_dataset(
+            str(path),
+            CharTokenizer(),
+            loss_mode=FULL_LOSS_MODE,
+            max_length=40,
+        )
+
+    assert len(dataset) == 1
+    assert dataset[0]["input_ids"] == dataset[0]["labels"]
+    assert CharTokenizer().decode(dataset[0]["input_ids"]) == "short"
 
 
 def test_align_model_token_ids_updates_model_and_generation_config():

@@ -176,8 +176,7 @@ def render_profile_messages(
 
     prompt = load_prompt_template(profile)
     seed_labelspace = seed.get("labelspace_description")
-    sections = [
-        prompt.system.strip(),
+    user_sections = [
         load_text_section(profile.scene_graph_description_path, ["scene_graph_description"]),
         (
             str(seed_labelspace).strip()
@@ -202,12 +201,18 @@ def render_profile_messages(
             profile.output_type,
         )
         if solution_format_hint is not None:
-            sections.append(solution_format_hint)
+            user_sections.append(solution_format_hint)
         elif seed.get("solution") is not None:
-            sections.append(answer_type_hint(str(seed["solution"]), profile.output_type))
+            user_sections.append(answer_type_hint(str(seed["solution"]), profile.output_type))
 
-    return [
-        {"role": "user", "content": section}
-        for section in sections
-        if section
-    ]
+    messages = []
+    if prompt.system.strip():
+        messages.append({"role": "system", "content": prompt.system.strip()})
+    messages.extend(
+        [
+            {"role": "user", "content": section}
+            for section in user_sections
+            if section
+        ]
+    )
+    return messages

@@ -44,9 +44,7 @@ from cypher_3dsg_agent_distillation.core.config import (
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
 )
-from cypher_3dsg_agent_distillation.core.scene_ordering import (
-    order_records_by_scene_interleave,
-)
+from cypher_3dsg_agent_distillation.core.scene_ordering import group_records_by_scene
 from cypher_3dsg_agent_distillation.core.versioning import (
     confirm_dataset_lineage,
     read_metadata,
@@ -176,6 +174,17 @@ def initial_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
     from cypher_3dsg_agent_distillation.training.train import normalize_chat_messages
 
     messages = normalize_chat_messages(record.get("messages", []))
+    repair_context_message_count = (record.get("metadata") or {}).get(
+        "repair_context_message_count"
+    )
+    if repair_context_message_count is not None:
+        context_count = int(repair_context_message_count)
+        if not 0 <= context_count <= len(messages):
+            raise ValueError(
+                f"Record {record.get('uid')} has invalid repair_context_message_count="
+                f"{context_count}."
+            )
+        return messages[:context_count]
     for index, message in enumerate(messages):
         if message.get("role") == "assistant":
             return messages[:index]
@@ -1306,6 +1315,10 @@ def raw_generation_report_record(
         "task_family": family,
         "output_type": record_output_type(record),
         "question": record.get("question"),
+        "controlled_repair": bool(
+            (record.get("metadata") or {}).get("controlled_repair")
+        ),
+        "repair_template": (record.get("metadata") or {}).get("repair_template"),
         "expected": expected,
         "generated": generated,
         "generation_debug": {
@@ -1357,9 +1370,8 @@ def evaluate_raw_generation(
 
     records = read_jsonl(data_config["splits"][split])
     scene_order = [str(scene["scene_id"]) for scene in data_config.get("scenes", [])]
-    records = order_records_by_scene_interleave(
+    records = group_records_by_scene(
         records,
-        ratio=0.0,
         seed=0,
         scene_order=scene_order,
     )

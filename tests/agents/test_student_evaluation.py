@@ -733,6 +733,41 @@ def test_raw_generation_prompt_slices_do_not_leak_gold_targets():
     assert final_answer_messages[-2]["tool_calls"]
 
 
+def test_raw_generation_repair_prompts_include_failed_tool_context():
+    record = raw_generation_record()
+    invalid_call = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "function": {
+                    "name": "run_cypher_query",
+                    "arguments": {"cypher_string": "MATC (n) RETURN n"},
+                }
+            }
+        ],
+    }
+    error_result = {"role": "tool", "content": "Syntax error near MATC"}
+    record["messages"] = [
+        *record["messages"][:2],
+        invalid_call,
+        error_result,
+        *record["messages"][2:],
+    ]
+    record["metadata"] = {
+        "controlled_repair": True,
+        "repair_context_message_count": 4,
+    }
+
+    initial_messages = initial_prompt_messages(record)
+    final_messages = final_answer_prompt_messages(record)
+
+    assert len(initial_messages) == 4
+    assert initial_messages[-2]["tool_calls"] == invalid_call["tool_calls"]
+    assert initial_messages[-1]["content"] == error_result["content"]
+    assert len(final_messages) == len(record["messages"]) - 1
+    assert final_messages[-1]["role"] == "tool"
+
+
 def test_parse_generated_tool_calls_accepts_qwen_tool_call_tags():
     parsed = parse_generated_tool_calls(
         "<think>\n</think>\n"

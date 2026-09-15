@@ -69,7 +69,7 @@ The report uses tabs to separate each workflow stage:
 | Tab | Contents |
 | --- | --- |
 | 3D Scene Graph | Per-scene summary, node counts, classes, and extracted template values |
-| Generated Questions | Counts, task families, task types, tags, questions, and seed details |
+| Generated Questions | Total, empty, and repair counts; task families, task types, tags, questions, and seed details |
 | Traces | Accepted and rejected teacher traces, outcome counts, and rejection reasons |
 | Splits | Train/eval/test/challenge distributions and per-question details |
 | Train | Student configuration, eval-loss reports, and trainer-state history |

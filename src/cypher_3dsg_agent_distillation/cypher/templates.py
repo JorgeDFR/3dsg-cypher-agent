@@ -35,6 +35,10 @@ from cypher_3dsg_agent_distillation.cypher.pddl_goals import (
     grounding_is_non_empty,
     render_pddl_solution,
 )
+from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
+    apply_controlled_repair_sampling,
+    repair_cypher_sampling_ratio,
+)
 from cypher_3dsg_agent_distillation.graph.heracles_validation import validate_pddl_goal
 from cypher_3dsg_agent_distillation.graph.scene_graph import SceneIndex
 
@@ -779,7 +783,18 @@ def generate_records(
                     "read_only": bool(template.get("read_only", True)),
                     "tags": deepcopy(template.get("tags", [])),
                 }
-                if invalid_input:
+                has_solution = (
+                    not invalid_input
+                    and (
+                        grounding_is_non_empty(record_grounding)
+                        if record_grounding is not None
+                        else scene_index is None or not solution_is_empty(solution)
+                    )
+                )
+                if (
+                    (invalid_input or (not has_solution and task_family != "cypher_pddl"))
+                    and "invalid_input" not in record["tags"]
+                ):
                     record["tags"].append("invalid_input")
                 if answer_validation is not None:
                     record["answer_validation"] = deepcopy(answer_validation)
@@ -794,14 +809,7 @@ def generate_records(
                 candidates.append(
                     QuestionCandidate(
                         record=record,
-                        has_solution=(
-                            not invalid_input
-                            and (
-                                grounding_is_non_empty(record_grounding)
-                                if record_grounding is not None
-                                else scene_index is None or not solution_is_empty(solution)
-                            )
-                        ),
+                        has_solution=has_solution,
                         variable_key=variable_key,
                         sampling_group_key=sampling_group_key,
                         variant_index=variant_index,
@@ -855,6 +863,32 @@ def dataset_question_target(
     if limit_per_template is None:
         return target
     return limit_per_template if target is None else min(target, limit_per_template)
+
+
+def effective_dataset_question_target(
+    template: dict[str, Any],
+    limit_per_template: int | None,
+    *,
+    challenge_task_types: set[str],
+    challenge_questions_per_task_type: int | None,
+) -> int | None:
+    query_type = str(template["query_type"])
+    if query_type not in challenge_task_types:
+        return dataset_question_target(template, limit_per_template)
+    if challenge_questions_per_task_type is None:
+        raise ValueError(
+            "split.challenge_questions_per_task_type is required when "
+            "split.challenge_task_types is not empty."
+        )
+    if (
+        isinstance(challenge_questions_per_task_type, bool)
+        or not isinstance(challenge_questions_per_task_type, int)
+        or challenge_questions_per_task_type < 0
+    ):
+        raise ValueError("challenge_questions_per_task_type must be a non-negative integer.")
+    if limit_per_template is None:
+        return challenge_questions_per_task_type
+    return min(challenge_questions_per_task_type, limit_per_template)
 
 
 def generated_record_has_solution(record: dict[str, Any]) -> bool:
@@ -1059,9 +1093,17 @@ def command(args: argparse.Namespace) -> None:
     data_config = load_data_config(
         args.data_config, dataset_version=args.dataset_version
     )
+    split_config = data_config.get("split") or {}
+    challenge_task_types = {
+        str(value) for value in split_config.get("challenge_task_types", [])
+    }
+    challenge_questions_per_task_type = split_config.get(
+        "challenge_questions_per_task_type"
+    )
     question_sets = data_config.get("question_sets") or []
     question_targets: dict[str, int | None] = {}
     question_empty_ratios: dict[str, float] = {}
+    question_repair_ratios: dict[str, float] = {}
     question_set_inputs = []
     for question_set in question_sets:
         templates_config = load_yaml(question_set["question_templates_path"])
@@ -1069,7 +1111,14 @@ def command(args: argparse.Namespace) -> None:
         question_set_inputs.append((question_set, templates_config, profile))
         for template in templates_config.get("templates") or []:
             query_type = str(template["query_type"])
-            target = dataset_question_target(template, args.limit_per_template)
+            target = effective_dataset_question_target(
+                template,
+                args.limit_per_template,
+                challenge_task_types=challenge_task_types,
+                challenge_questions_per_task_type=challenge_questions_per_task_type,
+            )
+            if query_type in challenge_task_types:
+                template["target_questions"] = target
             if query_type in question_targets and question_targets[query_type] != target:
                 raise ValueError(
                     f"Question type `{query_type}` has conflicting dataset targets."
@@ -1080,6 +1129,26 @@ def command(args: argparse.Namespace) -> None:
                 templates_config.get("sampling") or {},
                 args.empty_ratio,
             )
+            question_repair_ratios[query_type] = repair_cypher_sampling_ratio(
+                template,
+                templates_config.get("sampling") or {},
+                args.repair_cypher_ratio,
+            )
+            if (
+                question_empty_ratios[query_type]
+                + question_repair_ratios[query_type]
+                > 1.0
+            ):
+                raise ValueError(
+                    f"Question type `{query_type}` has empty_ratio + "
+                    "repair_cypher_ratio greater than 1."
+                )
+    unknown_challenge_types = challenge_task_types - question_targets.keys()
+    if unknown_challenge_types:
+        raise ValueError(
+            "split.challenge_task_types contains unknown question types: "
+            + ", ".join(sorted(unknown_challenge_types))
+        )
     all_records: list[dict[str, Any]] = []
     with captured_warnings("Question generation warnings"):
         for scene in data_config["scenes"]:
@@ -1107,6 +1176,23 @@ def command(args: argparse.Namespace) -> None:
         scene_ids=[str(scene["scene_id"]) for scene in data_config["scenes"]],
         empty_ratios=question_empty_ratios,
     )
+    records = apply_controlled_repair_sampling(
+        records,
+        ratios=question_repair_ratios,
+        seed=int(args.seed if args.seed is not None else 42),
+    )
+    overlapping_supervision = [
+        str(record["uid"])
+        for record in records
+        if {"invalid_input", "controlled_repair"}.issubset(
+            record.get("tags") or []
+        )
+    ]
+    if overlapping_supervision:
+        raise RuntimeError(
+            "Question generation produced records marked as both empty and repair: "
+            + ", ".join(overlapping_supervision[:3])
+        )
     uids = [record["uid"] for record in records]
     if len(uids) != len(set(uids)):
         raise ValueError("Question generation produced duplicate record UIDs.")
@@ -1129,6 +1215,11 @@ def command(args: argparse.Namespace) -> None:
     effective_empty_ratio = (
         args.empty_ratio if args.empty_ratio is not None else "per set"
     )
+    effective_repair_ratio = (
+        args.repair_cypher_ratio
+        if args.repair_cypher_ratio is not None
+        else "per set"
+    )
     print_summary(
         "Question templates generated",
         [
@@ -1139,6 +1230,18 @@ def command(args: argparse.Namespace) -> None:
             ("Question types", len(counts)),
             ("Question sets", len(question_sets)),
             ("Empty ratio", effective_empty_ratio),
+            ("Repair Cypher ratio", effective_repair_ratio),
+            (
+                "Empty questions",
+                sum("invalid_input" in (record.get("tags") or []) for record in records),
+            ),
+            (
+                "Cypher repair questions",
+                sum(
+                    "controlled_repair" in (record.get("tags") or [])
+                    for record in records
+                ),
+            ),
             ("Output", output_path),
         ],
     )
@@ -1152,6 +1255,7 @@ def main() -> None:
     parser.add_argument("--limit-per-template", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--empty-ratio", type=float, default=None)
+    parser.add_argument("--repair-cypher-ratio", type=float, default=None)
     args = parser.parse_args()
     command(args)
 

@@ -162,8 +162,9 @@ report:
 docker/stack.sh demo-deploy
 ```
 
-Override its inputs with `DEPLOY_DATA_CONFIG`, `DEPLOY_STUDENT_CONFIG`,
-`DEPLOY_SCENE`, and `DEPLOY_MODEL_NAME`.
+Override its inputs with `DEPLOY_DATA_CONFIG`, `DEPLOY_STUDENT_CONFIG`, and
+`DEPLOY_MODEL_NAME`. Validation loads each scene represented by the selected
+split when needed.
 
 For manual comparisons, create a separate Modelfile for each GGUF:
 

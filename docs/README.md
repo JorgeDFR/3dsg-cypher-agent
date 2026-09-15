@@ -22,6 +22,7 @@ material.
 | Dataset, teacher, model, and report lineage | [Artifact versioning](artifact_versioning.md) |
 | Consolidated static results and artifact inspection | [HTML workflow report](workflow_report.md) |
 | External performance sweeps | [Heracles Benchmark integration](../examples/herables_benchmark/README.md) |
+| Controlled repair mutations and coverage | [Cypher repair supervision](cypher_repair_supervision.md) |
 | Room labels and 3DSG editing | [Scene utilities](scene_tools.md) |
 
 ## Suggested reading paths
