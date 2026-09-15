@@ -121,6 +121,43 @@ def test_scene_id_must_not_be_a_path():
         )
 
 
+def test_multi_scene_dataset_paths_share_outputs_and_isolate_scene_values():
+    version = "2026-09-14-T-15-34-47-Z"
+    paths = data_paths_from_config(
+        {
+            "dataset_id": "office_and_spot",
+            "scenes": [
+                {"scene_id": "office", "scene_path": "/tmp/office.json"},
+                {"scene_id": "spot", "scene_path": "/tmp/spot.json"},
+            ],
+        },
+        dataset_version=version,
+    )
+
+    assert paths.dataset_id == "office_and_spot"
+    assert [scene.scene_id for scene in paths.scenes] == ["office", "spot"]
+    assert paths.raw_questions_path.parent == paths.dataset_dir
+    assert paths.scenes[0].scene_template_values_path == (
+        paths.dataset_dir / "scenes" / "office" / "scene_template_values.yaml"
+    )
+    assert paths.scenes[1].scene_template_values_path == (
+        paths.dataset_dir / "scenes" / "spot" / "scene_template_values.yaml"
+    )
+
+
+def test_multi_scene_dataset_rejects_duplicate_scene_ids():
+    with pytest.raises(ValueError, match="Duplicate scene_id"):
+        data_paths_from_config(
+            {
+                "dataset_id": "duplicates",
+                "scenes": [
+                    {"scene_id": "same", "scene_path": "/tmp/a.json"},
+                    {"scene_id": "same", "scene_path": "/tmp/b.json"},
+                ],
+            }
+        )
+
+
 def test_teacher_folder_uses_model_name_or_synthetic_provider():
     assert teacher_name_from_config(
         {"provider": "openrouter", "model": "openai/gpt-oss-120b"}

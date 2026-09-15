@@ -1,6 +1,6 @@
 sampling:
   seed: 42
-  non_empty_ratio: 0.9
+  empty_ratio: 0.1
 
 templates:
   - query_type: pddl_visit_object_symbol
@@ -515,12 +515,14 @@ templates:
   - query_type: pddl_move_object_to_place
     target_questions: 20
     tags: [pddl, manipulation, destination]
+    requires_any_layers: [[Place, MeshPlace]]
     variables:
       object: object_symbols
-      place: place_symbols
+      place: place_or_mesh_place_symbols
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
-      MATCH (p:Place {nodeSymbol: "{place}"})
+      MATCH (p {nodeSymbol: "{place}"})
+      WHERE p:Place OR p:MeshPlace
       RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
     grounding:
       fields:
@@ -532,7 +534,7 @@ templates:
         place:
           source: place
           aliases: [place]
-          symbol_type: Place
+          symbol_type: PlaceOrMeshPlace
           cardinality: set
     goal:
       fact: object-in-place
@@ -711,7 +713,7 @@ templates:
       - Make contact with object {object} as a waypoint while ensuring it is not carried at the end.
 
   - query_type: pddl_inspect_object_class
-    target_questions: 10
+    target_questions: 20
     tags: [pddl, inspection, class_reference, ambiguity]
     variables:
       class: object_classes
@@ -739,14 +741,16 @@ templates:
       - It does not matter which instance you use, but a {class} must be inspected.
 
   - query_type: pddl_object_not_in_place
-    target_questions: 10
+    target_questions: 20
     tags: [pddl, negation, manipulation, direct_symbol]
+    requires_any_layers: [[Place, MeshPlace]]
     variables:
       object: object_symbols
-      place: place_symbols
+      place: place_or_mesh_place_symbols
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
-      MATCH (p:Place {nodeSymbol: "{place}"})
+      MATCH (p {nodeSymbol: "{place}"})
+      WHERE p:Place OR p:MeshPlace
       RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
     grounding:
       fields:
@@ -758,7 +762,7 @@ templates:
         place:
           source: place
           aliases: [place]
-          symbol_type: Place
+          symbol_type: PlaceOrMeshPlace
           cardinality: set
     goal:
       operator: not
@@ -773,7 +777,7 @@ templates:
       - By the end, object {object} should be outside place {place}.
 
   - query_type: pddl_visit_place_and_end_in_room
-    target_questions: 10
+    target_questions: 20
     tags: [pddl, compound, conjunction, navigation, waypoint, room, destination]
     variables:
       place: place_symbols

@@ -9,6 +9,7 @@ from cypher_3dsg_agent_distillation.training.train import (
     align_model_token_ids,
     build_dataset,
     build_training_example,
+    dataset_order_trainer_class,
     gemma4_effective_target_modules,
     is_gemma4_effective_model,
     lora_target_modules,
@@ -279,6 +280,34 @@ def test_sft_trainer_kwargs_passes_configured_callbacks():
     )
 
     assert kwargs["callbacks"] == [callback]
+
+
+def test_dataset_order_trainer_uses_a_sequential_sampler(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    class SequentialSampler:
+        def __init__(self, dataset):
+            self.dataset = dataset
+
+    torch_module = ModuleType("torch")
+    utils_module = ModuleType("torch.utils")
+    data_module = ModuleType("torch.utils.data")
+    data_module.SequentialSampler = SequentialSampler
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setitem(sys.modules, "torch.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "torch.utils.data", data_module)
+
+    class BaseTrainer:
+        pass
+
+    trainer_class = dataset_order_trainer_class(BaseTrainer)
+    trainer = trainer_class()
+    trainer.train_dataset = ["first", "second"]
+
+    sampler = trainer._get_train_sampler()
+
+    assert sampler.dataset == ["first", "second"]
 
 
 def test_align_model_token_ids_updates_model_and_generation_config():

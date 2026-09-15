@@ -181,7 +181,7 @@ def requested_question_count(template: dict[str, Any]) -> int | None:
     return value
 
 
-def sampling_ratio(
+def empty_sampling_ratio(
     template: dict[str, Any],
     sampling_config: dict[str, Any],
     override: float | None,
@@ -189,11 +189,11 @@ def sampling_ratio(
     ratio = (
         override
         if override is not None
-        else template.get("non_empty_ratio", sampling_config.get("non_empty_ratio", 0.9))
+        else template.get("empty_ratio", sampling_config.get("empty_ratio", 0.1))
     )
     ratio = float(ratio)
     if ratio < 0 or ratio > 1:
-        raise ValueError(f"non_empty_ratio must be between 0 and 1, got {ratio}.")
+        raise ValueError(f"empty_ratio must be between 0 and 1, got {ratio}.")
     return ratio
 
 
@@ -201,9 +201,10 @@ def sampled_candidates(
     candidates: list[QuestionCandidate],
     *,
     target: int,
-    non_empty_ratio: float,
+    empty_ratio: float,
     query_type: str,
     rng: random.Random,
+    warn_on_shortfall: bool = True,
 ) -> list[dict[str, Any]]:
     """Sample unique records while enforcing a per-query-type answer ratio."""
     if target <= 0 or not candidates:
@@ -213,28 +214,33 @@ def sampled_candidates(
     non_empty = [candidate for candidate in candidates if candidate.has_solution]
     empty = [candidate for candidate in candidates if not candidate.has_solution]
 
-    required_non_empty = math.ceil(actual_target * non_empty_ratio)
-    if len(non_empty) < required_non_empty:
+    requested_empty = round(actual_target * empty_ratio)
+    requested_non_empty = actual_target - requested_empty
+    if warn_on_shortfall and len(empty) < requested_empty:
         warnings.warn(
-            f"Template `{query_type}` cannot meet non_empty_ratio={non_empty_ratio:.3g}: "
-            f"it needs {required_non_empty} non-empty questions but only "
-            f"{len(non_empty)} unique candidates are available. Sampling the highest "
-            "achievable non-empty ratio.",
+            f"Template `{query_type}` cannot meet empty_ratio={empty_ratio:.3g}: "
+            f"it needs {requested_empty} empty questions but only "
+            f"{len(empty)} unique candidates are available.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if warn_on_shortfall and len(non_empty) < requested_non_empty:
+        warnings.warn(
+            f"Template `{query_type}` cannot meet empty_ratio={empty_ratio:.3g}: "
+            f"it needs {requested_non_empty} normal questions but only "
+            f"{len(non_empty)} unique candidates are available.",
             UserWarning,
             stacklevel=2,
         )
 
-    selected_non_empty = min(
-        len(non_empty),
-        max(required_non_empty, actual_target - len(empty)),
-    )
-    selected_empty = min(len(empty), actual_target - selected_non_empty)
+    selected_empty = min(len(empty), requested_empty)
+    selected_non_empty = min(len(non_empty), actual_target - selected_empty)
     remaining = actual_target - selected_non_empty - selected_empty
     if remaining:
-        additional_non_empty = min(len(non_empty) - selected_non_empty, remaining)
-        selected_non_empty += additional_non_empty
-        remaining -= additional_non_empty
-        selected_empty += min(len(empty) - selected_empty, remaining)
+        additional_empty = min(len(empty) - selected_empty, remaining)
+        selected_empty += additional_empty
+        remaining -= additional_empty
+        selected_non_empty += min(len(non_empty) - selected_non_empty, remaining)
 
     variant_usage: Counter[int] = Counter()
     selected = diverse_candidate_sample(
@@ -328,14 +334,40 @@ def stable_uid(
     question: str,
     cypher: str,
     task_family: str = "cypher_qa",
+    scene_id: str | None = None,
 ) -> str:
     identity = f"{query_type}\n{question}\n{cypher}"
     if task_family != "cypher_qa":
         identity = f"{task_family}\n{identity}"
-    digest = hashlib.sha1(
-        identity.encode()
-    ).hexdigest()
+    if scene_id:
+        identity = f"{scene_id}\n{identity}"
+    digest = hashlib.sha1(identity.encode()).hexdigest()
     return f"tpl_{digest[:12]}"
+
+
+CYPHER_LABEL_PATTERN = re.compile(r":\s*(Object|Place|MeshPlace|Room|Building)\b")
+
+
+def scene_supports_template(
+    template: dict[str, Any], scene_summary: dict[str, Any] | None
+) -> bool:
+    """Return whether a scene has the layers required by a question template."""
+    if not scene_summary:
+        return True
+    nodes = scene_summary.get("nodes") or {}
+    alternative_groups = template.get("requires_any_layers") or []
+    alternative_labels = {
+        str(label) for alternatives in alternative_groups for label in alternatives
+    }
+    required = set(template.get("requires_layers") or [])
+    required.update(CYPHER_LABEL_PATTERN.findall(str(template.get("cypher") or "")))
+    required.difference_update(alternative_labels)
+    if any(int(nodes.get(label, 0)) <= 0 for label in required):
+        return False
+    for alternatives in alternative_groups:
+        if not any(int(nodes.get(str(label), 0)) > 0 for label in alternatives):
+            return False
+    return True
 
 
 def format_number(value: int | float) -> str:
@@ -576,11 +608,12 @@ def generate_records(
     question_templates_config: dict[str, Any] | None = None,
     limit_per_template: int | None = None,
     seed: int | None = None,
-    non_empty_ratio: float | None = None,
+    empty_ratio: float | None = None,
     task_family: str | None = None,
     output_type: str | None = None,
     experiment_profile: str | None = None,
     question_set: str | None = None,
+    warn_on_target_shortfall: bool = True,
 ) -> list[dict[str, Any]]:
     values = config.get("values", {})
     templates_config = (
@@ -602,6 +635,8 @@ def generate_records(
     scene_index = SceneIndex(config["source_3dsg"]) if config.get("source_3dsg") else None
     records: list[dict[str, Any]] = []
     for template in templates:
+        if not scene_supports_template(template, config.get("scene_summary")):
+            continue
         query_type = template["query_type"]
         solution_formats = solution_formats_for_template(template)
         if scene_index is not None and task_family == "cypher_qa" and not solution_formats:
@@ -625,7 +660,12 @@ def generate_records(
             target = limit_per_template
 
         raw_capacity = len(variable_combinations) * len(question_templates)
-        if has_variables and target is not None and raw_capacity < target:
+        if (
+            warn_on_target_shortfall
+            and has_variables
+            and target is not None
+            and raw_capacity < target
+        ):
             warnings.warn(
                 f"Template `{query_type}` requests {target} questions, but its "
                 f"{len(variable_combinations)} variable combinations and "
@@ -712,7 +752,13 @@ def generate_records(
                 seen_questions.add(question)
                 record_solution_formats = deepcopy(solution_formats)
                 record = {
-                    "uid": stable_uid(query_type, question, cypher, task_family),
+                    "uid": stable_uid(
+                        query_type,
+                        question,
+                        cypher,
+                        task_family,
+                        config.get("scene_id"),
+                    ),
                     "query_type": query_type,
                     "task_family": task_family,
                     "output_type": output_type,
@@ -729,6 +775,7 @@ def generate_records(
                         )
                     ),
                     "scene_id": config.get("scene_id"),
+                    "labelspace_description": config.get("labelspace_description"),
                     "read_only": bool(template.get("read_only", True)),
                     "tags": deepcopy(template.get("tags", [])),
                 }
@@ -770,7 +817,11 @@ def generate_records(
             ]
 
         if has_variables and target is not None:
-            if len(candidates) < target and len(candidates) < raw_capacity:
+            if (
+                warn_on_target_shortfall
+                and len(candidates) < target
+                and len(candidates) < raw_capacity
+            ):
                 warnings.warn(
                     f"Template `{query_type}` requests {target} questions, but only "
                     f"{len(candidates)} questions are unique after rendering. Generating "
@@ -778,20 +829,204 @@ def generate_records(
                     UserWarning,
                     stacklevel=2,
                 )
-            ratio = sampling_ratio(template, sampling_config, non_empty_ratio)
+            ratio = empty_sampling_ratio(template, sampling_config, empty_ratio)
             records.extend(
                 sampled_candidates(
                     candidates,
                     target=target,
-                    non_empty_ratio=ratio,
+                    empty_ratio=ratio,
                     query_type=query_type,
                     rng=random.Random(f"{sampling_seed}:{query_type}"),
+                    warn_on_shortfall=warn_on_target_shortfall,
                 )
             )
         else:
             candidate_records = [candidate.record for candidate in candidates]
             records.extend(candidate_records[:target])
     return records
+
+
+def dataset_question_target(
+    template: dict[str, Any],
+    limit_per_template: int | None,
+) -> int | None:
+    """Return the dataset-wide record budget for one question type."""
+    target = requested_question_count(template) if template.get("variables") else None
+    if limit_per_template is None:
+        return target
+    return limit_per_template if target is None else min(target, limit_per_template)
+
+
+def generated_record_has_solution(record: dict[str, Any]) -> bool:
+    if "invalid_input" in (record.get("tags") or []):
+        return False
+    solution = record.get("solution")
+    if isinstance(solution, str):
+        return solution.strip() not in {"", "<>", "[]", "{}"}
+    return not solution_is_empty(solution)
+
+
+def evenly_select_scene_records(
+    records: list[dict[str, Any]],
+    *,
+    target: int,
+    scene_ids: list[str],
+    empty_ratio: float | None = None,
+) -> list[dict[str, Any]]:
+    """Select a dataset-wide target while keeping scene counts as even as possible."""
+    if target <= 0:
+        return []
+    buckets = {
+        scene_id: [
+            record for record in records if str(record.get("scene_id")) == scene_id
+        ]
+        for scene_id in scene_ids
+    }
+    quotas: Counter[str] = Counter()
+    remaining_capacity = {
+        scene_id: len(scene_records) for scene_id, scene_records in buckets.items()
+    }
+    actual_target = min(target, sum(remaining_capacity.values()))
+    while sum(quotas.values()) < actual_target:
+        available = [
+            scene_id
+            for scene_id in scene_ids
+            if quotas[scene_id] < remaining_capacity[scene_id]
+        ]
+        if not available:
+            break
+        minimum = min(quotas[scene_id] for scene_id in available)
+        next_scene = next(
+            scene_id
+            for scene_id in available
+            if quotas[scene_id] == minimum
+        )
+        quotas[next_scene] += 1
+
+    if empty_ratio is None:
+        return [
+            record
+            for scene_id in scene_ids
+            for record in buckets[scene_id][: quotas[scene_id]]
+        ]
+
+    non_empty = {
+        scene_id: [
+            record
+            for record in buckets[scene_id]
+            if generated_record_has_solution(record)
+        ]
+        for scene_id in scene_ids
+    }
+    empty = {
+        scene_id: [
+            record
+            for record in buckets[scene_id]
+            if not generated_record_has_solution(record)
+        ]
+        for scene_id in scene_ids
+    }
+    minimum_empty = {
+        scene_id: max(0, quotas[scene_id] - len(non_empty[scene_id]))
+        for scene_id in scene_ids
+    }
+    maximum_empty = {
+        scene_id: min(quotas[scene_id], len(empty[scene_id]))
+        for scene_id in scene_ids
+    }
+    desired_empty = round(actual_target * empty_ratio)
+    desired_empty = min(
+        max(desired_empty, sum(minimum_empty.values())),
+        sum(maximum_empty.values()),
+    )
+    empty_quotas = Counter(minimum_empty)
+    while sum(empty_quotas.values()) < desired_empty:
+        available = [
+            scene_id
+            for scene_id in scene_ids
+            if empty_quotas[scene_id] < maximum_empty[scene_id]
+        ]
+        minimum = min(empty_quotas[scene_id] for scene_id in available)
+        next_scene = next(
+            scene_id
+            for scene_id in available
+            if empty_quotas[scene_id] == minimum
+        )
+        empty_quotas[next_scene] += 1
+
+    selected_uids = {
+        str(record["uid"])
+        for scene_id in scene_ids
+        for record in (
+            empty[scene_id][: empty_quotas[scene_id]]
+            + non_empty[scene_id][: quotas[scene_id] - empty_quotas[scene_id]]
+        )
+    }
+    return [record for record in records if str(record["uid"]) in selected_uids]
+
+
+def apply_dataset_question_targets(
+    records: list[dict[str, Any]],
+    *,
+    targets: dict[str, int | None],
+    scene_ids: list[str],
+    empty_ratios: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """Apply per-question-type targets across all scenes, not once per scene."""
+    records_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        records_by_type[str(record["query_type"])].append(record)
+
+    selected_uids: set[str] = set()
+    for query_type, candidates in records_by_type.items():
+        target = targets.get(query_type)
+        if target is not None and len(candidates) < target:
+            warnings.warn(
+                f"Question type `{query_type}` requests {target} questions across the "
+                f"dataset, but only {len(candidates)} unique candidates are available.",
+                UserWarning,
+                stacklevel=2,
+            )
+        ratio = (empty_ratios or {}).get(query_type)
+        actual_target = min(target, len(candidates)) if target is not None else None
+        if ratio is not None and actual_target is not None:
+            requested_empty = round(actual_target * ratio)
+            available_empty = sum(
+                not generated_record_has_solution(record) for record in candidates
+            )
+            available_non_empty = len(candidates) - available_empty
+            if available_empty < requested_empty:
+                warnings.warn(
+                    f"Question type `{query_type}` cannot meet dataset-wide "
+                    f"empty_ratio={ratio:.3g}: it needs {requested_empty} "
+                    f"empty questions but only {available_empty} are available.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            requested_non_empty = actual_target - requested_empty
+            if available_non_empty < requested_non_empty:
+                warnings.warn(
+                    f"Question type `{query_type}` cannot meet dataset-wide "
+                    f"empty_ratio={ratio:.3g}: it needs {requested_non_empty} normal "
+                    f"questions but only {available_non_empty} are available.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        selected = (
+            candidates
+            if target is None
+            else evenly_select_scene_records(
+                candidates,
+                target=target,
+                scene_ids=scene_ids,
+                empty_ratio=ratio,
+            )
+        )
+        selected_uids.update(str(record["uid"]) for record in selected)
+
+    # Candidate generation is scene-grouped to minimize Neo4j reloads during
+    # trace generation. Preserve that order after balanced selection.
+    return [record for record in records if str(record["uid"]) in selected_uids]
 
 
 def load_question_templates(
@@ -824,29 +1059,54 @@ def command(args: argparse.Namespace) -> None:
     data_config = load_data_config(
         args.data_config, dataset_version=args.dataset_version
     )
-    config = load_yaml(data_config["scene_template_values_path"])
-    config["scene_id"] = data_config["scene_id"]
-    config["source_3dsg"] = data_config["scene_path"]
     question_sets = data_config.get("question_sets") or []
+    question_targets: dict[str, int | None] = {}
+    question_empty_ratios: dict[str, float] = {}
+    question_set_inputs = []
+    for question_set in question_sets:
+        templates_config = load_yaml(question_set["question_templates_path"])
+        profile = load_experiment_profile(question_set["experiment_profile_path"])
+        question_set_inputs.append((question_set, templates_config, profile))
+        for template in templates_config.get("templates") or []:
+            query_type = str(template["query_type"])
+            target = dataset_question_target(template, args.limit_per_template)
+            if query_type in question_targets and question_targets[query_type] != target:
+                raise ValueError(
+                    f"Question type `{query_type}` has conflicting dataset targets."
+                )
+            question_targets[query_type] = target
+            question_empty_ratios[query_type] = empty_sampling_ratio(
+                template,
+                templates_config.get("sampling") or {},
+                args.empty_ratio,
+            )
     all_records: list[dict[str, Any]] = []
     with captured_warnings("Question generation warnings"):
-        for question_set in question_sets:
-            templates_config = load_yaml(question_set["question_templates_path"])
-            profile = load_experiment_profile(question_set["experiment_profile_path"])
-            all_records.extend(
-                generate_records(
-                    config,
-                    question_templates_config=templates_config,
-                    limit_per_template=args.limit_per_template,
-                    seed=args.seed,
-                    non_empty_ratio=args.non_empty_ratio,
-                    task_family=profile.task_family,
-                    output_type=profile.output_type,
-                    experiment_profile=profile.name,
-                    question_set=question_set["name"],
+        for scene in data_config["scenes"]:
+            config = load_yaml(scene["scene_template_values_path"])
+            config["scene_id"] = scene["scene_id"]
+            config["source_3dsg"] = scene["scene_path"]
+            for question_set, templates_config, profile in question_set_inputs:
+                all_records.extend(
+                    generate_records(
+                        config,
+                        question_templates_config=templates_config,
+                        limit_per_template=args.limit_per_template,
+                        seed=args.seed,
+                        empty_ratio=args.empty_ratio,
+                        task_family=profile.task_family,
+                        output_type=profile.output_type,
+                        experiment_profile=profile.name,
+                        question_set=question_set["name"],
+                        warn_on_target_shortfall=False,
+                    )
                 )
-            )
-    records = all_records
+    records = apply_dataset_question_targets(
+        all_records,
+        targets=question_targets,
+        scene_ids=[str(scene["scene_id"]) for scene in data_config["scenes"]],
+        empty_ratios=question_empty_ratios,
+    )
     uids = [record["uid"] for record in records]
     if len(uids) != len(set(uids)):
         raise ValueError("Question generation produced duplicate record UIDs.")
@@ -866,31 +1126,32 @@ def command(args: argparse.Namespace) -> None:
         },
     )
     counts = Counter(record["query_type"] for record in records)
-    effective_non_empty_ratio = (
-        args.non_empty_ratio if args.non_empty_ratio is not None else "per set"
+    effective_empty_ratio = (
+        args.empty_ratio if args.empty_ratio is not None else "per set"
     )
     print_summary(
         "Question templates generated",
         [
-            ("Scene", data_config["scene_id"]),
+            ("Dataset", data_config["dataset_id"]),
+            ("Scenes", len(data_config["scenes"])),
             ("Dataset version", data_config["dataset_version"]),
             ("Questions", len(records)),
             ("Question types", len(counts)),
             ("Question sets", len(question_sets)),
-            ("Non-empty ratio", effective_non_empty_ratio),
+            ("Empty ratio", effective_empty_ratio),
             ("Output", output_path),
         ],
     )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate legacy 3DSG Cypher seed YAML.")
+    parser = argparse.ArgumentParser(description="Generate 3DSG Cypher seed YAML.")
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--limit-per-template", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--non-empty-ratio", type=float, default=None)
+    parser.add_argument("--empty-ratio", type=float, default=None)
     args = parser.parse_args()
     command(args)
 

@@ -27,6 +27,7 @@ class CypherSeedRecord(BaseModel):
     grounding: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
+    labelspace_description: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -48,6 +49,7 @@ class PreparedCypherSeedRecord(BaseModel):
     grounding: dict[str, Any] | None = None
     tags: list[str]
     scene_id: str | None = None
+    labelspace_description: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -101,6 +103,7 @@ def prepare_seed_records(
                 grounding=record.grounding,
                 tags=record.tags,
                 scene_id=record.scene_id,
+                labelspace_description=record.labelspace_description,
                 metadata=metadata,
             )
         )

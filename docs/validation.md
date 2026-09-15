@@ -72,7 +72,9 @@ docker/stack.sh main python scripts/evaluate_student.py \
 
 Raw-generation validation runs a bounded query/tool/final-answer interaction
 and reuses the dataset's tool schema, Neo4j checks, retry policy, and task
-validators.
+validators. Records are grouped by `scene_id` before execution, and Neo4j is
+cleared and loaded only when that scene changes. A complete validation pass
+therefore performs one database load per represented scene.
 
 ### Raw generation with Ollama
 

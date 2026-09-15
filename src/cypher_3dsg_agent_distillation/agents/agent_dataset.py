@@ -35,6 +35,10 @@ from cypher_3dsg_agent_distillation.core.config import (
     with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl, write_jsonl
+from cypher_3dsg_agent_distillation.core.scene_ordering import (
+    order_records_by_scene_interleave,
+    validate_scene_interleave_ratio,
+)
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
     config_record,
@@ -426,11 +430,27 @@ def grouped_split_records(
     test_size: float,
     seed: int,
     challenge_task_types: set[str] | None = None,
+    challenge_questions_per_task_type: int | None = None,
+    train_scene_interleave_ratio: float = 1.0,
+    scene_order: list[str] | None = None,
 ) -> SplitResult:
     validate_split_sizes(train_size, eval_size, test_size)
+    train_scene_interleave_ratio = validate_scene_interleave_ratio(
+        train_scene_interleave_ratio
+    )
     challenge_task_types = challenge_task_types or set()
-    challenge = [record for record in records if record.task_type in challenge_task_types]
-    main_records = [record for record in records if record.task_type not in challenge_task_types]
+    if challenge_questions_per_task_type is not None and challenge_questions_per_task_type < 0:
+        raise ValueError("challenge_questions_per_task_type must be non-negative.")
+    if challenge_questions_per_task_type is None:
+        challenge = [record for record in records if record.task_type in challenge_task_types]
+    else:
+        challenge = []
+        for task_type in sorted(challenge_task_types):
+            candidates = [record for record in records if record.task_type == task_type]
+            random.Random(f"{seed}:challenge:{task_type}").shuffle(candidates)
+            challenge.extend(candidates[:challenge_questions_per_task_type])
+    challenge_uids = {record.uid for record in challenge}
+    main_records = [record for record in records if record.uid not in challenge_uids]
 
     train: list[AgentTraceRecord] = []
     eval_records: list[AgentTraceRecord] = []
@@ -515,9 +535,19 @@ def grouped_split_records(
         for split_name in split_lists:
             split_lists[split_name].extend(task_splits[split_name])
 
-    output_rng = random.Random(seed)
-    for split_records in split_lists.values():
-        output_rng.shuffle(split_records)
+    train[:] = order_records_by_scene_interleave(
+        train,
+        ratio=train_scene_interleave_ratio,
+        seed=seed,
+        scene_order=scene_order or (),
+    )
+    for records_to_group in (eval_records, test, challenge):
+        records_to_group[:] = order_records_by_scene_interleave(
+            records_to_group,
+            ratio=0.0,
+            seed=seed,
+            scene_order=scene_order or (),
+        )
 
     assert_no_split_leakage(
         split_lists,
@@ -1033,6 +1063,7 @@ def split_records_payload(
 ) -> dict[str, Any]:
     payload = {}
     for split_name, records in split_records.items():
+        scene_sequence = [str(record.scene_id or "unknown") for record in records]
         payload[split_name] = {
             "questions": len(records),
             "task_type_counts": counter_to_sorted_dict(record_task_type_counts(records)),
@@ -1041,6 +1072,18 @@ def split_records_payload(
             ),
             "optimized_questions": sum(1 for record in records if optimization_kinds(record)),
             "uids": [record.uid for record in records],
+            "scene_counts": counter_to_sorted_dict(Counter(scene_sequence)),
+            "scene_runs": (
+                0
+                if not scene_sequence
+                else 1
+                + sum(
+                    left != right
+                    for left, right in zip(
+                        scene_sequence, scene_sequence[1:], strict=False
+                    )
+                )
+            ),
         }
     return payload
 
@@ -1065,7 +1108,8 @@ def split_report_payload(
     return {
         "metadata": {
             "created_at": datetime.now(UTC).isoformat(),
-            "scene_id": data_config.get("scene_id"),
+            "dataset_id": data_config.get("dataset_id"),
+            "scene_ids": [scene["scene_id"] for scene in data_config.get("scenes", [])],
             "dataset_version": data_config.get("dataset_version"),
             "teacher_name": data_config.get("teacher_name"),
             "teacher_run": data_config.get("teacher_run"),
@@ -1154,6 +1198,12 @@ def split_report_lines(
 
 def split_command(args: argparse.Namespace) -> None:
     config = load_data_config(args.data_config, dataset_version=args.dataset_version)
+    split_config = config.get("split", {})
+    if getattr(args, "split_by_scene", False) or bool(
+        split_config.get("split_by_scene", False)
+    ):
+        print("Scene-aware splitting is not implemented yet.")
+        return
     teacher_name = args.teacher or config.get("teacher_name")
     if not teacher_name:
         raise ValueError(
@@ -1187,7 +1237,6 @@ def split_command(args: argparse.Namespace) -> None:
     cap_dropped_counts = record_task_type_counts(records_before_cap) - record_task_type_counts(
         records
     )
-    split_config = config.get("split", {})
     with captured_warnings("Dataset split warnings"):
         train, eval_records, test, challenge = grouped_split_records(
             records,
@@ -1196,6 +1245,13 @@ def split_command(args: argparse.Namespace) -> None:
             test_size=float(split_config.get("test_size", 0.1)),
             seed=int(split_config.get("seed", 42)),
             challenge_task_types=set(split_config.get("challenge_task_types", [])),
+            challenge_questions_per_task_type=split_config.get(
+                "challenge_questions_per_task_type"
+            ),
+            train_scene_interleave_ratio=float(
+                split_config.get("train_scene_interleave_ratio", 1.0)
+            ),
+            scene_order=[str(scene["scene_id"]) for scene in config["scenes"]],
         )
     paths = config["splits"]
     write_rendered_split(train, paths["train"], args.render_view)
@@ -1328,7 +1384,8 @@ def prepare_seeds_command(args: argparse.Namespace) -> None:
     print_summary(
         "Seed records prepared",
         [
-            ("Scene", data_config["scene_id"]),
+            ("Dataset", data_config["dataset_id"]),
+            ("Scenes", len(data_config["scenes"])),
             ("Dataset version", data_config["dataset_version"]),
             ("Records", len(prepared)),
             ("Question types", len(counts)),
@@ -1365,11 +1422,19 @@ def main() -> None:
     )
     split_parser.add_argument("--optimize-student-traces", action="store_true")
     split_parser.add_argument(
+        "--split-by-scene",
+        action="store_true",
+        help=(
+            "Reserve complete scenes for non-training splits. This option is "
+            "declared for the multi-scene interface but is not implemented yet."
+        ),
+    )
+    split_parser.add_argument(
         "--report-output",
         default=None,
         help=(
             "Optional JSON split report path. Defaults to "
-            "data/datasets/{scene_id}/{version}/reports/dataset/split.report.json."
+            "data/datasets/{dataset_id}/{version}/reports/dataset/split.report.json."
         ),
     )
     split_parser.set_defaults(func=split_command)

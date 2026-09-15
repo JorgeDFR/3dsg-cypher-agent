@@ -148,12 +148,30 @@ def static_checks(
 
     allowed_properties = policy.get("properties")
     if allowed_properties:
+        map_collection_aliases = set(
+            re.findall(
+                r"\bcollect\s*\(\s*\{[^}]*\}\s*\)\s+AS\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)",
+                schema_check_cypher,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
+        map_value_aliases = {
+            value_alias
+            for collection_alias, value_alias in re.findall(
+                r"\bUNWIND\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)",
+                schema_check_cypher,
+                flags=re.IGNORECASE,
+            )
+            if collection_alias in map_collection_aliases
+        }
         property_matches = re.findall(
             r"\b([A-Za-z_][A-Za-z0-9_]*)\.`?([A-Za-z_][A-Za-z0-9_]*)`?",
             schema_check_cypher,
         )
         for variable_name, property_name in sorted(set(property_matches)):
-            if variable_name == "point":
+            if variable_name == "point" or variable_name in map_value_aliases:
                 continue
             if property_name not in allowed_properties:
                 issues.append(f"unknown property: {property_name}")

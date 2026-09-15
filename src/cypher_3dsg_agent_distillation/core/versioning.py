@@ -328,12 +328,13 @@ def lineage_difference(
 ) -> list[str]:
     training_dataset = model_metadata.get("dataset") or {}
     differences = []
-    expected_scene = training_dataset.get("scene_id")
+    expected_dataset = training_dataset.get("dataset_id", training_dataset.get("scene_id"))
     expected_version = training_dataset.get("version")
-    if expected_scene != data_config.get("scene_id"):
-        selected_scene = data_config.get("scene_id")
+    if expected_dataset != data_config.get("dataset_id"):
+        selected_dataset = data_config.get("dataset_id")
         differences.append(
-            f"scene differs (trained on {expected_scene!r}, selected {selected_scene!r})"
+            "dataset differs "
+            f"(trained on {expected_dataset!r}, selected {selected_dataset!r})"
         )
     if expected_version != data_config.get("dataset_version"):
         differences.append(

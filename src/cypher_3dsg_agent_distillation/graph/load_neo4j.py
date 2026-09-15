@@ -223,9 +223,21 @@ def command(args: argparse.Namespace) -> None:
     uri = args.uri or os.environ.get("NEO4J_URI")
     scene = args.scene
     if scene is None:
-        scene = load_data_config(
+        data_config = load_data_config(
             args.data_config, dataset_version=args.dataset_version
-        )["scene_path"]
+        )
+        scenes = data_config["scenes"]
+        if args.scene_id:
+            matches = [item for item in scenes if item["scene_id"] == args.scene_id]
+            if not matches:
+                raise ValueError(f"Unknown configured scene `{args.scene_id}`.")
+            scene = matches[0]["scene_path"]
+        elif len(scenes) == 1:
+            scene = scenes[0]["scene_path"]
+        else:
+            raise ValueError(
+                "The dataset contains multiple scenes; pass --scene-id or --scene."
+            )
     summary = load_scene(
         scene_path=scene,
         uri=neo4j_uri_candidates(uri),
@@ -259,6 +271,11 @@ def main() -> None:
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
+    parser.add_argument(
+        "--scene-id",
+        default=None,
+        help="Configured scene id to load when --scene is omitted.",
+    )
     parser.add_argument(
         "--uri",
         default=None,

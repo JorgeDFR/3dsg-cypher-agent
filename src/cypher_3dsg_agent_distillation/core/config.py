@@ -30,7 +30,19 @@ class QuestionSetPaths:
 
 
 @dataclass(frozen=True)
+class ScenePaths:
+    scene_id: str
+    scene_path: Path
+    scene_dir: Path
+    scene_template_values_path: Path
+
+
+@dataclass(frozen=True)
 class DataPaths:
+    dataset_id: str
+    scenes: tuple[ScenePaths, ...]
+    # Compatibility aliases for legacy single-scene callers. New dataset code
+    # should iterate ``scenes`` instead.
     scene_id: str
     dataset_version: str
     scene_path: Path
@@ -100,15 +112,63 @@ def resolve_config_path(path: str | Path, subdir: str | Path = "") -> Path:
     return PROJECT_ROOT / resolved
 
 
+def _safe_config_id(value: Any, *, field: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{field} must not be empty.")
+    if normalized in {".", ".."} or "/" in normalized or "\\" in normalized:
+        raise ValueError(f"{field} must be a single folder name, not a path.")
+    return normalized
+
+
+def dataset_id_from_config(config: dict[str, Any]) -> str:
+    value = config.get("dataset_id", config.get("scene_id"))
+    if value is None:
+        raise KeyError("data config requires `dataset_id`.")
+    return _safe_config_id(value, field="dataset_id")
+
+
 def scene_id_from_config(config: dict[str, Any]) -> str:
-    if "scene_id" not in config:
-        raise KeyError("data config requires `scene_id`.")
-    scene_id = str(config["scene_id"]).strip()
-    if not scene_id:
-        raise ValueError("scene_id must not be empty.")
-    if scene_id in {".", ".."} or "/" in scene_id or "\\" in scene_id:
-        raise ValueError("scene_id must be a single folder name, not a path.")
-    return scene_id
+    """Return the sole scene id for compatibility with legacy callers."""
+    scenes = scenes_from_config(config)
+    if len(scenes) != 1:
+        raise ValueError("This operation requires a single configured scene.")
+    return scenes[0]["scene_id"]
+
+
+def scenes_from_config(config: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    raw_scenes = config.get("scenes")
+    if raw_scenes is None:
+        if "scene_id" not in config or "scene_path" not in config:
+            raise KeyError(
+                "data config requires a non-empty `scenes` list containing "
+                "scene_id and scene_path."
+            )
+        raw_scenes = [
+            {"scene_id": config["scene_id"], "scene_path": config["scene_path"]}
+        ]
+    if not isinstance(raw_scenes, list) or not raw_scenes:
+        raise ValueError("scenes must be a non-empty list.")
+
+    scenes: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw_scenes):
+        if not isinstance(item, dict):
+            raise TypeError(f"scenes[{index}] must be a mapping.")
+        if "scene_id" not in item or "scene_path" not in item:
+            raise KeyError(f"scenes[{index}] requires scene_id and scene_path.")
+        scene_id = _safe_config_id(item["scene_id"], field=f"scenes[{index}].scene_id")
+        if scene_id in seen_ids:
+            raise ValueError(f"Duplicate scene_id `{scene_id}`.")
+        seen_ids.add(scene_id)
+        scenes.append(
+            {
+                **item,
+                "scene_id": scene_id,
+                "scene_path": resolve_project_path(item["scene_path"]),
+            }
+        )
+    return tuple(scenes)
 
 
 def data_paths_from_config(
@@ -118,11 +178,11 @@ def data_paths_from_config(
     create_version: bool = False,
     require_existing: bool = False,
 ) -> DataPaths:
-    scene_id = scene_id_from_config(config)
-    if "scene_path" not in config:
-        raise KeyError("data config requires `scene_path` for the user-provided 3DSG file.")
+    dataset_id = dataset_id_from_config(config)
+    configured_scenes = scenes_from_config(config)
+    legacy_single_scene = "scenes" not in config
 
-    dataset_root = GENERATED_DATASETS_ROOT / scene_id
+    dataset_root = GENERATED_DATASETS_ROOT / dataset_id
     requested_version = dataset_version or config.get("dataset_version")
     if create_version:
         resolved_version, scene_dir = create_version_dir(
@@ -140,6 +200,24 @@ def data_paths_from_config(
         if resolved_version != "latest":
             resolved_version = validate_version(resolved_version)
         scene_dir = dataset_root / resolved_version
+    resolved_scenes = tuple(
+        ScenePaths(
+            scene_id=scene["scene_id"],
+            scene_path=Path(scene["scene_path"]),
+            scene_dir=(
+                scene_dir
+                if legacy_single_scene
+                else scene_dir / "scenes" / scene["scene_id"]
+            ),
+            scene_template_values_path=(
+                scene_dir / "scene_template_values.yaml"
+                if legacy_single_scene
+                else scene_dir / "scenes" / scene["scene_id"] / "scene_template_values.yaml"
+            ),
+        )
+        for scene in configured_scenes
+    )
+
     raw_question_sets = config.get("question_sets")
     if raw_question_sets is not None:
         if not isinstance(raw_question_sets, list) or not raw_question_sets:
@@ -191,10 +269,13 @@ def data_paths_from_config(
         )
 
     first_question_set = resolved_question_sets[0]
+    first_scene = resolved_scenes[0]
     return DataPaths(
-        scene_id=scene_id,
+        dataset_id=dataset_id,
+        scenes=resolved_scenes,
+        scene_id=first_scene.scene_id,
         dataset_version=resolved_version,
-        scene_path=resolve_project_path(config["scene_path"]),
+        scene_path=first_scene.scene_path,
         schema_path=resolve_config_path(config.get("schema_path", "schema_3dsg.yaml")),
         experiment_profile_path=first_question_set.experiment_profile_path,
         question_templates_path=first_question_set.question_templates_path,
@@ -203,7 +284,7 @@ def data_paths_from_config(
         dataset_dir=scene_dir,
         metadata_path=scene_dir / "metadata.yaml",
         scene_dir=scene_dir,
-        scene_template_values_path=scene_dir / "scene_template_values.yaml",
+        scene_template_values_path=first_scene.scene_template_values_path,
         raw_questions_path=scene_dir / "generated_questions.yaml",
         seed_records_jsonl_path=scene_dir / "cypher_seed_records.jsonl",
         teacher_traces_jsonl_path=scene_dir / "traces" / "teacher_traces.jsonl",
@@ -236,11 +317,24 @@ def load_data_config(
     resolved = dict(config)
     resolved.update(
         {
+            "dataset_id": paths.dataset_id,
             "data_config_path": str(config_path),
             "dataset_version": paths.dataset_version,
             "dataset_root": str(paths.dataset_root),
             "dataset_dir": str(paths.dataset_dir),
             "metadata_path": str(paths.metadata_path),
+            "scenes": [
+                {
+                    "scene_id": scene.scene_id,
+                    "scene_path": str(scene.scene_path),
+                    "scene_dir": str(scene.scene_dir),
+                    "scene_template_values_path": str(scene.scene_template_values_path),
+                }
+                for scene in paths.scenes
+            ],
+            # Compatibility aliases for commands that explicitly operate on a
+            # single scene (for example load_3dsg_neo4j without --scene).
+            "scene_id": paths.scene_id,
             "scene_path": str(paths.scene_path),
             "schema_path": str(paths.schema_path),
             "question_templates_path": str(paths.question_templates_path),

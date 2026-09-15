@@ -15,14 +15,17 @@ from cypher_3dsg_agent_distillation.graph.load_neo4j import (
 )
 from cypher_3dsg_agent_distillation.graph.scene_graph import (
     SceneIndex,
+    labelspace_description,
     node_symbol,
     objects_in_bbox,
     ranked_class_names,
+    scene_summary,
     scene_values,
     top_k_with_ties_validation,
 )
 
 SCENE_PATH = Path("data/scenes/uhumans2_office.json")
+SPOT_SCENE_PATH = Path("data/scenes/spot_demo.json")
 
 
 def test_heracles_dependencies_resolve_through_benchmark_submodule():
@@ -36,6 +39,14 @@ def test_node_symbol_matches_spark_dsg_encoding():
     assert node_symbol(0x4F0000000000002A) == "O42"
     assert node_symbol(0x7000000000000007) == "p7"
     assert node_symbol(0x5000000000001626) == "P5670"
+
+
+def test_legacy_traversability_symbols_are_exposed_as_mesh_places():
+    graph = SceneIndex(SPOT_SCENE_PATH).graph
+    traversability_node = next(iter(graph.get_layer(3, 1).nodes))
+
+    assert traversability_node.id.str(True).startswith("t")
+    assert node_symbol(traversability_node.id).startswith("P")
 
 
 def test_top_class_gold_ranking_breaks_count_ties_alphabetically():
@@ -110,6 +121,39 @@ def test_extract_graph_records_from_spark_dsg():
     }
 
 
+def test_spot_scene_maps_object_parents_to_mesh_places():
+    summary = scene_summary(SPOT_SCENE_PATH)
+    nodes, relationships = extract_graph_records(SPOT_SCENE_PATH)
+    values = scene_values(SPOT_SCENE_PATH, 30, 10, 10, 10, 3)
+
+    assert summary["nodes"] == {"Object": 93, "MeshPlace": 387}
+    assert len(nodes["Place"]) == 0
+    assert len(nodes["Room"]) == 0
+    assert sum(
+        relationship["type"] == "CONTAINS"
+        and relationship["from_label"] == "MeshPlace"
+        and relationship["to_label"] == "Object"
+        for relationship in relationships
+    ) == 93
+    assert values["place_object_cases"]
+    assert values["object_parent_cases"]
+    assert {
+        case["place_label"]
+        for key in ("place_object_cases", "object_parent_cases")
+        for case in values[key]
+    } == {"MeshPlace"}
+
+
+def test_labelspace_prompt_is_derived_per_scene():
+    office = labelspace_description(SCENE_PATH)
+    spot = labelspace_description(SPOT_SCENE_PATH)
+
+    assert office != spot
+    assert "<object_labels>" in office
+    assert "<mesh_places_labels>" in spot
+    assert "chair" in spot
+
+
 def test_neo4j_loader_models_room_to_object_containment_as_two_edges():
     assert relationship_for("Room", "Place") == ("Room", "CONTAINS", "Place")
     assert relationship_for("Room", "MeshPlace") == (
@@ -173,6 +217,38 @@ def test_object_class_inventory_uses_object_labels_only():
 
     assert "light" in inventory
     assert "floor" not in inventory
+
+
+def test_new_qa_gold_solutions_cover_attributes_hierarchy_and_spatial_queries():
+    index = SceneIndex(SCENE_PATH)
+
+    assert index.solution_for("object_total", {}) == 213
+    assert index.solution_for("room_total", {}) == 8
+    assert index.solution_for("combined_place_total", {}) == 2624
+    assert index.solution_for("object_class_by_symbol", {"object": "O0"}) == "sofa"
+    assert index.solution_for("object_center_by_symbol", {"object": "O0"}) == (
+        "POINT(-15.365 22.250 1.417)"
+    )
+    assert index.solution_for("room_object_count", {"room": "R0"}) == 110
+    assert index.solution_for("adjacent_rooms", {"room": "R0"}) == {
+        "R1",
+        "R2",
+        "R4",
+    }
+    assert index.solution_for("least_connected_rooms", {}) == {"R5", "R7"}
+    assert index.solution_for("nearest_object_any_class", {"object": "O0"}) == "O4"
+    assert index.solution_for("farthest_object_from_object", {"object": "O0"}) == (
+        "O390"
+    )
+    assert index.solution_for("nearest_place_to_object", {"object": "O0"}) == (
+        "P5670"
+    )
+    assert index.solution_for(
+        "objects_within_radius_of_object",
+        {"object": "O0", "radius": 2},
+    ) == {"O3", "O4", "O6"}
+    assert index.solution_for("closest_cross_class_object_pairs", {}) == "O121|O154"
+    assert index.solution_for("closest_room_pairs", {}) == "R2|R3"
 
 
 def test_room_pddl_solutions_support_class_and_object_containment_references():

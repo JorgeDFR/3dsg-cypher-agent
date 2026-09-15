@@ -44,7 +44,7 @@ docker/stack.sh main python scripts/generate_workflow_report.py \
 
 | Option | Purpose |
 | --- | --- |
-| `--data-config` | Select the scene, dataset family, and artifact roots |
+| `--data-config` | Select the scenes, dataset family, and artifact roots |
 | `--dataset-version` | Select an exact dataset version instead of the latest |
 | `--student-config` | Include the selected model's training and evaluation data |
 | `--model-version` | Select an exact completed model version |
@@ -55,7 +55,7 @@ Without `--output`, a model-aware report is written to the selected model's
 report directory:
 
 ```text
-data/datasets/{scene_id}/{dataset_version}/reports/
+data/datasets/{dataset_id}/{dataset_version}/reports/
   models/{model_family}/{model_version}/workflow_report.html
 ```
 
@@ -68,7 +68,7 @@ The report uses tabs to separate each workflow stage:
 
 | Tab | Contents |
 | --- | --- |
-| 3D Scene Graph | Scene summary, node counts, classes, and extracted template values |
+| 3D Scene Graph | Per-scene summary, node counts, classes, and extracted template values |
 | Generated Questions | Counts, task families, task types, tags, questions, and seed details |
 | Traces | Accepted and rejected teacher traces, outcome counts, and rejection reasons |
 | Splits | Train/eval/test/challenge distributions and per-question details |
@@ -87,6 +87,7 @@ reports exist. Generate them with `docker/stack.sh demo-deploy` or the manual
 Although the output is a single static file, embedded JavaScript supports:
 
 - tabbed navigation;
+- a scene selector in the 3D Scene Graph tab;
 - sortable and filterable tables;
 - expandable question-type summaries;
 - selectable records with detailed prompts, tool calls, and validation data;

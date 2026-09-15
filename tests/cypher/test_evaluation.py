@@ -198,6 +198,50 @@ def test_rows_to_solution_text_infers_symbol_from_result_aliases():
     assert rows_to_solution_text(light_record, [{"light": "O8", "dist": 4.75}]) == "O8"
 
 
+def test_rows_to_solution_text_supports_new_qa_result_shapes():
+    cases = [
+        (
+            {"query_type": "object_total", "solution_formats": ["int"]},
+            [{"count": 213}],
+            "213",
+        ),
+        (
+            {"query_type": "object_class_by_symbol", "solution_formats": ["str"]},
+            [{"class": "sofa"}],
+            "sofa",
+        ),
+        (
+            {
+                "query_type": "object_center_by_symbol",
+                "solution_formats": ["point"],
+            },
+            [{"center": CartesianPoint(1, 2, 3)}],
+            "POINT(1.000 2.000 3.000)",
+        ),
+        (
+            {"query_type": "adjacent_rooms", "solution_formats": ["set[str]"]},
+            [{"room": "R2"}, {"room": "R1"}],
+            "<R1, R2>",
+        ),
+        (
+            {"query_type": "nearest_place_to_object", "solution_formats": ["str"]},
+            [{"place": "P5670"}],
+            "P5670",
+        ),
+        (
+            {
+                "query_type": "closest_cross_class_object_pairs",
+                "solution_formats": ["set[str]"],
+            },
+            [{"pair": "O9|O115"}, {"pair": "O121|O154"}],
+            "<O121|O154, O9|O115>",
+        ),
+    ]
+
+    for record, rows, expected in cases:
+        assert rows_to_solution_text(record, rows) == expected
+
+
 def test_evaluate_records_marks_unexpected_return_shape_as_mismatch():
     class Validator:
         def validate(self, cypher, execute):

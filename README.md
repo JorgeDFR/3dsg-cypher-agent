@@ -70,7 +70,7 @@ task-specific behavior shared across generation, training, and validation.
 | `configs/teacher_*.yaml` | Teacher provider, model, sampling, and tool-call limits |
 | `configs/student_*.yaml` | Base model, LoRA/QLoRA, training, and export settings |
 | `configs/experiment_profiles/` | Task-specific prompts and output contracts |
-| `configs/prompts/` | Shared agent instructions, domain descriptions, and label spaces |
+| `configs/prompts/` | Shared agent instructions and domain descriptions |
 | `configs/question_templates/` | QA and PDDL question templates |
 | `configs/schema_3dsg.yaml` | Scene graph schema used for generation and validation |
 
@@ -80,11 +80,15 @@ default and accept explicit dataset, teacher-run, or model selectors for
 reproducible experiments. See [Artifact versioning](docs/artifact_versioning.md)
 for the directory layout, selection rules, lineage checks, and legacy migration.
 
-The source scene is configured separately from its artifact identifier. Reload
-Neo4j whenever `scene_path` changes:
+The data configuration gives the combined dataset a `dataset_id` and lists one
+or more explicit `scene_id`/`scene_path` pairs. Trace generation loads the
+correct scene into Neo4j as it moves between scene-specific seeds. A scene can
+also be loaded manually for inspection:
 
 ```bash
-docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
+docker/stack.sh main python scripts/load_3dsg_neo4j.py \
+  --data-config configs/data.yaml \
+  --scene-id uhumans2_office
 ```
 
 ## Quick start

@@ -54,6 +54,20 @@ def require_training_dependencies():
     return LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer
 
 
+def dataset_order_trainer_class(base_trainer):
+    """Create a trainer that respects the scene ordering stored in the split."""
+
+    class DatasetOrderTrainer(base_trainer):
+        def _get_train_sampler(self, train_dataset=None):
+            from torch.utils.data import SequentialSampler
+
+            dataset = train_dataset if train_dataset is not None else self.train_dataset
+            return None if dataset is None else SequentialSampler(dataset)
+
+    DatasetOrderTrainer.__name__ = f"DatasetOrder{base_trainer.__name__}"
+    return DatasetOrderTrainer
+
+
 def dtype_from_name(name: str | None):
     import torch
 
@@ -728,7 +742,8 @@ def command(args: argparse.Namespace) -> None:
             "updated_at": created_at,
             "status": "running",
             "dataset": {
-                "scene_id": data_config["scene_id"],
+                "dataset_id": data_config["dataset_id"],
+                "scene_ids": [scene["scene_id"] for scene in data_config["scenes"]],
                 "version": data_config["dataset_version"],
                 "teacher_name": data_config.get("teacher_name"),
                 "teacher_run": data_config.get("teacher_run"),
@@ -820,7 +835,8 @@ def command(args: argparse.Namespace) -> None:
     if stopping_callback is not None:
         callbacks.append(stopping_callback)
 
-    trainer = SFTTrainer(
+    OrderedSFTTrainer = dataset_order_trainer_class(SFTTrainer)
+    trainer = OrderedSFTTrainer(
         **sft_trainer_kwargs(
             model=model,
             tokenizer=tokenizer,

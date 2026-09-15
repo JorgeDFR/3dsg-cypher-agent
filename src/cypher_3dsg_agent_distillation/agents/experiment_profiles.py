@@ -175,10 +175,15 @@ def render_profile_messages(
         )
 
     prompt = load_prompt_template(profile)
+    seed_labelspace = seed.get("labelspace_description")
     sections = [
         prompt.system.strip(),
         load_text_section(profile.scene_graph_description_path, ["scene_graph_description"]),
-        load_text_section(profile.labelspace_path, ["labelspace_description"]),
+        (
+            str(seed_labelspace).strip()
+            if seed_labelspace
+            else load_text_section(profile.labelspace_path, ["labelspace_description"])
+        ),
         load_text_section(profile.interface_description_path, ["interface_description"]),
         load_text_section(profile.domain_description_path, ["domain_description"]),
         load_text_section(profile.in_context_examples_path, ["in_context_examples"]),

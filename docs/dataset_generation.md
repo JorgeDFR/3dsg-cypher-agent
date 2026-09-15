@@ -1,10 +1,10 @@
 # Dataset Generation
 
-Dataset construction turns one configured 3DSG scene into validated,
+Dataset construction turns one or more configured 3DSG scenes into validated,
 training-ready agent traces. The normal sequence is:
 
 ```text
-3DSG scene
+3DSG scenes
   -> extracted template values
   -> rendered questions
   -> validated seed records
@@ -18,12 +18,12 @@ For the directory and selection rules of generated artifacts, see
 
 ## Inputs
 
-`configs/data.yaml` defines the source scene and question sources.
+`configs/data.yaml` defines the dataset, its source scenes, and question sources.
 
 | Key | Meaning |
 | --- | --- |
-| `scene_id` | Stable identifier used in generated artifact paths |
-| `scene_path` | User-provided Hydra/Spark DSG JSON file |
+| `dataset_id` | Stable identifier used in generated artifact paths |
+| `scenes` | Non-empty list of `scene_id` and Hydra/Spark DSG `scene_path` pairs |
 | `schema_path` | 3DSG schema used by template generation and validation |
 | `question_sets` | One or more experiment profile and question-template pairs |
 | `max_per_task_type` | Optional cap on generated records per task type |
@@ -42,19 +42,60 @@ question_sets:
     question_templates_path: cypher_pddl_3dsg.yaml
 ```
 
+A dataset can combine scenes with different layer layouts:
+
+```yaml
+dataset_id: uhumans2_spot
+scenes:
+  - scene_id: uhumans2_office
+    scene_path: data/scenes/uhumans2_office.json
+  - scene_id: spot_demo
+    scene_path: data/scenes/spot_demo.json
+```
+
+Question templates are generated once per compatible scene. Templates that
+require a missing layer are skipped for that scene; for example, room templates
+are not generated for a graph without `Room`. Object-containment templates use
+a label-agnostic query that accepts either parent layer (`Place` or
+`MeshPlace`). Each resulting record keeps its `scene_id`.
+
+`target_questions` is a dataset-wide budget for a question type. Candidates
+are divided as evenly as possible among compatible scenes, with unused capacity
+redistributed when a scene lacks the layer or values required by that question.
+The configured `empty_ratio` is enforced across the combined dataset rather
+than independently multiplying the target for every scene. The remaining
+share is normal supervision; this naming leaves room for future independent
+shares such as repair supervision.
+
+The QA set covers 30 question types. In addition to the original inventory,
+containment, distance, and hop queries, it includes scene totals; object
+attribute and center lookup; room child counts and class projections;
+adjacent-room enumeration; tied room-connectivity extrema; class-agnostic and
+cross-class object distances; and an object-centered radius query. Every QA
+type provides at least five natural-language variants.
+
 The legacy singular `experiment_profile_path` and `question_templates_path`
 keys are still interpreted as one question set.
 
 ## Prepare a dataset version
 
-### 1. Load the scene into Neo4j
+### 1. Start Neo4j
 
 Teacher validation executes generated Cypher against the active database.
-Reload Neo4j whenever `scene_path` changes:
+Ensure the service is available:
 
 ```bash
-docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
 docker/stack.sh status
+```
+
+Trace generation clears and loads the correct configured scene whenever the
+next seed has a different `scene_id`. For manual inspection, load one scene by
+identifier:
+
+```bash
+docker/stack.sh main python scripts/load_3dsg_neo4j.py \
+  --data-config configs/data.yaml \
+  --scene-id spot_demo
 ```
 
 ### 2. Extract 3DSG values
@@ -90,7 +131,9 @@ docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
 
 Seed records contain gold Cypher and expected outputs for validation. They are
 internal generation support; the public training and evaluation format is the
-agent trace described below.
+agent trace described below. Each seed also contains a labelspace prompt built
+from the labelspaces embedded in its source scene JSON; experiment profiles do
+not select a scene-specific, hard-coded labelspace file.
 
 ## Generate teacher traces
 
@@ -178,6 +221,26 @@ docker/stack.sh main python scripts/prepare_dataset.py split \
 Splitting is stratified by task family and query type. Task types that share
 normalized-equivalent Cypher are assigned together so an equivalent query
 cannot leak across splits.
+
+`split.challenge_questions_per_task_type` controls how many records from each
+listed `challenge_task_types` entry are reserved for the challenge split. Any
+remaining records of those task types continue through the normal
+train/eval/test split, so their template-level `target_questions` does not need
+to be reduced manually.
+
+Validation-oriented splits are written with all records from one scene
+contiguously, minimizing database reloads to once per represented scene. The
+training split uses `split.train_scene_interleave_ratio`, which must be between
+`0` and `1`: `0` uses the same scene-grouped order, while `1` alternates scenes
+round-robin. Intermediate values deterministically divide each scene into
+progressively smaller chunks; records are still shuffled within each scene.
+Training consumes the stored order without an additional random sampler.
+
+Set `split.split_by_scene: true`, or pass `--split-by-scene`, to request
+scene-held-out train/eval/test/challenge data. This interface is reserved for a
+future implementation and currently exits with
+`Scene-aware splitting is not implemented yet.` The default is `false`, so all
+configured scenes may contribute to every split.
 
 To prune failed repair attempts and include rejected `invalid_answer_format`
 traces that are repairable by replacing only the final answer, use:

@@ -750,7 +750,26 @@ def collect_workflow_report_data(
     data_config: dict[str, Any],
     student_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    scene_values_doc = read_yaml_if_exists(data_config["scene_template_values_path"])
+    scene_graphs = {}
+    scene_artifacts = {}
+    configured_scenes = data_config.get("scenes") or [
+        {
+            "scene_id": data_config.get("scene_id", "scene"),
+            "scene_path": data_config.get("scene_path"),
+            "scene_template_values_path": data_config["scene_template_values_path"],
+        }
+    ]
+    for scene in configured_scenes:
+        scene_values_doc = read_yaml_if_exists(scene["scene_template_values_path"])
+        scene_graphs[scene["scene_id"]] = {
+            "summary": scene_values_doc.get("scene_summary") or {},
+            "values": scene_values_doc.get("values") or {},
+            "raw": scene_values_doc,
+        }
+        scene_artifacts[scene["scene_id"]] = {
+            "scene": file_info(scene["scene_path"]),
+            "scene_template_values": file_info(scene["scene_template_values_path"]),
+        }
     generated_questions_doc = read_yaml_if_exists(data_config["raw_questions_path"])
     generated_questions = generated_questions_doc.get("questions") or []
     seed_records = read_jsonl_if_exists(data_config["seed_records_jsonl_path"])
@@ -821,15 +840,18 @@ def collect_workflow_report_data(
     return {
         "metadata": {
             "created_at": datetime.now(UTC).isoformat(),
-            "scene_id": data_config.get("scene_id"),
+            "dataset_id": data_config.get("dataset_id", data_config.get("scene_id")),
+            "scene_ids": [scene["scene_id"] for scene in configured_scenes],
             "dataset_version": data_config.get("dataset_version"),
             "model_version": (student_config or {}).get("model_version"),
             "data_config": relative_path(data_config.get("data_config_path")),
-            "scene_path": relative_path(data_config.get("scene_path")),
         },
         "artifacts": {
-            "scene": file_info(data_config.get("scene_path")),
-            "scene_template_values": file_info(data_config["scene_template_values_path"]),
+            "scenes": scene_artifacts,
+            "scene": file_info(configured_scenes[0].get("scene_path")),
+            "scene_template_values": file_info(
+                configured_scenes[0]["scene_template_values_path"]
+            ),
             "generated_questions": file_info(data_config["raw_questions_path"]),
             "seed_records": file_info(data_config["seed_records_jsonl_path"]),
             "teacher_traces": file_info(data_config["teacher_traces_jsonl_path"]),
@@ -840,11 +862,11 @@ def collect_workflow_report_data(
                 split: file_info(data_config["splits"][split]) for split in SPLITS
             },
         },
-        "scene_graph": {
-            "summary": scene_values_doc.get("scene_summary") or {},
-            "values": scene_values_doc.get("values") or {},
-            "raw": scene_values_doc,
-        },
+        "scene_graphs": scene_graphs,
+        "scene_graph": next(
+            iter(scene_graphs.values()),
+            {"summary": {}, "values": {}, "raw": {}},
+        ),
         "generated_questions": {
             "records": generated_questions,
             "seed_records": seed_records,
@@ -1512,8 +1534,7 @@ def scene_template_sample_text(_name: str, value: Any) -> str:
     return format_value(value)
 
 
-def render_scene_graph_tab(data: dict[str, Any]) -> str:
-    scene = data["scene_graph"]
+def render_scene_graph_panel(scene: dict[str, Any]) -> str:
     summary = scene["summary"]
     classes = summary.get("classes") or {}
     values = scene["values"]
@@ -1527,8 +1548,7 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
     ]
     class_sections = scene_class_sections(classes, values)
     return (
-        "<h2>3D Scene Graph</h2>"
-        + render_metric_grid(scene_graph_metrics(summary))
+        render_metric_grid(scene_graph_metrics(summary))
         + render_counter_grid(class_sections, empty_message="0 classes")
         + "<h3>Template Values</h3>"
         + render_table(
@@ -1536,6 +1556,33 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
             value_rows,
         )
         + render_json_details("Raw scene template values", scene["raw"])
+    )
+
+
+def render_scene_graph_tab(data: dict[str, Any]) -> str:
+    scenes = data.get("scene_graphs") or {}
+    if not scenes:
+        return '<h2>3D Scene Graph</h2><p class="empty">No scenes found.</p>'
+    scene_ids = list(scenes)
+    selected = scene_ids[0]
+    options = "".join(
+        f'<option value="{escape(scene_id)}">{escape(scene_id)}</option>'
+        for scene_id in scene_ids
+    )
+    selector = (
+        '<label class="quantization-selector-label" for="scene-graph-selector">Scene'
+        '<select id="scene-graph-selector" class="scene-graph-selector quantization-selector">'
+        f"{options}</select></label>"
+    )
+    panels = "".join(
+        f'<div class="scene-graph-group" data-scene-graph-value="{escape(scene_id)}"'
+        f'{"" if scene_id == selected else " hidden"}>'
+        f"{render_scene_graph_panel(scene)}</div>"
+        for scene_id, scene in scenes.items()
+    )
+    return (
+        '<div class="raw-tab-title"><h2>3D Scene Graph</h2>'
+        f"{selector}</div>{panels}"
     )
 
 
@@ -2748,6 +2795,12 @@ def render_artifacts(data: dict[str, Any]) -> str:
             rows.extend({"artifact": "report", **info} for info in value)
         elif key == "splits":
             rows.extend({"artifact": f"split:{split}", **info} for split, info in value.items())
+        elif key == "scenes":
+            for scene_id, scene_files in value.items():
+                rows.extend(
+                    {"artifact": f"scene:{scene_id}:{name}", **info}
+                    for name, info in scene_files.items()
+                )
         else:
             rows.append({"artifact": key, **value})
     return render_table(
@@ -2767,7 +2820,7 @@ def render_artifacts_tab(data: dict[str, Any]) -> str:
 
 
 def render_workflow_report(data: dict[str, Any]) -> str:
-    scene_id = data["metadata"].get("scene_id") or "unknown"
+    dataset_id = data["metadata"].get("dataset_id") or "unknown"
     tabs = [
         ("scene", "3D Scene Graph", render_scene_graph_tab(data)),
         ("questions", "Generated Questions", render_generated_questions_tab(data)),
@@ -2804,7 +2857,7 @@ def render_workflow_report(data: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>3DSG Workflow Report - {escape(scene_id)}</title>
+  <title>3DSG Workflow Report - {escape(dataset_id)}</title>
   <style>
     :root {{
       color-scheme: light;
@@ -3190,7 +3243,7 @@ def render_workflow_report(data: dict[str, Any]) -> str:
 <body>
   <div class="page-header">
     <header>
-      <h1>3DSG Workflow Report: {escape(scene_id)}</h1>
+      <h1>3DSG Workflow Report: {escape(dataset_id)}</h1>
       <div class="subtitle">Generated at {escape(data["metadata"]["created_at"])}</div>
     </header>
     <nav class="tabs" aria-label="Workflow report tabs">{buttons}</nav>
@@ -3279,8 +3332,20 @@ def render_workflow_report(data: dict[str, Any]) -> str:
       }});
       tables.forEach((table) => applyColumnFilters(table));
     }}
-    document.querySelectorAll(".quantization-selector").forEach((selector) => {{
+    document
+      .querySelectorAll(".quantization-selector:not(.scene-graph-selector)")
+      .forEach((selector) => {{
       selector.addEventListener("change", () => applyReportGroupSelection(selector));
+      }});
+    document.querySelectorAll(".scene-graph-selector").forEach((selector) => {{
+      selector.addEventListener("change", () => {{
+        const panel = selector.closest(".tab-panel");
+        if (!panel) return;
+        panel.querySelectorAll(".scene-graph-group[data-scene-graph-value]")
+          .forEach((group) => {{
+            group.hidden = group.dataset.sceneGraphValue !== selector.value;
+          }});
+      }});
     }});
     document.querySelectorAll("table.sortable th[data-sort-index]").forEach((header) => {{
       header.addEventListener("click", () => {{
@@ -3370,7 +3435,8 @@ def command(args: argparse.Namespace) -> None:
     print_summary(
         "Workflow report generated",
         [
-            ("Scene", data_config["scene_id"]),
+            ("Dataset", data_config["dataset_id"]),
+            ("Scenes", len(data_config["scenes"])),
             ("Dataset version", data_config["dataset_version"]),
             ("Model version", (student_config or {}).get("model_version", "none")),
             ("Output", output_path),
@@ -3382,7 +3448,7 @@ def command(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate a static HTML report for a configured 3DSG workflow scene."
+        description="Generate a static HTML report for a configured 3DSG dataset."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)

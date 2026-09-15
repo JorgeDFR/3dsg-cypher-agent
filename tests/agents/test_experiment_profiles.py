@@ -17,6 +17,12 @@ def seed_record(**overrides):
         "gold_cypher": "MATCH (o:Object) RETURN DISTINCT o.class AS class",
         "solution": "<chair, table>",
         "solution_formats": ["set[str]"],
+        "labelspace_description": (
+            "<Labelspace Description>\n"
+            "Labels in Database:\n"
+            "<object_labels>\nchair\ntable\n</object_labels>\n"
+            "</Labelspace Description>"
+        ),
     }
     payload.update(overrides)
     return payload
@@ -50,6 +56,18 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     assert seed["gold_cypher"] not in text
     assert seed["solution"] not in text
     assert "Explain your reasoning" not in text
+
+
+def test_seed_labelspace_is_used_instead_of_a_profile_specific_file():
+    profile = load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml")
+    messages = render_profile_messages(
+        profile,
+        seed_record(labelspace_description="SCENE-SPECIFIC-LABELSPACE"),
+        tool_interface="openrouter",
+    )
+
+    assert "SCENE-SPECIFIC-LABELSPACE" in rendered_text(messages)
+    assert profile.labelspace_path is None
 
 
 def test_native_pddl_seed_prompt_rendering_includes_pddl_context_only():

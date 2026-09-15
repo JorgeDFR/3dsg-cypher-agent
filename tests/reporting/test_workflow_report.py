@@ -4,6 +4,7 @@ from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     collect_workflow_report_data,
     render_record_detail,
+    render_scene_graph_tab,
     render_workflow_report,
     scene_template_sample_text,
     validation_example_rows,
@@ -701,6 +702,23 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "Teacher Trace JSONL" not in html
     assert "Accepted Traces" not in html
     assert "Rejected Traces" not in html
+
+
+def test_scene_graph_tab_renders_a_selector_for_multiple_scenes():
+    html = render_scene_graph_tab(
+        {
+            "scene_graphs": {
+                "office": {"summary": {}, "values": {}, "raw": {}},
+                "spot": {"summary": {}, "values": {}, "raw": {}},
+            }
+        }
+    )
+
+    assert 'id="scene-graph-selector"' in html
+    assert '<option value="office">office</option>' in html
+    assert '<option value="spot">spot</option>' in html
+    assert 'data-scene-graph-value="office"' in html
+    assert 'data-scene-graph-value="spot" hidden' in html
 
 
 def test_workflow_report_renders_optional_quantization_comparison_tab(tmp_path):

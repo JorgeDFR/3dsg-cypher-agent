@@ -1,8 +1,10 @@
 import json
 from collections import Counter
+from types import SimpleNamespace
 
 import pytest
 
+import cypher_3dsg_agent_distillation.agents.agent_dataset as agent_dataset_module
 from cypher_3dsg_agent_distillation.agents.agent_dataset import (
     assert_no_split_leakage,
     cap_by_task_type,
@@ -14,6 +16,7 @@ from cypher_3dsg_agent_distillation.agents.agent_dataset import (
     read_student_trace_records,
     read_student_trace_records_with_counts,
     repair_rejected_invalid_answer_trace,
+    split_command,
     split_report_lines,
     split_report_payload,
 )
@@ -46,6 +49,26 @@ def make_record(uid: str, task_type: str, cypher: str) -> AgentTraceRecord:
                 {"role": "assistant", "content": "<answer>3</answer>"},
             ],
         )
+    )
+
+
+def test_scene_aware_split_option_reports_not_implemented(monkeypatch, capsys):
+    monkeypatch.setattr(
+        agent_dataset_module,
+        "load_data_config",
+        lambda *_args, **_kwargs: {"split": {"split_by_scene": True}},
+    )
+
+    split_command(
+        SimpleNamespace(
+            data_config="data.yaml",
+            dataset_version=None,
+            split_by_scene=False,
+        )
+    )
+
+    assert capsys.readouterr().out.strip() == (
+        "Scene-aware splitting is not implemented yet."
     )
 
 
@@ -172,6 +195,64 @@ def test_grouped_split_keeps_challenge_task_out_of_main_splits():
 
     assert [record.uid for record in challenge] == ["three"]
     assert "three" not in {record.uid for record in train + eval_records + test}
+
+
+def test_grouped_split_caps_challenge_records_and_keeps_the_remainder_for_training():
+    records = [
+        make_record(
+            f"hops-{index}",
+            "place_hops",
+            f"MATCH (n) RETURN {index} AS count",
+        )
+        for index in range(20)
+    ]
+
+    train, eval_records, test, challenge = grouped_split_records(
+        records,
+        train_size=0.8,
+        eval_size=0.1,
+        test_size=0.1,
+        seed=7,
+        challenge_task_types={"place_hops"},
+        challenge_questions_per_task_type=10,
+    )
+
+    assert len(challenge) == 10
+    assert len(train + eval_records + test) == 10
+    assert {record.uid for record in challenge}.isdisjoint(
+        record.uid for record in train + eval_records + test
+    )
+
+
+def test_grouped_split_applies_training_scene_interleave_ratio():
+    records = [
+        make_record(
+            f"{scene_id}-{index}",
+            "count",
+            f"MATCH (n) RETURN {scene_index * 10 + index} AS count",
+        ).model_copy(update={"scene_id": scene_id})
+        for scene_index, scene_id in enumerate(("scene-1", "scene-2", "scene-3"))
+        for index in range(4)
+    ]
+
+    train, eval_records, test, challenge = grouped_split_records(
+        records,
+        train_size=1.0,
+        eval_size=0.0,
+        test_size=0.0,
+        seed=3,
+        train_scene_interleave_ratio=1.0,
+        scene_order=["scene-1", "scene-2", "scene-3"],
+    )
+
+    assert [record.scene_id for record in train] == [
+        "scene-1",
+        "scene-2",
+        "scene-3",
+    ] * 4
+    assert not eval_records
+    assert not test
+    assert not challenge
 
 
 def test_grouped_split_rejects_split_sizes_that_do_not_sum_to_one():
@@ -588,6 +669,8 @@ def test_split_report_payload_lists_optimized_questions():
 
     assert report["metadata"]["optimize_student_traces"] is True
     assert report["splits"]["train"]["optimized_questions"] == 1
+    assert report["splits"]["train"]["scene_counts"] == {"scene": 1}
+    assert report["splits"]["train"]["scene_runs"] == 1
     assert report["optimized_questions"] == [
         {
             "uid": "optimized",

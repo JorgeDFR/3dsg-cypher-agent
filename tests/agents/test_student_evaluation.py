@@ -31,6 +31,7 @@ from cypher_3dsg_agent_distillation.agents.student_evaluation import (
     configure_neo4j_notification_output,
     default_adapter_dir,
     evaluate_end_to_end_record,
+    evaluate_raw_generation,
     final_answer_prompt_messages,
     generation_debug_report,
     initial_prompt_messages,
@@ -45,6 +46,7 @@ from cypher_3dsg_agent_distillation.agents.student_evaluation import (
 from cypher_3dsg_agent_distillation.agents.student_model import (
     load_student_model_and_tokenizer,
 )
+from cypher_3dsg_agent_distillation.core.io import write_jsonl
 
 
 def raw_generation_record():
@@ -244,6 +246,54 @@ class FakeGenerationRuntime:
 
     def generate(self, messages, **kwargs):
         return self._generate(None, None, messages, **kwargs)
+
+
+class MinimalRawGenerationRuntime:
+    def generate(self, _messages, **_kwargs):
+        return generated_result("<answer><O1></answer>")
+
+    def release_memory(self):
+        pass
+
+    def generation_config(self, **_kwargs):
+        return {}
+
+    def metadata(self):
+        return {}
+
+
+def test_raw_generation_groups_records_and_reloads_each_scene_once(tmp_path):
+    split_path = tmp_path / "test.jsonl"
+    records = []
+    for index, scene_id in enumerate(("scene-1", "scene-2", "scene-1", "scene-2")):
+        record = raw_generation_record()
+        record.update({"uid": f"trace-{index}", "scene_id": scene_id})
+        records.append(record)
+    write_jsonl(records, split_path)
+    loaded_scenes = []
+
+    result = evaluate_raw_generation(
+        data_config={
+            "splits": {"test": str(split_path)},
+            "scenes": [
+                {"scene_id": "scene-1", "scene_path": "one.json"},
+                {"scene_id": "scene-2", "scene_path": "two.json"},
+            ],
+        },
+        split="test",
+        runtime=MinimalRawGenerationRuntime(),
+        max_new_tokens=32,
+        limit=None,
+        validator=object(),
+        tool_call_skip_reason="tool validation skipped for test",
+        policy=None,
+        show_progress=False,
+        enable_thinking=False,
+        scene_loader=lambda scene: loaded_scenes.append(scene["scene_id"]),
+    )
+
+    assert loaded_scenes == ["scene-1", "scene-2"]
+    assert result["scene_database_reloads"] == 2
 
 
 def test_default_adapter_dir_uses_training_output_dir():

@@ -45,6 +45,13 @@ Each `configs/student_*.yaml` file has four main sections:
 `run_cypher_query` JSON schema once through its chat template; the schema is not
 duplicated in each stored trace message.
 
+The training example order is controlled by
+`split.train_scene_interleave_ratio` in `configs/data.yaml`. A value of `0`
+keeps each scene in one contiguous block, `1` cycles through scenes one example
+at a time, and intermediate values use progressively smaller scene chunks. The
+trainer deliberately uses a sequential sampler so this prepared order is not
+randomized again at training time.
+
 ## Inspect the rendered dataset
 
 Before a long run, inspect the exact text, tokenization, and supervised spans

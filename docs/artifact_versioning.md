@@ -7,8 +7,9 @@ readable UTC timestamps such as `2026-09-08-T-12-05-47-Z`.
 ## Version hierarchy
 
 ```text
-data/datasets/{scene_id}/{dataset_version}/
-|-- ... dataset preparation artifacts
+data/datasets/{dataset_id}/{dataset_version}/
+|-- scenes/{scene_id}/scene_template_values.yaml
+|-- ... dataset-level questions, seeds, and splits
 |-- traces/{teacher_name}/{teacher_run}/
 |   |-- accepted.json
 |   |-- rejected.json
@@ -33,8 +34,9 @@ selector is available.
 | Teacher trace run | Generation creates a new run; splitting uses the active run | `--teacher`, `--teacher-run` |
 | LoRA model | Training creates a new version; evaluation/export use latest completed | `--model-version` |
 
-The source 3DSG file is not inferred from `scene_id`. `scene_path` in the data
-configuration always identifies the input scene.
+The source 3DSG files are not inferred from their identifiers. Each item in the
+data configuration's `scenes` list explicitly pairs `scene_id` with
+`scene_path`; `dataset_id` identifies their combined artifact family.
 
 ## Inspect and select versions
 
@@ -69,7 +71,7 @@ interactive session. Non-interactive jobs must pass
 Dataset and model reports remain isolated:
 
 ```text
-data/datasets/{scene_id}/{dataset_version}/reports/
+data/datasets/{dataset_id}/{dataset_version}/reports/
 |-- dataset/
 `-- models/{model_family}/
     |-- baseline/

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import tempfile
 from collections import Counter, deque
 from pathlib import Path
 from typing import Any
@@ -89,14 +91,43 @@ class NoAliasDumper(yaml.SafeDumper):
 
 
 def load_graph(scene_path: str | Path) -> spark_dsg.DynamicSceneGraph:
-    return spark_dsg.DynamicSceneGraph.load(str(scene_path))
+    try:
+        return spark_dsg.DynamicSceneGraph.load(str(scene_path))
+    except RuntimeError as exc:
+        # spark-dsg 1.1 renamed this serialized attribute type. Accept graphs
+        # emitted with the short-lived old name without modifying the source.
+        source = Path(scene_path)
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        changed = False
+        for node in payload.get("nodes") or []:
+            attributes = node.get("attributes") or {}
+            if attributes.get("type") == "TravNodeAttributes":
+                attributes["type"] = "TraversabilityNodeAttributes"
+                changed = True
+        if not changed:
+            raise exc
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            return spark_dsg.DynamicSceneGraph.load(handle.name)
 
 
 def node_symbol(node_id: Any) -> str:
     if hasattr(node_id, "str"):
-        return node_id.str(True)
+        symbol = node_id.str(True)
+        # Older traversability graphs use ``t`` for the nodes exposed as the
+        # MeshPlace layer by this project's Neo4j/PDDL interface.
+        return f"P{symbol[1:]}" if symbol.startswith("t") else symbol
     raw_id = int(node_id)
     prefix = chr(raw_id >> 56)
+    if prefix == "t":
+        # Older traversability graphs used ``t`` for what is represented by
+        # the MeshPlace layer in the Neo4j/PDDL interface.
+        prefix = "P"
     return f"{prefix}{raw_id & LOCAL_ID_MASK}"
 
 
@@ -127,6 +158,50 @@ def metadata_labelspace(graph: spark_dsg.DynamicSceneGraph, label: str) -> dict[
         if key in labelspaces:
             return {int(label_id): name for label_id, name in labelspaces[key]}
     return {}
+
+
+def scene_labelspaces(scene_path: str | Path) -> dict[str, list[str]]:
+    """Return the semantic label lists embedded in one scene graph.
+
+    Some producers omit metadata labelspaces. In that case, fall back to the
+    semantic classes actually used by nodes in the layer.
+    """
+    graph = load_graph(scene_path)
+    by_label = nodes_by_label(graph)
+    result: dict[str, list[str]] = {}
+    for label in ("Object", "MeshPlace", "Room"):
+        embedded = metadata_labelspace(graph, label)
+        if embedded:
+            labels = [str(name) for _key, name in sorted(embedded.items()) if name]
+        else:
+            labels = sorted(
+                {
+                    class_name
+                    for node in by_label.get(label, [])
+                    if (class_name := semantic_class(graph, node, label))
+                }
+            )
+        result[label] = list(dict.fromkeys(labels))
+    return result
+
+
+def labelspace_description(scene_path: str | Path) -> str:
+    labelspaces = scene_labelspaces(scene_path)
+    sections = [
+        "<Labelspace Description>",
+        "  These are the labels available in the current scene graph. Synonyms "
+        "should be mapped to a label in the list when possible.",
+    ]
+    for label, tag in (
+        ("Object", "object_labels"),
+        ("MeshPlace", "mesh_places_labels"),
+        ("Room", "room_labels"),
+    ):
+        sections.append(f"  <{tag}>")
+        sections.extend(f"    {value}" for value in labelspaces[label])
+        sections.append(f"  </{tag}>")
+    sections.append("</Labelspace Description>")
+    return "\n".join(sections)
 
 
 def semantic_class(
@@ -245,12 +320,12 @@ def select_balanced_cases(
     non_empty: list[dict[str, Any]],
     empty: list[dict[str, Any]],
     limit: int,
-    non_empty_ratio: float,
+    empty_ratio: float,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
-    target_non_empty = min(len(non_empty), round(limit * non_empty_ratio))
-    target_empty = min(len(empty), limit - target_non_empty)
+    target_empty = min(len(empty), round(limit * empty_ratio))
+    target_non_empty = min(len(non_empty), limit - target_empty)
 
     selected = non_empty[:target_non_empty] + empty[:target_empty]
     remaining = limit - len(selected)
@@ -266,10 +341,10 @@ def mix_invalid_cases(
     valid: list[dict[str, Any]],
     invalid: list[dict[str, Any]],
     limit: int,
-    non_empty_ratio: float,
+    empty_ratio: float,
 ) -> list[dict[str, Any]]:
     """Reserve the configured empty-answer share for invalid-input cases."""
-    return select_balanced_cases(valid, invalid, limit, non_empty_ratio)
+    return select_balanced_cases(valid, invalid, limit, empty_ratio)
 
 
 def interleave_case_groups(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -416,7 +491,7 @@ def scene_values(
     max_nearest_object_cases: int = 50,
     max_mesh_place_hop_cases: int = 50,
     max_place_hop_cases: int = 50,
-    non_empty_ratio: float = 0.9,
+    empty_ratio: float = 0.1,
     max_object_class_solution_size: int = 10,
     max_bbox_solution_size: int = 20,
     mesh_place_hop_counts: tuple[int, ...] = HOP_COUNTS,
@@ -532,13 +607,17 @@ def scene_values(
     valid_place_object_cases = build_place_object_cases(
         index=index,
         limit=max_place_object_cases,
-        non_empty_ratio=1.0,
+        empty_ratio=0.0,
+    )
+    valid_object_parent_cases = build_object_parent_cases(
+        index=index,
+        limit=max_place_object_cases,
     )
     valid_radius_cases = build_object_radius_cases(
         index=index,
         object_classes=object_classes,
         limit=max_radius_cases,
-        non_empty_ratio=1.0,
+        empty_ratio=0.0,
     )
     valid_nearest_mesh_cases = build_nearest_object_mesh_cases(
         object_classes=object_classes,
@@ -570,6 +649,17 @@ def scene_values(
     )
     case_points = sample_points(object_points or all_points, max(max_points, 1))
     fallback_point = case_points[0] if case_points else {"x": 0.0, "y": 0.0, "z": 0.0}
+    invalid_container_cases = []
+    if by_label["Place"]:
+        invalid_container_cases.extend(
+            {"place": value, "place_label": "Place"}
+            for value in invalid_place_symbols
+        )
+    if by_label["MeshPlace"]:
+        invalid_container_cases.extend(
+            {"place": value, "place_label": "MeshPlace"}
+            for value in invalid_mesh_place_symbols
+        )
 
     return {
         "invalid_values": invalid_values,
@@ -582,6 +672,12 @@ def scene_values(
         "room_symbols": [*room_symbols, *invalid_room_symbols],
         "place_symbols": [*place_symbols, *invalid_place_symbols],
         "mesh_place_symbols": [*mesh_place_symbols, *invalid_mesh_place_symbols],
+        "place_or_mesh_place_symbols": [
+            *place_symbols,
+            *mesh_place_symbols,
+            *invalid_place_symbols,
+            *invalid_mesh_place_symbols,
+        ],
         "building_symbols": [*building_symbols, *invalid_building_symbols],
         "top_class_limits": list(range(1, len(object_class_counts) + 1)),
         "radii": [2, 5, 10],
@@ -599,13 +695,30 @@ def scene_values(
                 for value in invalid_object_symbols
             ],
             max_room_containing_object_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
         "place_object_cases": mix_invalid_cases(
             valid_place_object_cases,
-            [{"place": value} for value in invalid_place_symbols],
+            invalid_container_cases,
             max_place_object_cases,
-            non_empty_ratio,
+            empty_ratio,
+        ),
+        "object_parent_cases": mix_invalid_cases(
+            valid_object_parent_cases,
+            [
+                {
+                    "object": value,
+                    "place": "",
+                    "place_label": (
+                        "Place"
+                        if by_label["Place"]
+                        else "MeshPlace"
+                    ),
+                }
+                for value in invalid_object_symbols
+            ],
+            max_place_object_cases,
+            empty_ratio,
         ),
         "object_radius_cases": mix_invalid_cases(
             valid_radius_cases,
@@ -614,7 +727,7 @@ def scene_values(
                 for value in invalid_object_classes
             ],
             max_radius_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
         "nearest_object_mesh_cases": mix_invalid_cases(
             valid_nearest_mesh_cases,
@@ -625,7 +738,7 @@ def scene_values(
                 invalid_mesh_place_symbols,
             ),
             max_nearest_mesh_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
         "nearest_object_cases": mix_invalid_cases(
             valid_nearest_object_cases,
@@ -636,7 +749,7 @@ def scene_values(
                 invalid_object_classes,
             ),
             max_nearest_object_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
         "mesh_place_hop_cases": mix_invalid_cases(
             valid_mesh_hop_cases,
@@ -645,7 +758,7 @@ def scene_values(
                 for value in invalid_mesh_place_symbols
             ],
             max_mesh_place_hop_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
         "place_hop_cases": mix_invalid_cases(
             valid_place_hop_cases,
@@ -654,7 +767,7 @@ def scene_values(
                 for value in invalid_place_symbols
             ],
             max_place_hop_cases,
-            non_empty_ratio,
+            empty_ratio,
         ),
     }
 
@@ -778,7 +891,7 @@ class SceneIndex:
         place_ids = [
             parent
             for parent in obj.parents()
-            if self.node_labels_by_id.get(int(parent)) == "Place"
+            if self.node_labels_by_id.get(int(parent)) in {"Place", "MeshPlace"}
         ]
         nodes = [self.graph.get_node(node_id) for node_id in place_ids]
         return sorted(nodes, key=lambda node: symbol_sort_key(node_symbol(node.id)))
@@ -827,6 +940,97 @@ class SceneIndex:
                 found.add(node_symbol(neighbor.id))
                 queue.append((neighbor, depth + 1))
         return sorted(found, key=symbol_sort_key)
+
+    def adjacent_symbols(self, symbol: str, labels: set[str]) -> list[str]:
+        node = self.nodes_by_symbol.get(symbol)
+        if node is None:
+            return []
+        return sorted(
+            {
+                node_symbol(self.graph.get_node(neighbor_id).id)
+                for neighbor_id in node.siblings()
+                if self.node_labels_by_id.get(int(neighbor_id)) in labels
+            },
+            key=symbol_sort_key,
+        )
+
+    def nearest_symbol(
+        self,
+        source_symbol: str,
+        candidates: list[spark_dsg.SceneGraphNode],
+        *,
+        farthest: bool = False,
+    ) -> str | None:
+        source_point = self.points_by_symbol.get(source_symbol)
+        ranked = []
+        for node in candidates:
+            symbol = node_symbol(node.id)
+            if symbol == source_symbol:
+                continue
+            node_distance = distance(source_point, self.points_by_symbol.get(symbol))
+            if node_distance is not None:
+                ranked.append((node_distance, symbol))
+        if not ranked:
+            return None
+        ranked.sort(
+            key=lambda item: (
+                -item[0] if farthest else item[0],
+                symbol_sort_key(item[1]),
+            )
+        )
+        return ranked[0][1]
+
+    def extreme_degree_symbols(self, labels: set[str], *, most: bool) -> list[str]:
+        degrees = {
+            node_symbol(node.id): len(
+                self.adjacent_symbols(node_symbol(node.id), labels)
+            )
+            for label in labels
+            for node in self.nodes_with_label(label)
+        }
+        if not degrees:
+            return []
+        extreme = (max if most else min)(degrees.values())
+        return sorted(
+            [symbol for symbol, degree in degrees.items() if degree == extreme],
+            key=symbol_sort_key,
+        )
+
+    def closest_pairs(
+        self,
+        nodes: list[spark_dsg.SceneGraphNode],
+        *,
+        different_classes: bool = False,
+    ) -> list[str]:
+        candidates: list[tuple[float, str, str]] = []
+        for first_index, first in enumerate(nodes):
+            first_symbol = node_symbol(first.id)
+            for second in nodes[first_index + 1 :]:
+                second_symbol = node_symbol(second.id)
+                if (
+                    different_classes
+                    and self.classes_by_symbol.get(first_symbol)
+                    == self.classes_by_symbol.get(second_symbol)
+                ):
+                    continue
+                pair = sorted((first_symbol, second_symbol), key=symbol_sort_key)
+                first_point = self.points_by_symbol.get(pair[0])
+                second_point = self.points_by_symbol.get(pair[1])
+                if first_point is None or second_point is None:
+                    continue
+                squared_distance = sum(
+                    (first_point[axis] - second_point[axis]) ** 2
+                    for axis in ("x", "y", "z")
+                )
+                candidates.append((squared_distance, pair[0], pair[1]))
+        if not candidates:
+            return []
+        minimum = min(candidate[0] for candidate in candidates)
+        return sorted(
+            f"{first}|{second}"
+            for pair_distance, first, second in candidates
+            if pair_distance == minimum
+        )
 
     def solution_for(
         self,
@@ -944,6 +1148,19 @@ class SceneIndex:
                 }
             )
             return scalar_or_set(class_names)
+        if query_type == "object_total":
+            return len(self.nodes_with_label("Object"))
+        if query_type == "room_total":
+            return len(self.nodes_with_label("Room"))
+        if query_type == "combined_place_total":
+            return len(self.nodes_with_label("Place")) + len(
+                self.nodes_with_label("MeshPlace")
+            )
+        if query_type == "object_class_by_symbol":
+            return self.classes_by_symbol.get(str(template_value(variables, "object")))
+        if query_type == "object_center_by_symbol":
+            point = self.points_by_symbol.get(str(template_value(variables, "object")))
+            return point_string(point) if point is not None else None
         if query_type == "top_object_classes_by_count":
             limit = int(variables.get("limit", variables.get("case", {}).get("limit", 2)))
             return ranked_class_names(self.object_class_counts(), limit)
@@ -961,6 +1178,22 @@ class SceneIndex:
                 return set()
             symbols = [node_symbol(node.id) for node in self.contained_objects(room)]
             return scalar_or_set(symbols)
+        if query_type == "room_object_count":
+            room = self.nodes_by_symbol.get(str(template_value(variables, "room")))
+            return len(self.contained_objects(room)) if room is not None else 0
+        if query_type == "object_classes_in_room_symbol":
+            room = self.nodes_by_symbol.get(str(template_value(variables, "room")))
+            if room is None:
+                return set()
+            return scalar_or_set(
+                sorted(
+                    {
+                        self.classes_by_symbol[node_symbol(node.id)]
+                        for node in self.contained_objects(room)
+                        if self.classes_by_symbol.get(node_symbol(node.id)) is not None
+                    }
+                )
+            )
         if query_type == "objects_in_room_class":
             symbols = []
             for room in self.rooms_with_class(str(template_value(variables, "room_class"))):
@@ -972,10 +1205,27 @@ class SceneIndex:
                 for node in self.direct_place_objects(str(template_value(variables, "place")))
             ]
             return scalar_or_set(symbols)
+        if query_type == "place_object_count":
+            return len(
+                self.direct_place_objects(str(template_value(variables, "place")))
+            )
+        if query_type == "object_classes_in_place_symbol":
+            return scalar_or_set(
+                sorted(
+                    {
+                        self.classes_by_symbol[node_symbol(node.id)]
+                        for node in self.direct_place_objects(
+                            str(template_value(variables, "place"))
+                        )
+                        if self.classes_by_symbol.get(node_symbol(node.id)) is not None
+                    }
+                )
+            )
         if query_type == "object_place_lookup":
+            object_value = template_value(variables, "object")
             places = [
                 node_symbol(node.id)
-                for node in self.containing_places(str(template_value(variables, "object")))
+                for node in self.containing_places(str(object_value))
             ]
             return scalar_or_set(places)
         if query_type == "nearest_object_to_mesh_place":
@@ -1027,6 +1277,60 @@ class SceneIndex:
             if not sorted_candidates:
                 return set()
             return sorted_candidates[0]["object"]
+        if query_type in {
+            "nearest_object_any_class",
+            "farthest_object_from_object",
+            "nearest_object_different_class",
+        }:
+            source_symbol = str(template_value(variables, "object"))
+            source_class = self.classes_by_symbol.get(source_symbol)
+            candidates = self.objects_with_class()
+            if query_type == "nearest_object_different_class":
+                candidates = [
+                    node
+                    for node in candidates
+                    if self.classes_by_symbol.get(node_symbol(node.id)) != source_class
+                ]
+            return self.nearest_symbol(
+                source_symbol,
+                candidates,
+                farthest=query_type == "farthest_object_from_object",
+            )
+        if query_type == "nearest_place_to_object":
+            return self.nearest_symbol(
+                str(template_value(variables, "object")),
+                [
+                    *self.nodes_with_label("Place"),
+                    *self.nodes_with_label("MeshPlace"),
+                ],
+            )
+        if query_type == "nearest_room_to_object":
+            return self.nearest_symbol(
+                str(template_value(variables, "object")),
+                self.nodes_with_label("Room"),
+            )
+        if query_type == "objects_within_radius_of_object":
+            source_symbol = str(template_value(variables, "object"))
+            radius = float(template_value(variables, "radius"))
+            source_point = self.points_by_symbol.get(source_symbol)
+            symbols = []
+            for node in self.objects_with_class():
+                symbol = node_symbol(node.id)
+                if symbol == source_symbol:
+                    continue
+                node_distance = distance(source_point, self.points_by_symbol.get(symbol))
+                if node_distance is not None and node_distance < radius:
+                    symbols.append(symbol)
+            return scalar_or_set(sorted(symbols, key=symbol_sort_key))
+        if query_type == "closest_cross_class_object_pairs":
+            return scalar_or_set(
+                self.closest_pairs(
+                    self.objects_with_class(),
+                    different_classes=True,
+                )
+            )
+        if query_type == "closest_room_pairs":
+            return scalar_or_set(self.closest_pairs(self.nodes_with_label("Room")))
         if query_type == "objects_in_bounding_box":
             bbox = variables["bbox"]
             lower = bbox["lower"]
@@ -1058,6 +1362,32 @@ class SceneIndex:
                 if self.node_labels_by_id.get(int(neighbor_id)) == "Room"
             }
             return len(neighbor_ids)
+        if query_type == "adjacent_rooms":
+            return scalar_or_set(
+                self.adjacent_symbols(
+                    str(template_value(variables, "room")), {"Room"}
+                )
+            )
+        if query_type == "adjacent_places":
+            return scalar_or_set(
+                self.adjacent_symbols(
+                    str(template_value(variables, "place")),
+                    {"Place", "MeshPlace"},
+                )
+            )
+        if query_type in {"most_connected_rooms", "least_connected_rooms"}:
+            return scalar_or_set(
+                self.extreme_degree_symbols(
+                    {"Room"}, most=query_type == "most_connected_rooms"
+                )
+            )
+        if query_type in {"most_connected_places", "least_connected_places"}:
+            return scalar_or_set(
+                self.extreme_degree_symbols(
+                    {"Place", "MeshPlace"},
+                    most=query_type == "most_connected_places",
+                )
+            )
         if query_type == "place_hops":
             return scalar_or_set(
                 self.hop_symbols(
@@ -1084,20 +1414,38 @@ class SceneIndex:
 def build_place_object_cases(
     index: SceneIndex,
     limit: int,
-    non_empty_ratio: float,
+    empty_ratio: float,
 ) -> list[dict[str, Any]]:
     non_empty = []
     empty = []
-    for node in index.nodes_with_label("Place"):
-        symbol = node_symbol(node.id)
-        case = {"place": symbol}
-        if index.direct_place_objects(symbol):
-            non_empty.append(case)
-        else:
-            empty.append(case)
+    for label in ("Place", "MeshPlace"):
+        for node in index.nodes_with_label(label):
+            symbol = node_symbol(node.id)
+            case = {"place": symbol, "place_label": label}
+            if index.direct_place_objects(symbol):
+                non_empty.append(case)
+            else:
+                empty.append(case)
     non_empty = sorted(non_empty, key=lambda case: symbol_sort_key(case["place"]))
     empty = sorted(empty, key=lambda case: symbol_sort_key(case["place"]))
-    return select_balanced_cases(non_empty, empty, limit, non_empty_ratio)
+    return select_balanced_cases(non_empty, empty, limit, empty_ratio)
+
+
+def build_object_parent_cases(index: SceneIndex, limit: int) -> list[dict[str, str]]:
+    cases: list[dict[str, str]] = []
+    for obj in index.objects_with_class():
+        object_symbol = node_symbol(obj.id)
+        for parent in index.containing_places(object_symbol):
+            parent_id = node_id_value(parent)
+            cases.append(
+                {
+                    "object": object_symbol,
+                    "place": node_symbol(parent.id),
+                    "place_label": index.node_labels_by_id[parent_id],
+                }
+            )
+    cases.sort(key=lambda case: symbol_sort_key(case["object"]))
+    return cases[:limit]
 
 
 def build_room_containing_object_cases(
@@ -1186,7 +1534,7 @@ def build_object_radius_cases(
     index: SceneIndex,
     object_classes: list[str],
     limit: int,
-    non_empty_ratio: float,
+    empty_ratio: float,
 ) -> list[dict[str, Any]]:
     object_nodes = index.objects_with_class()
     point_objects = [
@@ -1248,7 +1596,7 @@ def build_object_radius_cases(
         seen_empty.add(key)
         deduped_empty.append(case)
 
-    return select_balanced_cases(non_empty, deduped_empty, limit, non_empty_ratio)
+    return select_balanced_cases(non_empty, deduped_empty, limit, empty_ratio)
 
 
 def build_nearest_object_mesh_cases(
@@ -1381,6 +1729,8 @@ def build_template_config(
     return {
         "scene_id": scene_id,
         "scene_summary": scene_summary(scene_path),
+        "labelspaces": scene_labelspaces(scene_path),
+        "labelspace_description": labelspace_description(scene_path),
         "values": scene_values(
             scene_path=scene_path,
             max_classes=limits.max_classes,
@@ -1396,7 +1746,7 @@ def build_template_config(
             max_nearest_object_cases=limits.max_nearest_object_cases,
             max_mesh_place_hop_cases=limits.max_mesh_place_hop_cases,
             max_place_hop_cases=limits.max_place_hop_cases,
-            non_empty_ratio=limits.non_empty_ratio,
+            empty_ratio=limits.empty_ratio,
             max_object_class_solution_size=limits.max_object_class_solution_size,
             max_bbox_solution_size=limits.max_bbox_solution_size,
             mesh_place_hop_counts=tuple(limits.mesh_place_hop_counts),
@@ -1437,49 +1787,65 @@ def command(args: argparse.Namespace) -> None:
         {
             "schema_version": 1,
             "artifact_type": "dataset",
-            "scene_id": data_config["scene_id"],
+            "dataset_id": data_config["dataset_id"],
             "version": data_config["dataset_version"],
             "created_at": created_at,
             "updated_at": created_at,
             "status": "building",
-            "source_scene": file_fingerprint(
-                data_config["scene_path"], relative_to=PROJECT_ROOT
-            ),
+            "source_scenes": [
+                {
+                    "scene_id": scene["scene_id"],
+                    **file_fingerprint(scene["scene_path"], relative_to=PROJECT_ROOT),
+                }
+                for scene in data_config["scenes"]
+            ],
             "configs": referenced_configs,
             "code": git_provenance(PROJECT_ROOT),
             "stages": {},
         },
         data_config["metadata_path"],
     )
-    config = build_template_config(
-        scene_path=data_config["scene_path"],
-        scene_id=data_config["scene_id"],
-        limits=args,
-    )
-    output = ensure_parent(data_config["scene_template_values_path"])
-    with output.open("w", encoding="utf-8") as handle:
-        yaml.dump(
-            config,
-            handle,
-            Dumper=NoAliasDumper,
-            sort_keys=False,
-            allow_unicode=True,
+    configs: list[dict[str, Any]] = []
+    outputs: dict[str, Path] = {}
+    for scene in data_config["scenes"]:
+        config = build_template_config(
+            scene_path=scene["scene_path"],
+            scene_id=scene["scene_id"],
+            limits=args,
         )
+        output = ensure_parent(scene["scene_template_values_path"])
+        with output.open("w", encoding="utf-8") as handle:
+            yaml.dump(
+                config,
+                handle,
+                Dumper=NoAliasDumper,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        configs.append(config)
+        outputs[f"scene_template_values:{scene['scene_id']}"] = output
     record_stage(
         data_config["metadata_path"],
         "extract_3dsg_values",
         arguments=serializable_arguments(args),
-        outputs={"scene_template_values": output},
+        outputs=outputs,
         project_root=PROJECT_ROOT,
     )
     print_summary(
         "Scene template values extracted",
         [
-            ("Scene", config["scene_id"]),
+            ("Dataset", data_config["dataset_id"]),
+            ("Scenes", ", ".join(config["scene_id"] for config in configs)),
             ("Dataset version", data_config["dataset_version"]),
-            ("Nodes", sum(config["scene_summary"]["nodes"].values())),
-            ("Edges", config["scene_summary"]["edges"]),
-            ("Output", output),
+            (
+                "Nodes",
+                sum(
+                    sum(config["scene_summary"]["nodes"].values())
+                    for config in configs
+                ),
+            ),
+            ("Edges", sum(config["scene_summary"]["edges"] for config in configs)),
+            ("Outputs", len(outputs)),
         ],
     )
 
@@ -1539,7 +1905,7 @@ def main() -> None:
         default=DEFAULT_MAX_HOP_SOLUTION_SIZE,
         help="Discard place_hops cases with this many answers or more (default: 50).",
     )
-    parser.add_argument("--non-empty-ratio", type=float, default=0.9)
+    parser.add_argument("--empty-ratio", type=float, default=0.1)
     parser.add_argument("--max-object-class-solution-size", type=int, default=10)
     parser.add_argument("--max-bbox-solution-size", type=int, default=20)
     args = parser.parse_args()

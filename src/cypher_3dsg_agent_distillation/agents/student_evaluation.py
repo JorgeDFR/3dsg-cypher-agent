@@ -44,6 +44,9 @@ from cypher_3dsg_agent_distillation.core.config import (
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
 )
+from cypher_3dsg_agent_distillation.core.scene_ordering import (
+    order_records_by_scene_interleave,
+)
 from cypher_3dsg_agent_distillation.core.versioning import (
     confirm_dataset_lineage,
     read_metadata,
@@ -1334,6 +1337,7 @@ def evaluate_raw_generation(
     max_tool_rows: int = DEFAULT_E2E_MAX_TOOL_ROWS,
     max_tool_response_chars: int = DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS,
     max_query_chars: int = DEFAULT_E2E_MAX_QUERY_CHARS,
+    scene_loader=None,
 ) -> dict[str, Any]:
     from cypher_3dsg_agent_distillation.agents.agent_prompts import run_cypher_tool_schema
     from cypher_3dsg_agent_distillation.core.io import read_jsonl
@@ -1352,8 +1356,20 @@ def evaluate_raw_generation(
         raise ValueError("validator is required when tool-call evaluation is not skipped.")
 
     records = read_jsonl(data_config["splits"][split])
+    scene_order = [str(scene["scene_id"]) for scene in data_config.get("scenes", [])]
+    records = order_records_by_scene_interleave(
+        records,
+        ratio=0.0,
+        seed=0,
+        scene_order=scene_order,
+    )
     if limit is not None:
         records = records[:limit]
+    scenes_by_id = {
+        str(scene["scene_id"]): scene for scene in data_config.get("scenes", [])
+    }
+    current_scene_id: str | None = None
+    scene_database_reloads = 0
     tool_schemas = [run_cypher_tool_schema()]
 
     evaluated_records = []
@@ -1372,6 +1388,17 @@ def evaluate_raw_generation(
             )
 
         for record in records:
+            record_scene_id = str(record.get("scene_id") or "")
+            if validator is not None and scene_loader is not None:
+                if record_scene_id not in scenes_by_id:
+                    raise ValueError(
+                        f"Record {record.get('uid')} references unknown scene "
+                        f"`{record_scene_id}`."
+                    )
+                if record_scene_id != current_scene_id:
+                    scene_loader(scenes_by_id[record_scene_id])
+                    current_scene_id = record_scene_id
+                    scene_database_reloads += 1
             final_messages = final_answer_prompt_messages(record)
             tool_messages = initial_prompt_messages(record)
             if progress is not None:
@@ -1539,6 +1566,7 @@ def evaluate_raw_generation(
         "records": evaluated_records,
         "generation_config": runtime.generation_config(max_new_tokens=max_new_tokens),
         "runtime": runtime.metadata(),
+        "scene_database_reloads": scene_database_reloads,
     }
 
 
@@ -1569,7 +1597,8 @@ def build_report(
         "data_config": data_config_path,
         "dataset_version": data_config.get("dataset_version"),
         "evaluated_on_dataset": {
-            "scene_id": data_config.get("scene_id"),
+            "dataset_id": data_config.get("dataset_id"),
+            "scene_ids": [scene["scene_id"] for scene in data_config.get("scenes", [])],
             "version": data_config.get("dataset_version"),
             "teacher_name": data_config.get("teacher_name"),
             "teacher_run": data_config.get("teacher_run"),
@@ -2002,6 +2031,25 @@ def command(args: argparse.Namespace) -> None:
             adapter_dir=adapter_dir,
         )
         validator, neo4j_metadata = connect_raw_generation_validator(args)
+        scene_loader = None
+        if validator is not None:
+            from cypher_3dsg_agent_distillation.graph.load_neo4j import load_scene
+            from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
+                neo4j_connection_settings,
+            )
+
+            connection = neo4j_connection_settings(args)
+
+            def scene_loader(scene):
+                return load_scene(
+                    scene_path=scene["scene_path"],
+                    uri=connection["uri_candidates"],
+                    username=connection["username"],
+                    password=connection["password"],
+                    database=connection["database"],
+                    clear=True,
+                )
+
         try:
             raw_generation = evaluate_raw_generation(
                 data_config=data_config,
@@ -2018,6 +2066,7 @@ def command(args: argparse.Namespace) -> None:
                 max_tool_rows=args.e2e_max_tool_rows,
                 max_tool_response_chars=args.e2e_max_tool_response_chars,
                 max_query_chars=args.e2e_max_query_chars,
+                scene_loader=scene_loader,
             )
         finally:
             if validator is not None:
@@ -2041,6 +2090,9 @@ def command(args: argparse.Namespace) -> None:
                 "generation_config": raw_generation["generation_config"],
                 "neo4j": neo4j_metadata,
                 "show_db_notifications": show_db_notifications,
+                "scene_database_reloads": raw_generation[
+                    "scene_database_reloads"
+                ],
             }
         }
 

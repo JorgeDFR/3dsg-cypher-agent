@@ -7,9 +7,13 @@ import cypher_3dsg_agent_distillation.cypher.templates as templates_module
 from cypher_3dsg_agent_distillation.core.config import load_yaml
 from cypher_3dsg_agent_distillation.cypher.templates import (
     SolutionBlock,
+    apply_dataset_question_targets,
+    dataset_question_target,
+    evenly_select_scene_records,
     format_solution_field,
     generate_records,
     normalize_solution_formats,
+    stable_uid,
 )
 
 
@@ -36,6 +40,172 @@ def test_generate_records_expands_nested_values():
     assert records[0]["gold_cypher"].strip() == 'MATCH (o:Object {class: "trash"}) RETURN 1'
     assert records[0]["scene_id"] == "scene_a"
     assert records[0]["solution_formats"] == ["int"]
+
+
+def test_generation_skips_templates_for_missing_scene_layers():
+    records = generate_records(
+        {
+            "scene_id": "spot",
+            "scene_summary": {"nodes": {"Object": 3, "MeshPlace": 5}},
+            "values": {"symbols": ["O1"]},
+            "templates": [
+                {
+                    "query_type": "room_lookup",
+                    "variables": {"symbol": "symbols"},
+                    "cypher": "MATCH (r:Room) RETURN r",
+                    "questions": ["Find the room for {symbol}."],
+                },
+                {
+                    "query_type": "object_lookup",
+                    "variables": {"symbol": "symbols"},
+                    "cypher": "MATCH (o:Object) RETURN o",
+                    "questions": ["Find {symbol}."],
+                },
+            ],
+        }
+    )
+
+    assert [record["query_type"] for record in records] == ["object_lookup"]
+
+
+def test_any_layer_requirement_does_not_require_every_label_mentioned_in_cypher():
+    records = generate_records(
+        {
+            "scene_id": "spot",
+            "scene_summary": {"nodes": {"Object": 3, "MeshPlace": 5}},
+            "values": {"cases": [{"object": "O1"}]},
+            "templates": [
+                {
+                    "query_type": "parent_lookup",
+                    "requires_any_layers": [["Place", "MeshPlace"]],
+                    "variables": {"case": "cases"},
+                    "cypher": (
+                        "MATCH (p)-[:CONTAINS]->(o:Object {nodeSymbol: "
+                        "\"{case.object}\"}) WHERE p:Place OR p:MeshPlace "
+                        "RETURN p.nodeSymbol AS place"
+                    ),
+                    "questions": ["Where is {case.object}?"],
+                }
+            ],
+        }
+    )
+
+    assert len(records) == 1
+
+
+def test_generation_carries_scene_labelspace_and_scene_specific_uid():
+    config = {
+        "scene_id": "scene_a",
+        "labelspace_description": "scene-specific labels",
+        "values": {},
+        "templates": [
+            {
+                "query_type": "inventory",
+                "cypher": "MATCH (o:Object) RETURN o",
+                "questions": ["List objects."],
+            }
+        ],
+    }
+
+    record = generate_records(config)[0]
+
+    assert record["labelspace_description"] == "scene-specific labels"
+    assert stable_uid("inventory", "List objects.", "MATCH", scene_id="a") != (
+        stable_uid("inventory", "List objects.", "MATCH", scene_id="b")
+    )
+
+
+def test_dataset_question_target_is_not_multiplied_by_scene_count():
+    template = {
+        "query_type": "lookup",
+        "target_questions": 5,
+        "variables": {"value": "values"},
+    }
+
+    assert dataset_question_target(template, None) == 5
+    assert dataset_question_target(template, 3) == 3
+
+
+def test_scene_record_selection_is_even_and_redistributes_unused_capacity():
+    records = [
+        {"uid": f"a{index}", "scene_id": "a"}
+        for index in range(4)
+    ] + [
+        {"uid": f"b{index}", "scene_id": "b"}
+        for index in range(4)
+    ]
+
+    balanced = evenly_select_scene_records(records, target=5, scene_ids=["a", "b"])
+    constrained = evenly_select_scene_records(
+        [records[0], *records[4:]],
+        target=5,
+        scene_ids=["a", "b"],
+    )
+
+    assert Counter(record["scene_id"] for record in balanced) == {"a": 3, "b": 2}
+    assert Counter(record["scene_id"] for record in constrained) == {"a": 1, "b": 4}
+
+
+def test_scene_record_selection_preserves_dataset_empty_ratio():
+    records = [
+        {
+            "uid": f"{scene}-{kind}-{index}",
+            "scene_id": scene,
+            "solution": "O1" if kind == "full" else "<>",
+            "tags": [],
+        }
+        for scene, kinds in (
+            ("office", (("full", 8), ("empty", 2))),
+            ("spot", (("full", 4), ("empty", 6))),
+        )
+        for kind, count in kinds
+        for index in range(count)
+    ]
+
+    selected = evenly_select_scene_records(
+        records,
+        target=10,
+        scene_ids=["office", "spot"],
+        empty_ratio=0.2,
+    )
+
+    assert Counter(record["scene_id"] for record in selected) == {
+        "office": 5,
+        "spot": 5,
+    }
+    assert sum(record["solution"] != "<>" for record in selected) == 8
+
+
+def test_dataset_targets_preserve_scene_grouped_generation_order():
+    records = [
+        {
+            "uid": f"{scene}-{query_type}-{index}",
+            "scene_id": scene,
+            "query_type": query_type,
+        }
+        for scene in ("office", "spot")
+        for query_type, count in (("shared", 4), ("room_only", 3))
+        for index in range(count)
+        if not (scene == "spot" and query_type == "room_only")
+    ]
+
+    selected = apply_dataset_question_targets(
+        records,
+        targets={"shared": 4, "room_only": 3},
+        scene_ids=["office", "spot"],
+    )
+
+    shared_scene_counts = Counter(
+        record["scene_id"]
+        for record in selected
+        if record["query_type"] == "shared"
+    )
+    assert shared_scene_counts == {"office": 2, "spot": 2}
+    assert sum(record["query_type"] == "room_only" for record in selected) == 3
+    assert [record["scene_id"] for record in selected] == sorted(
+        (record["scene_id"] for record in selected),
+        key={"office": 0, "spot": 1}.get,
+    )
 
 
 def test_format_solution_field_uses_answer_notation():
@@ -81,6 +251,7 @@ def test_variable_sampling_uses_distinct_variables_before_wording_reuse():
     values = [f"value-{index}" for index in range(10)]
     records = generate_records(
         {
+            "sampling": {"empty_ratio": 0.0},
             "values": {"values": values},
             "templates": [
                 {
@@ -105,6 +276,7 @@ def test_variable_sampling_balances_explicit_sampling_groups():
     ]
     records = generate_records(
         {
+            "sampling": {"empty_ratio": 0.0},
             "values": {"cases": cases},
             "templates": [
                 {
@@ -145,7 +317,7 @@ def test_variable_template_warns_when_target_exceeds_variant_capacity():
     assert len(records) == 2
 
 
-def test_non_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
+def test_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
     class FakeSceneIndex:
         def __init__(self, _path):
             pass
@@ -158,7 +330,7 @@ def test_non_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
     records = generate_records(
         {"source_3dsg": "unused.json", "values": {"values": values}},
         question_templates_config={
-            "sampling": {"seed": 7, "non_empty_ratio": 0.9},
+            "sampling": {"seed": 7, "empty_ratio": 0.1},
             "templates": [
                 {
                     "query_type": "lookup",
@@ -176,7 +348,7 @@ def test_non_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
     assert sum(str(record["solution"]).strip() != "<>" for record in records) >= 9
 
 
-def test_invalid_inputs_use_empty_answers_with_template_non_empty_ratio(monkeypatch):
+def test_invalid_inputs_use_empty_answers_with_template_empty_ratio(monkeypatch):
     class FakeSceneIndex:
         def __init__(self, _path):
             pass
@@ -194,12 +366,12 @@ def test_invalid_inputs_use_empty_answers_with_template_non_empty_ratio(monkeypa
             },
         },
         question_templates_config={
-            "sampling": {"non_empty_ratio": 0.9},
+            "sampling": {"empty_ratio": 0.1},
             "templates": [
                 {
                     "query_type": "lookup",
                     "target_questions": 10,
-                    "non_empty_ratio": 0.8,
+                    "empty_ratio": 0.2,
                     "solution_formats": ["set[str]"],
                     "variables": {"object": "objects"},
                     "cypher": "RETURN '{object}' AS object",
@@ -234,7 +406,7 @@ def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch
             },
         },
         question_templates_config={
-            "sampling": {"non_empty_ratio": 0.7},
+            "sampling": {"empty_ratio": 0.3},
             "templates": [
                 {
                     "query_type": "pddl_visit_object_symbol",
@@ -286,7 +458,7 @@ def test_empty_sampling_prioritizes_distinct_variables(monkeypatch):
     records = generate_records(
         {"source_3dsg": "unused.json", "values": {"values": values}},
         question_templates_config={
-            "sampling": {"seed": 7, "non_empty_ratio": 0.5},
+            "sampling": {"seed": 7, "empty_ratio": 0.5},
             "templates": [
                 {
                     "query_type": "lookup",
@@ -456,6 +628,71 @@ def test_pddl_templates_have_multiple_distinct_instruction_variants():
         len(template["questions"]) == len(set(template["questions"]))
         for template in templates
     )
+
+
+def test_qa_templates_have_at_least_five_distinct_question_variants():
+    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+
+    assert all(len(template["questions"]) >= 5 for template in templates)
+    assert all(
+        len(template["questions"]) == len(set(template["questions"]))
+        for template in templates
+    )
+
+
+def test_qa_templates_return_only_fields_required_by_the_answer():
+    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    final_returns = {
+        template["query_type"]: [
+            line.strip()
+            for line in template["cypher"].splitlines()
+            if line.strip().startswith("RETURN ")
+        ][-1]
+        for template in templates
+        if template["query_type"] != "write_refusal"
+    }
+
+    assert final_returns == {
+        "object_class_inventory": "RETURN DISTINCT o.class AS class",
+        "object_class_centers": "RETURN o.center AS center",
+        "object_class_count": "RETURN count(o) AS count",
+        "top_object_classes_by_count": "RETURN class",
+        "objects_in_room_symbol": "RETURN o.nodeSymbol AS object",
+        "objects_in_place_symbol": "RETURN o.nodeSymbol AS object",
+        "object_place_lookup": "RETURN p.nodeSymbol AS place",
+        "nearest_object_to_mesh_place": "RETURN o.nodeSymbol AS object",
+        "object_radius_from_point": "RETURN o.nodeSymbol AS object",
+        "objects_in_bounding_box": "RETURN o.nodeSymbol AS object",
+        "mesh_place_hops": "RETURN DISTINCT mp.nodeSymbol AS meshPlace",
+        "room_adjacency_count": "RETURN count(DISTINCT neighbor) AS adjacent_rooms",
+        "nearest_object_to_object": "RETURN target.nodeSymbol AS object",
+        "place_hops": "RETURN DISTINCT p.nodeSymbol AS place",
+        "objects_in_room_class": "RETURN DISTINCT o.nodeSymbol AS object",
+        "object_total": "RETURN count(o) AS count",
+        "room_total": "RETURN count(r) AS count",
+        "combined_place_total": "RETURN count(p) AS count",
+        "object_class_by_symbol": "RETURN o.class AS class",
+        "object_center_by_symbol": "RETURN o.center AS center",
+        "room_object_count": "RETURN count(DISTINCT o) AS count",
+        "object_classes_in_room_symbol": "RETURN DISTINCT o.class AS class",
+        "adjacent_rooms": "RETURN DISTINCT neighbor.nodeSymbol AS room",
+        "most_connected_rooms": "RETURN row.symbol AS room",
+        "least_connected_rooms": "RETURN row.symbol AS room",
+        "nearest_object_any_class": "RETURN target.nodeSymbol AS object",
+        "farthest_object_from_object": "RETURN target.nodeSymbol AS object",
+        "nearest_object_different_class": "RETURN target.nodeSymbol AS object",
+        "objects_within_radius_of_object": "RETURN target.nodeSymbol AS object",
+    }
+
+
+def test_object_containment_queries_support_both_parent_layer_labels():
+    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    by_query_type = {template["query_type"]: template for template in templates}
+
+    for query_type in ("objects_in_place_symbol", "object_place_lookup"):
+        cypher = by_query_type[query_type]["cypher"]
+        assert "WHERE p:Place OR p:MeshPlace" in cypher
+        assert "{case.place_label}" not in cypher
 
 
 def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
@@ -665,6 +902,7 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
                 "object_symbols": ["O0", "O1", "O2"],
                 "object_classes": ["chair"],
                 "place_symbols": ["p4"],
+                "place_or_mesh_place_symbols": ["p4"],
                 "room_symbols": ["R1"],
             },
         },
@@ -693,6 +931,20 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
             "(and (visited-object O0) (not (holding O0)))"
         ),
     }
+
+
+def test_pddl_object_in_place_templates_accept_both_place_layers():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    by_query_type = {template["query_type"]: template for template in templates}
+
+    for query_type in ("pddl_move_object_to_place", "pddl_object_not_in_place"):
+        template = by_query_type[query_type]
+        assert template["variables"]["place"] == "place_or_mesh_place_symbols"
+        assert template["requires_any_layers"] == [["Place", "MeshPlace"]]
+        assert "WHERE p:Place OR p:MeshPlace" in template["cypher"]
+        assert template["grounding"]["fields"]["place"]["symbol_type"] == (
+            "PlaceOrMeshPlace"
+        )
 
 
 def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():

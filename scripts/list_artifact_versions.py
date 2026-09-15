@@ -7,6 +7,7 @@ import _bootstrap  # noqa: F401
 
 from cypher_3dsg_agent_distillation.core.config import (
     GENERATED_DATASETS_ROOT,
+    dataset_id_from_config,
     load_data_config,
     load_student_family_config,
     load_yaml,
@@ -43,7 +44,7 @@ def main() -> None:
     args = parser.parse_args()
 
     raw_data = load_yaml(args.data_config)
-    dataset_root = GENERATED_DATASETS_ROOT / str(raw_data["scene_id"])
+    dataset_root = GENERATED_DATASETS_ROOT / dataset_id_from_config(raw_data)
     print_versions("Dataset versions", dataset_root)
     try:
         data_config = load_data_config(

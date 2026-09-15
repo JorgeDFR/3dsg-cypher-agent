@@ -45,6 +45,19 @@ def test_static_checks_accept_valid_3dsg_query():
     assert issues == []
 
 
+def test_static_checks_accept_fields_from_unwound_projected_maps():
+    policy = schema_policy(load_yaml("configs/schema_3dsg.yaml"))
+    query = """
+    MATCH (r:Room)
+    WITH collect({symbol: r.nodeSymbol, degree: 2}) AS rows
+    UNWIND rows AS row
+    WHERE row.degree = 2
+    RETURN row.symbol AS room
+    """
+
+    assert static_checks(query, allow_writes=False, policy=policy) == []
+
+
 def test_generated_room_object_queries_pass_bounded_path_policy():
     policy = schema_policy(load_yaml("configs/schema_3dsg.yaml"))
     query_types = {

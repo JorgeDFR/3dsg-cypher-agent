@@ -45,6 +45,9 @@ from cypher_3dsg_agent_distillation.core.config import (
     with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
+from cypher_3dsg_agent_distillation.core.scene_ordering import (
+    order_records_by_scene_interleave,
+)
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
     config_record,
@@ -60,6 +63,7 @@ from cypher_3dsg_agent_distillation.cypher.evaluation import (
 )
 from cypher_3dsg_agent_distillation.cypher.pddl_goals import validate_grounding_rows
 from cypher_3dsg_agent_distillation.graph.heracles_validation import answer_matches_with_heracles
+from cypher_3dsg_agent_distillation.graph.load_neo4j import load_scene
 from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
     DEFAULT_HERACLES_NEO4J_PASSWORD,
@@ -1367,7 +1371,8 @@ def generate_command(args: argparse.Namespace) -> None:
             "updated_at": created_at,
             "status": "running",
             "dataset": {
-                "scene_id": data_config["scene_id"],
+                "dataset_id": data_config["dataset_id"],
+                "scene_ids": [scene["scene_id"] for scene in data_config["scenes"]],
                 "version": data_config["dataset_version"],
             },
             "teacher_config": config_record(
@@ -1417,8 +1422,19 @@ def generate_command(args: argparse.Namespace) -> None:
                 timeout=args.neo4j_timeout,
             )
 
+        scene_database_reloads = 0
         try:
             seeds = read_jsonl(data_config["seed_records_jsonl_path"])
+            seeds = order_records_by_scene_interleave(
+                seeds,
+                ratio=0.0,
+                seed=0,
+                scene_order=[str(scene["scene_id"]) for scene in data_config["scenes"]],
+            )
+            scenes_by_id = {
+                str(scene["scene_id"]): scene for scene in data_config["scenes"]
+            }
+            current_scene_id: str | None = None
             teacher_records: list[dict[str, Any]] = []
             accepted_debug_records: list[dict[str, Any]] = []
             rejected_debug_records: list[dict[str, Any]] = []
@@ -1435,6 +1451,24 @@ def generate_command(args: argparse.Namespace) -> None:
                     total=total_attempts,
                 )
                 for seed_index, seed in enumerate(seeds, start=1):
+                    seed_scene_id = str(seed.get("scene_id") or "")
+                    if seed_scene_id not in scenes_by_id:
+                        raise ValueError(
+                            f"Seed {seed.get('uid')} references unknown scene "
+                            f"`{seed_scene_id}`."
+                        )
+                    if validator is not None and seed_scene_id != current_scene_id:
+                        scene = scenes_by_id[seed_scene_id]
+                        load_scene(
+                            scene_path=scene["scene_path"],
+                            uri=neo4j_uri_candidates(args.uri),
+                            username=args.username,
+                            password=args.password,
+                            database=args.database,
+                            clear=True,
+                        )
+                        current_scene_id = seed_scene_id
+                        scene_database_reloads += 1
                     profile = experiment_profile_for_seed(seed, profiles)
                     max_tool_calls = configured_max_tool_calls(
                         args, teacher_config, profile
@@ -1522,6 +1556,7 @@ def generate_command(args: argparse.Namespace) -> None:
                 "attempts": total_attempts,
                 "accepted": len(teacher_records),
                 "rejected": len(rejected_debug_records),
+                "scene_database_reloads": scene_database_reloads,
             },
             "outputs": {
                 "teacher_traces": file_fingerprint(
@@ -1555,6 +1590,7 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
             ("Acceptance rate", f"{acceptance_rate:.1%}"),
+            ("Scene database reloads", scene_database_reloads),
             (
                 "Max tool calls",
                 args.max_tool_calls

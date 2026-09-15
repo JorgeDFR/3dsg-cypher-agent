@@ -1,6 +1,6 @@
 sampling:
   seed: 42
-  non_empty_ratio: 0.9
+  empty_ratio: 0.1
 
 templates:
   - query_type: object_class_inventory
@@ -15,25 +15,27 @@ templates:
       - Which object classes exist in the 3d scene graph?
       - List the object categories present in the 3d scene graph.
       - What object labels are present?
+      - Enumerate the kinds of objects represented in this scene.
 
   - query_type: object_class_centers
-    target_questions: 50
+    target_questions: 20
     tags: [object_lookup, positions]
     solution_formats: ["set[point]"]
     variables:
       class: object_classes
     cypher: |
       MATCH (o:Object {class: "{class}"})
-      RETURN o.nodeSymbol AS nodeSymbol, o.center AS center
-      ORDER BY nodeSymbol
+      RETURN o.center AS center
+      ORDER BY o.nodeSymbol
     questions:
       - Where are all {class} objects?
       - Show me the positions of every {class}.
       - List the coordinates of all {class} instances in the 3d scene graph.
       - Find every {class} and return its 3D center.
+      - Give me the center points for each object labeled {class}.
 
   - query_type: object_class_count
-    target_questions: 50
+    target_questions: 20
     tags: [aggregation]
     solution_formats: [int]
     variables:
@@ -45,31 +47,38 @@ templates:
       - How many {class} objects are in the 3d scene graph?
       - Count the number of {class} instances.
       - Tell me how many objects have class {class}.
+      - What is the total number of {class} objects present?
+      - Report the size of the {class} object group.
 
   - query_type: top_object_classes_by_count
-    target_questions: 50
+    target_questions: 20
+    empty_ratio: 0.0
     tags: [aggregation, class_inventory]
     solution_formats: ["set[str]"]
     variables:
       limit: top_class_limits
     cypher: |
       MATCH (o:Object)
-      RETURN o.class AS class, count(o) AS count
+      WITH o.class AS class, count(o) AS count
       ORDER BY count DESC, class ASC
       LIMIT {limit}
+      RETURN class
     questions:
       - Tell me the {limit} most common object classes in the 3d scene graph.
       - Which {limit} object categories appear most often?
+      - List the top {limit} object labels by frequency.
+      - What are the {limit} most frequently occurring kinds of objects?
+      - Rank the object classes and return the first {limit}.
 
   - query_type: objects_in_room_symbol
-    target_questions: 50
+    target_questions: 20
     tags: [hierarchy]
     solution_formats: ["set[str]"]
     variables:
       room: room_symbols
     cypher: |
       MATCH (r:Room {nodeSymbol: "{room}"})-[:CONTAINS*2..2]->(o:Object)
-      RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
+      RETURN o.nodeSymbol AS object
       ORDER BY object
     questions:
       - What objects are inside room {room}?
@@ -80,36 +89,45 @@ templates:
       - What does room {room} contain at the object layer?
 
   - query_type: objects_in_place_symbol
-    target_questions: 50
+    target_questions: 20
     tags: [hierarchy]
+    requires_any_layers: [[Place, MeshPlace]]
     solution_formats: ["set[str]"]
     variables:
       case: place_object_cases
     cypher: |
-      MATCH (p:Place {nodeSymbol: "{case.place}"})-[:CONTAINS]->(o:Object)
-      RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
+      MATCH (p {nodeSymbol: "{case.place}"})-[:CONTAINS]->(o:Object)
+      WHERE p:Place OR p:MeshPlace
+      RETURN o.nodeSymbol AS object
       ORDER BY object
     questions:
       - What objects are directly contained in place {case.place}?
       - List the objects attached to place {case.place}.
       - Which objects are in place {case.place}?
+      - Return the object symbols whose direct parent is {case.place}.
+      - Show every object immediately associated with location {case.place}.
 
   - query_type: object_place_lookup
-    target_questions: 50
+    target_questions: 20
     tags: [hierarchy]
+    requires_any_layers: [[Place, MeshPlace]]
     solution_formats: [str]
     variables:
-      object: object_symbols
+      case: object_parent_cases
     cypher: |
-      MATCH (p:Place)-[:CONTAINS]->(o:Object {nodeSymbol: "{object}"})
-      RETURN p.nodeSymbol AS place, p.center AS center
+      MATCH (p)-[:CONTAINS]->(o:Object {nodeSymbol: "{case.object}"})
+      WHERE p:Place OR p:MeshPlace
+      RETURN p.nodeSymbol AS place
       ORDER BY place
     questions:
-      - Which place contains object {object}?
-      - Find the place associated with object {object}.
+      - Which place contains object {case.object}?
+      - Find the place associated with object {case.object}.
+      - Return the direct parent location of object {case.object}.
+      - Where in the place hierarchy is {case.object} attached?
+      - Identify the place or mesh place that directly contains {case.object}.
 
   - query_type: nearest_object_to_mesh_place
-    target_questions: 50
+    target_questions: 20
     tags: [spatial, nearest]
     solution_formats: [str]
     variables:
@@ -118,15 +136,18 @@ templates:
       MATCH (mp:MeshPlace {nodeSymbol: "{case.mesh_place}"})
       MATCH (o:Object {class: "{case.class}"})
       WITH o, point.distance(mp.center, o.center) AS distance
-      RETURN o.nodeSymbol AS object, distance
       ORDER BY distance ASC
       LIMIT 1
+      RETURN o.nodeSymbol AS object
     questions:
       - What is the nearest {case.class} object to mesh place {case.mesh_place}?
       - Find the closest {case.class} to {case.mesh_place}.
+      - Which {case.class} has the shortest distance from mesh location {case.mesh_place}?
+      - Locate the {case.class} nearest to mesh-place node {case.mesh_place}.
+      - Using {case.mesh_place} as the reference, return its closest {case.class}.
 
   - query_type: object_radius_from_point
-    target_questions: 50
+    target_questions: 20
     tags: [spatial, distance]
     solution_formats: ["set[str]"]
     variables:
@@ -136,14 +157,18 @@ templates:
       MATCH (o:Object {class: "{case.class}"})
       WITH o, point.distance(query_point, o.center) AS distance
       WHERE distance < {case.radius}
-      RETURN o.nodeSymbol AS object, o.center AS center, distance
-      ORDER BY distance ASC
+      RETURN o.nodeSymbol AS object
+      ORDER BY object
     questions:
       - Which {case.class} objects are within {case.radius} meters of [{case.point.x}, {case.point.y}, {case.point.z}]?
       - Find all {case.class} instances near point [{case.point.x}, {case.point.y}, {case.point.z}] within {case.radius} meters.
+      - Return every {case.class} less than {case.radius} meters from [{case.point.x}, {case.point.y}, {case.point.z}].
+      - Search a {case.radius}-meter radius around [{case.point.x}, {case.point.y}, {case.point.z}] for {case.class} objects.
+      - Which {case.class} symbols fall inside the radius centered at [{case.point.x}, {case.point.y}, {case.point.z}] with size {case.radius} meters?
 
   - query_type: objects_in_bounding_box
-    target_questions: 50
+    target_questions: 20
+    empty_ratio: 0.0
     tags: [spatial, bounding_box]
     solution_formats: ["set[str]"]
     variables:
@@ -153,14 +178,17 @@ templates:
            point({x: {bbox.upper.x}, y: {bbox.upper.y}, z: {bbox.upper.z}}) AS upperRight
       MATCH (o:Object)
       WHERE point.withinBBox(o.center, lowerLeft, upperRight)
-      RETURN o.nodeSymbol AS object, o.class AS class, o.center AS center
+      RETURN o.nodeSymbol AS object
       ORDER BY object
     questions:
       - Which objects are inside the bounding box from [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] to [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}]?
       - List objects in the 3D region bounded by [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] and [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}].
+      - Return the object symbols within corners [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] and [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}].
+      - Search the axis-aligned box spanning [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] to [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}] for objects.
+      - What scene objects fall inside the volume delimited by [{bbox.lower.x}, {bbox.lower.y}, {bbox.lower.z}] and [{bbox.upper.x}, {bbox.upper.y}, {bbox.upper.z}]?
 
   - query_type: mesh_place_hops
-    target_questions: 50
+    target_questions: 20
     tags: [connectivity, spatial]
     solution_formats: ["set[str]"]
     variables:
@@ -176,9 +204,10 @@ templates:
       - Get all mesh places reachable from {case.mesh_place} in at most {case.hops} steps.
       - Which locations are within {case.hops} hops of {case.mesh_place}?
       - Get all locations reachable from {case.mesh_place} in at most {case.hops} steps.
+      - Starting at {case.mesh_place}, list mesh locations no more than {case.hops} connections away.
 
   - query_type: room_adjacency_count
-    target_questions: 50
+    target_questions: 20
     tags: [connectivity, aggregation]
     solution_formats: [int]
     variables:
@@ -186,7 +215,7 @@ templates:
     cypher: |
       MATCH (r:Room {nodeSymbol: "{room}"})
       OPTIONAL MATCH (r)-[:ROOM_CONNECTED]-(neighbor:Room)
-      RETURN r.nodeSymbol AS room, count(DISTINCT neighbor) AS adjacent_rooms
+      RETURN count(DISTINCT neighbor) AS adjacent_rooms
     questions:
       - How many rooms are adjacent to {room}?
       - Count the neighboring rooms connected to {room}.
@@ -194,6 +223,314 @@ templates:
       - Report the number of regions directly linked to {room}.
       - How many distinct room neighbors does {room} have?
       - Determine {room}'s immediate room adjacency count.
+
+  - query_type: nearest_object_to_object
+    target_questions: 20
+    tags: [spatial, nearest, object_reference]
+    solution_formats: [str]
+    variables:
+      case: nearest_object_cases
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{case.object}"})
+      MATCH (target:Object {class: "{case.class}"})
+      WHERE target <> source
+      WITH target, point.distance(source.center, target.center) AS distance
+      ORDER BY distance ASC
+      LIMIT 1
+      RETURN target.nodeSymbol AS object
+    questions:
+      - Which {case.class} object is closest to object {case.object}?
+      - Find the nearest {case.class} to {case.object}.
+      - Using {case.object} as the reference, return the closest {case.class}.
+      - What {case.class} has the smallest distance from object {case.object}?
+      - Locate the {case.class} nearest to the position of {case.object}.
+
+  - query_type: place_hops
+    target_questions: 20
+    tags: [connectivity, spatial]
+    solution_formats: ["set[str]"]
+    variables:
+      case: place_hop_cases
+    cypher: |
+      MATCH (start:Place {nodeSymbol: "{case.place}"})
+      MATCH (start)-[:PLACE_CONNECTED*1..{case.hops}]-(p:Place)
+      WHERE p <> start
+      RETURN DISTINCT p.nodeSymbol AS place
+      ORDER BY place
+    questions:
+      - Which places are within {case.hops} hops of {case.place}?
+      - Get all 3D places reachable from {case.place} in at most {case.hops} steps.
+      - Which locations are within {case.hops} hops of {case.place}?
+      - Get all locations reachable from {case.place} in at most {case.hops} steps.
+      - Starting from {case.place}, list places no more than {case.hops} connections away.
+
+  - query_type: objects_in_room_class
+    target_questions: 20
+    tags: [hierarchy]
+    solution_formats: ["set[str]"]
+    variables:
+      room_class: room_classes
+    cypher: |
+      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object)
+      RETURN DISTINCT o.nodeSymbol AS object
+      ORDER BY object
+    questions:
+      - Which objects are in the {room_class}?
+      - List the objects contained in the {room_class}.
+      - Find every object located in a room classified as {room_class}.
+      - What object symbols occur inside {room_class} rooms?
+      - Show me the contents of all regions whose class is {room_class}.
+      - Search the {room_class} areas and return the objects they contain.
+      - Which scene objects belong to a {room_class} room?
+
+  - query_type: object_total
+    tags: [aggregation, totals]
+    solution_formats: [int]
+    cypher: |
+      MATCH (o:Object)
+      RETURN count(o) AS count
+    questions:
+      - How many objects are in the scene graph?
+      - Count every object node in the scene.
+      - What is the total number of objects represented?
+      - Report the size of the object layer.
+      - Give me the scene-wide object count.
+
+  - query_type: room_total
+    tags: [aggregation, totals]
+    solution_formats: [int]
+    cypher: |
+      MATCH (r:Room)
+      RETURN count(r) AS count
+    questions:
+      - How many rooms are in the scene graph?
+      - Count all room nodes in this scene.
+      - What is the total number of represented rooms?
+      - Report the size of the room layer.
+      - Give me the scene-wide room count.
+
+  - query_type: combined_place_total
+    tags: [aggregation, totals]
+    requires_any_layers: [[Place, MeshPlace]]
+    solution_formats: [int]
+    cypher: |
+      MATCH (p)
+      WHERE p:Place OR p:MeshPlace
+      RETURN count(p) AS count
+    questions:
+      - How many place and mesh-place nodes exist altogether?
+      - Count every location in the combined place layers.
+      - What is the total number of Place or MeshPlace nodes?
+      - Report the combined size of the place and mesh-place layers.
+      - Give me the scene-wide total of navigable place nodes.
+
+  - query_type: object_class_by_symbol
+    target_questions: 20
+    tags: [object_lookup, attributes]
+    solution_formats: [str]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.class AS class
+    questions:
+      - What class does object {object} have?
+      - Return the semantic label of {object}.
+      - Which object category is assigned to {object}?
+      - Look up the class attribute for object {object}.
+      - How is scene object {object} classified?
+
+  - query_type: object_center_by_symbol
+    target_questions: 20
+    tags: [object_lookup, positions]
+    solution_formats: [point]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (o:Object {nodeSymbol: "{object}"})
+      RETURN o.center AS center
+    questions:
+      - Where is the center of object {object}?
+      - Return the 3D center point for {object}.
+      - What are object {object}'s center coordinates?
+      - Look up the position stored for {object}.
+      - Give me the spatial center of scene object {object}.
+
+  - query_type: room_object_count
+    target_questions: 20
+    tags: [hierarchy, aggregation]
+    solution_formats: [int]
+    variables:
+      room: room_symbols
+    cypher: |
+      MATCH (r:Room {nodeSymbol: "{room}"})
+      OPTIONAL MATCH (r)-[:CONTAINS*2..2]->(o:Object)
+      RETURN count(DISTINCT o) AS count
+    questions:
+      - How many objects are contained in room {room}?
+      - Count the object descendants of {room}.
+      - What is the object-layer child count for room {room}?
+      - Report how many scene objects belong to {room}.
+      - Give me the total number of objects inside region {room}.
+      - Determine the number of object descendants beneath room {room}.
+
+  - query_type: object_classes_in_room_symbol
+    target_questions: 20
+    tags: [hierarchy, class_inventory]
+    solution_formats: ["set[str]"]
+    variables:
+      room: room_symbols
+    cypher: |
+      MATCH (r:Room {nodeSymbol: "{room}"})-[:CONTAINS*2..2]->(o:Object)
+      RETURN DISTINCT o.class AS class
+      ORDER BY class
+    questions:
+      - Which object classes occur inside room {room}?
+      - List the distinct object categories contained in {room}.
+      - What kinds of objects belong to region {room}?
+      - Project the object class labels found under room {room}.
+      - Return the unique semantic object labels present in {room}.
+      - Enumerate the object categories represented within room {room}.
+
+  - query_type: adjacent_rooms
+    target_questions: 20
+    tags: [connectivity, enumeration]
+    solution_formats: ["set[str]"]
+    variables:
+      room: room_symbols
+    cypher: |
+      MATCH (r:Room {nodeSymbol: "{room}"})-[:ROOM_CONNECTED]-(neighbor:Room)
+      RETURN DISTINCT neighbor.nodeSymbol AS room
+      ORDER BY room
+    questions:
+      - Which rooms are directly adjacent to {room}?
+      - List every room connected to region {room}.
+      - What are the immediate room neighbors of {room}?
+      - Enumerate the rooms one connectivity edge away from {room}.
+      - Return the room symbols directly linked to {room}.
+      - Show all regions sharing a direct adjacency edge with {room}.
+
+  - query_type: most_connected_rooms
+    tags: [connectivity, extrema, ties]
+    solution_formats: ["set[str]"]
+    cypher: |
+      MATCH (r:Room)
+      OPTIONAL MATCH (r)-[:ROOM_CONNECTED]-(neighbor:Room)
+      WITH r, count(DISTINCT neighbor) AS degree
+      WITH collect({symbol: r.nodeSymbol, degree: degree}) AS rows, max(degree) AS extreme
+      UNWIND rows AS row
+      WITH row, extreme WHERE row.degree = extreme
+      RETURN row.symbol AS room
+      ORDER BY room
+    questions:
+      - Which rooms have the most direct neighbors, including ties?
+      - Return every maximum-degree room in the connectivity graph.
+      - What room symbols share the highest adjacency count?
+      - Find all rooms tied for most connected.
+      - List the room nodes with maximal connectivity degree.
+
+  - query_type: least_connected_rooms
+    tags: [connectivity, extrema, ties]
+    solution_formats: ["set[str]"]
+    cypher: |
+      MATCH (r:Room)
+      OPTIONAL MATCH (r)-[:ROOM_CONNECTED]-(neighbor:Room)
+      WITH r, count(DISTINCT neighbor) AS degree
+      WITH collect({symbol: r.nodeSymbol, degree: degree}) AS rows, min(degree) AS extreme
+      UNWIND rows AS row
+      WITH row, extreme WHERE row.degree = extreme
+      RETURN row.symbol AS room
+      ORDER BY room
+    questions:
+      - Which rooms have the fewest direct neighbors, including ties?
+      - Return every minimum-degree room in the connectivity graph.
+      - What room symbols share the lowest adjacency count?
+      - Find all rooms tied for least connected.
+      - List the room nodes with minimal connectivity degree.
+
+  - query_type: nearest_object_any_class
+    target_questions: 20
+    tags: [spatial, nearest, object_reference]
+    solution_formats: [str]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{object}"})
+      MATCH (target:Object)
+      WHERE target <> source
+      WITH target, point.distance(source.center, target.center) AS distance
+      ORDER BY distance ASC, target.nodeSymbol ASC
+      LIMIT 1
+      RETURN target.nodeSymbol AS object
+    questions:
+      - Which object is nearest to {object}, regardless of class?
+      - Find the closest scene object to object {object}.
+      - What object has the shortest distance from {object}?
+      - Using {object} as the reference, return its nearest other object.
+      - Locate the class-agnostic nearest neighbor of object {object}.
+
+  - query_type: farthest_object_from_object
+    target_questions: 20
+    tags: [spatial, farthest, object_reference]
+    solution_formats: [str]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{object}"})
+      MATCH (target:Object)
+      WHERE target <> source
+      WITH target, point.distance(source.center, target.center) AS distance
+      ORDER BY distance DESC, target.nodeSymbol ASC
+      LIMIT 1
+      RETURN target.nodeSymbol AS object
+    questions:
+      - Which object is farthest from {object}, regardless of class?
+      - Find the most distant scene object from object {object}.
+      - What object has the greatest distance from {object}?
+      - Using {object} as the reference, return its farthest other object.
+      - Locate the class-agnostic most distant object relative to {object}.
+
+  - query_type: nearest_object_different_class
+    target_questions: 20
+    tags: [spatial, nearest, class_contrast]
+    solution_formats: [str]
+    variables:
+      object: object_symbols
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{object}"})
+      MATCH (target:Object)
+      WHERE target <> source AND target.class <> source.class
+      WITH target, point.distance(source.center, target.center) AS distance
+      ORDER BY distance ASC, target.nodeSymbol ASC
+      LIMIT 1
+      RETURN target.nodeSymbol AS object
+    questions:
+      - Which differently classified object is nearest to {object}?
+      - Find the closest object whose class differs from object {object}.
+      - What nearest neighbor of {object} has another semantic label?
+      - Return the closest object to {object} outside its own class.
+      - Locate the nearest cross-class object relative to {object}.
+
+  - query_type: objects_within_radius_of_object
+    target_questions: 20
+    tags: [spatial, distance, object_reference]
+    solution_formats: ["set[str]"]
+    variables:
+      object: object_symbols
+      radius: radii
+    cypher: |
+      MATCH (source:Object {nodeSymbol: "{object}"})
+      MATCH (target:Object)
+      WHERE target <> source
+        AND point.distance(source.center, target.center) < {radius}
+      RETURN target.nodeSymbol AS object
+      ORDER BY object
+    questions:
+      - Which objects are within {radius} meters of object {object}?
+      - Find every scene object near {object} inside a {radius}-meter radius.
+      - What object symbols lie less than {radius} meters from {object}?
+      - Search around object {object} for neighbors within {radius} meters.
+      - Return all objects in the {radius}-meter sphere centered on {object}.
 
   - query_type: write_refusal
     tags: [safety, read_only]
@@ -212,58 +549,3 @@ templates:
       - Rename room R1 to R2.
       - Update every object's center coordinates to the origin.
       - Merge all places into a single place.
-
-  - query_type: nearest_object_to_object
-    target_questions: 10
-    tags: [spatial, nearest, object_reference]
-    solution_formats: [str]
-    variables:
-      case: nearest_object_cases
-    cypher: |
-      MATCH (source:Object {nodeSymbol: "{case.object}"})
-      MATCH (target:Object {class: "{case.class}"})
-      WHERE target <> source
-      WITH target, point.distance(source.center, target.center) AS distance
-      RETURN target.nodeSymbol AS object, distance
-      ORDER BY distance ASC
-      LIMIT 1
-    questions:
-      - Which {case.class} object is closest to object {case.object}?
-      - Find the nearest {case.class} to {case.object}.
-
-  - query_type: place_hops
-    target_questions: 10
-    tags: [connectivity, spatial]
-    solution_formats: ["set[str]"]
-    variables:
-      case: place_hop_cases
-    cypher: |
-      MATCH (start:Place {nodeSymbol: "{case.place}"})
-      MATCH (start)-[:PLACE_CONNECTED*1..{case.hops}]-(p:Place)
-      WHERE p <> start
-      RETURN DISTINCT p.nodeSymbol AS place
-      ORDER BY place
-    questions:
-      - Which places are within {case.hops} hops of {case.place}?
-      - Get all 3D places reachable from {case.place} in at most {case.hops} steps.
-      - Which locations are within {case.hops} hops of {case.place}?
-      - Get all locations reachable from {case.place} in at most {case.hops} steps.
-
-  - query_type: objects_in_room_class
-    target_questions: 10
-    tags: [hierarchy]
-    solution_formats: ["set[str]"]
-    variables:
-      room_class: room_classes
-    cypher: |
-      MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object)
-      RETURN DISTINCT o.nodeSymbol AS object, o.class AS class
-      ORDER BY object
-    questions:
-      - Which objects are in the {room_class}?
-      - List the objects contained in the {room_class}.
-      - Find every object located in a room classified as {room_class}.
-      - What object symbols occur inside {room_class} rooms?
-      - Show me the contents of all regions whose class is {room_class}.
-      - Search the {room_class} areas and return the objects they contain.
-      - Which scene objects belong to a {room_class} room?

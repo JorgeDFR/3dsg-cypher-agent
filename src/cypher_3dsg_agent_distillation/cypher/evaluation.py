@@ -435,7 +435,7 @@ def rows_to_solution_value(
                 )
             )
         )
-    if query_type == "object_class_centers":
+    if query_type in {"object_class_centers", "object_center_by_symbol"}:
         return scalar_or_set(
             [
                 point_to_solution(center)
@@ -448,8 +448,19 @@ def rows_to_solution_value(
                 )
             ]
         )
-    if query_type == "object_class_count":
+    if query_type in {
+        "object_class_count",
+        "object_total",
+        "room_total",
+        "combined_place_total",
+        "room_object_count",
+        "place_object_count",
+    }:
         return row_count_value(rows)
+    if query_type == "object_class_by_symbol":
+        if not rows:
+            return ""
+        return row_property(rows[0], "class", preferred_keys=["class"])
     if query_type == "top_object_classes_by_count":
         return row_values(
             rows,
@@ -463,6 +474,7 @@ def rows_to_solution_value(
         "objects_in_room_class",
         "objects_in_place_symbol",
         "objects_in_bounding_box",
+        "objects_within_radius_of_object",
     }:
         return scalar_or_set(
             row_values(
@@ -483,7 +495,13 @@ def rows_to_solution_value(
                 flatten_collections=True,
             )
         )
-    if query_type in {"nearest_object_to_mesh_place", "nearest_object_to_object"}:
+    if query_type in {
+        "nearest_object_to_mesh_place",
+        "nearest_object_to_object",
+        "nearest_object_any_class",
+        "farthest_object_from_object",
+        "nearest_object_different_class",
+    }:
         if not rows:
             return set()
         return row_property(
@@ -522,6 +540,72 @@ def rows_to_solution_value(
                 "adjacency_count",
                 "room_count",
             ],
+        )
+    if query_type in {
+        "object_classes_in_room_symbol",
+        "object_classes_in_place_symbol",
+    }:
+        return scalar_or_set(
+            row_values(
+                rows,
+                "class",
+                preferred_keys=["class"],
+                flatten_collections=True,
+            )
+        )
+    if query_type in {
+        "closest_cross_class_object_pairs",
+        "closest_room_pairs",
+    }:
+        return scalar_or_set(
+            row_values(
+                rows,
+                "pair",
+                preferred_keys=["pair"],
+                flatten_collections=True,
+            )
+        )
+    if query_type in {
+        "adjacent_rooms",
+        "most_connected_rooms",
+        "least_connected_rooms",
+    }:
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["room", "nodeSymbol"],
+                flatten_collections=True,
+            )
+        )
+    if query_type in {
+        "adjacent_places",
+        "most_connected_places",
+        "least_connected_places",
+    }:
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["place", "nodeSymbol"],
+                flatten_collections=True,
+            )
+        )
+    if query_type == "nearest_place_to_object":
+        if not rows:
+            return ""
+        return row_property(
+            rows[0],
+            "nodeSymbol",
+            preferred_keys=["place", "nodeSymbol"],
+        )
+    if query_type == "nearest_room_to_object":
+        if not rows:
+            return ""
+        return row_property(
+            rows[0],
+            "nodeSymbol",
+            preferred_keys=["room", "nodeSymbol"],
         )
     if query_type == "place_hops":
         return scalar_or_set(

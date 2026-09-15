@@ -2,7 +2,6 @@ name: cypher_pddl_template
 task_family: cypher_pddl
 output_type: PDDL
 prompt_path: configs/prompts/cypher_pddl_agentic_distilled.yaml
-labelspace_path: configs/prompts/labelspace_uhumans2.yaml
 scene_graph_description_path: configs/prompts/scene_graph_description.yaml
 interface_description_path: configs/schema_3dsg.yaml
 domain_description_path: configs/prompts/pddl_domain_description.yaml
