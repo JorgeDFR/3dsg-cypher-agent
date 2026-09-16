@@ -1,6 +1,8 @@
 import json
+from argparse import Namespace
 
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
+from cypher_3dsg_agent_distillation.reporting import workflow_report as workflow_report_module
 from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     collect_workflow_report_data,
     render_generated_questions_tab,
@@ -984,6 +986,48 @@ def test_workflow_report_default_output_lives_in_reports_dir(tmp_path):
 
     assert workflow_report_output_path(config).name == "workflow_report.html"
     assert workflow_report_output_path(config).parent.name == "reports"
+
+
+def test_workflow_report_stops_cleanly_when_lineage_is_declined(monkeypatch):
+    monkeypatch.setattr(
+        workflow_report_module,
+        "load_data_config",
+        lambda *_args, **_kwargs: {"dataset_id": "selected"},
+    )
+    monkeypatch.setattr(
+        workflow_report_module,
+        "load_student_config",
+        lambda *_args, **_kwargs: {
+            "model_metadata_path": "metadata.yaml",
+            "model_version": "model-version",
+        },
+    )
+    monkeypatch.setattr(workflow_report_module, "read_metadata", lambda _path: {})
+    monkeypatch.setattr(
+        workflow_report_module,
+        "confirm_dataset_lineage",
+        lambda **_kwargs: False,
+    )
+
+    def fail_if_report_is_written(*_args, **_kwargs):
+        raise AssertionError("declining lineage must not write a report")
+
+    monkeypatch.setattr(
+        workflow_report_module,
+        "write_workflow_report",
+        fail_if_report_is_written,
+    )
+
+    workflow_report_module.command(
+        Namespace(
+            data_config="data.yaml",
+            dataset_version=None,
+            student_config="student.yaml",
+            model_version=None,
+            allow_dataset_mismatch=False,
+            output=None,
+        )
+    )
 
 
 def test_validation_details_surface_hidden_false_positive_diagnostics():

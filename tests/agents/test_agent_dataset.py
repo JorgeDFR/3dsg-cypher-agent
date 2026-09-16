@@ -355,6 +355,25 @@ def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test()
     assert [len(train), len(eval_records), len(test)] == [2, 1, 1]
 
 
+def test_grouped_split_can_suppress_leakage_warnings(recwarn):
+    records = [
+        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n")
+        for index in range(4)
+    ]
+
+    train, eval_records, test, _challenge = grouped_split_records(
+        records,
+        train_size=0.5,
+        eval_size=0.25,
+        test_size=0.25,
+        seed=1,
+        warn_on_leakage=False,
+    )
+
+    assert list(recwarn) == []
+    assert [len(train), len(eval_records), len(test)] == [2, 1, 1]
+
+
 def test_grouped_split_breaks_minimum_groups_to_reach_exact_per_type_counts():
     records = [
         make_record(f"bbox-{group}-{variant}", "bbox", f"RETURN {group} AS bbox")

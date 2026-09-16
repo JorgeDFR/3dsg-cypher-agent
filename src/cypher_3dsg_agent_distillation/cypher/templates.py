@@ -143,6 +143,55 @@ def solution_is_empty(value: Any) -> bool:
     return False
 
 
+def is_zero_count_solution(value: Any) -> bool:
+    """Return whether an aggregate solution is the numeric count zero."""
+    if not isinstance(value, bool) and isinstance(value, int | float):
+        return value == 0
+    return False
+
+
+def solution_has_no_matches(value: Any) -> bool:
+    """Return whether a solved template represents no matched graph entities."""
+    return is_zero_count_solution(value) or solution_is_empty(value)
+
+
+def solution_cardinality(value: Any) -> int:
+    """Estimate how many grounded entities a solution exposes to the answer."""
+    if value is None:
+        return 0
+    if isinstance(value, dict):
+        return sum(solution_cardinality(child) for child in value.values())
+    if isinstance(value, list | set | tuple):
+        return len(value)
+    return 1
+
+
+def estimated_result_rows(value: Any) -> int:
+    """Estimate result rows, including Cartesian products in multi-field grounding."""
+    if value is None:
+        return 0
+    if isinstance(value, dict):
+        field_sizes = [solution_cardinality(child) for child in value.values()]
+        return math.prod(field_sizes) if field_sizes else 0
+    if isinstance(value, list | set | tuple):
+        return len(value)
+    return 1
+
+
+def sampling_size_limit(
+    template: dict[str, Any],
+    sampling_config: dict[str, Any],
+    key: str,
+) -> int | None:
+    """Resolve an optional positive per-template sampling size limit."""
+    value = template.get(key, sampling_config.get(key))
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{key} must be a positive integer.")
+    return value
+
+
 def invalid_values_in_value(
     value: Any,
     invalid_values: set[str],
@@ -672,6 +721,12 @@ def generate_records(
             continue
         query_type = template["query_type"]
         solution_formats = solution_formats_for_template(template)
+        max_solution_size = sampling_size_limit(
+            template, sampling_config, "max_solution_size"
+        )
+        max_result_rows = sampling_size_limit(
+            template, sampling_config, "max_result_rows"
+        )
         if scene_index is not None and task_family == "cypher_qa" and not solution_formats:
             raise KeyError(f"Template `{query_type}` must define solution_formats.")
         if task_family == "cypher_pddl" and not isinstance(template.get("goal"), dict):
@@ -718,13 +773,32 @@ def generate_records(
             # Avoid ambiguous examples with two independently invalid references.
             if len(matched_invalid_values) > 1:
                 continue
-            invalid_input = bool(matched_invalid_values)
             cypher = format_nested(template["cypher"], variables).strip()
             raw_solution = scene_index.solution_for(query_type, variables) if scene_index else None
+            if has_variables and raw_solution is not None:
+                if (
+                    max_solution_size is not None
+                    and solution_cardinality(raw_solution) > max_solution_size
+                ):
+                    continue
+                if (
+                    max_result_rows is not None
+                    and estimated_result_rows(raw_solution) > max_result_rows
+                ):
+                    continue
+            # An absent value does not necessarily make a query empty. For example,
+            # excluding an absent class still leaves all other objects, and an IN
+            # predicate can contain one absent and one present class. Preserve the
+            # computed answer for those QA cases instead of incorrectly supervising
+            # them as empty answers. PDDL templates use conjunctive grounding queries,
+            # so any absent reference still makes the complete grounding empty.
+            invalid_input = bool(matched_invalid_values) and (
+                task_family == "cypher_pddl" or solution_has_no_matches(raw_solution)
+            )
             record_grounding = None
             if task_family == "cypher_pddl":
                 record_grounding = grounding_contract(
-                    raw_solution,
+                    None if invalid_input else raw_solution,
                     template.get("grounding") or {},
                     variables,
                 )
@@ -743,7 +817,9 @@ def generate_records(
                         )
             else:
                 solution = (
-                    empty_solution_value(solution_formats)
+                    raw_solution
+                    if invalid_input and is_zero_count_solution(raw_solution)
+                    else empty_solution_value(solution_formats)
                     if invalid_input
                     else raw_solution
                 )
@@ -817,11 +893,18 @@ def generate_records(
                     and (
                         grounding_is_non_empty(record_grounding)
                         if record_grounding is not None
-                        else scene_index is None or not solution_is_empty(solution)
+                        else scene_index is None or not solution_has_no_matches(solution)
                     )
                 )
                 if (
-                    (invalid_input or (not has_solution and task_family != "cypher_pddl"))
+                    (
+                        invalid_input
+                        or (
+                            not has_solution
+                            and task_family != "cypher_pddl"
+                            and not is_zero_count_solution(solution)
+                        )
+                    )
                     and "invalid_input" not in record["tags"]
                 ):
                     record["tags"].append("invalid_input")
@@ -927,7 +1010,7 @@ def generated_record_has_solution(record: dict[str, Any]) -> bool:
     solution = record.get("solution")
     if isinstance(solution, str):
         return solution.strip() not in {"", "<>", "[]", "{}"}
-    return not solution_is_empty(solution)
+    return not solution_has_no_matches(solution)
 
 
 def diverse_record_sample(

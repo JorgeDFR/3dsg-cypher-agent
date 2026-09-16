@@ -77,6 +77,7 @@ from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     neo4j_uri_candidates,
     schema_policy,
     static_checks,
+    suppress_neo4j_notification_logs,
 )
 
 DEFAULT_MAX_TOOL_CALLS = 3
@@ -1490,6 +1491,7 @@ def debug_trace_record(
 
 def generate_command(args: argparse.Namespace) -> None:
     configure_model_library_output()
+    suppress_neo4j_notification_logs()
     teacher_config = load_yaml(args.teacher_config)
     student_config = load_student_family_config(args.student_config)
     from cypher_3dsg_agent_distillation.training.train import load_tokenizer

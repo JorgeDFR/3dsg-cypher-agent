@@ -23,10 +23,7 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
     load_experiment_profiles_from_config,
     profile_seed_defaults,
 )
-from cypher_3dsg_agent_distillation.core.cli_output import (
-    captured_warnings,
-    print_summary,
-)
+from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
@@ -429,6 +426,7 @@ def grouped_split_records(
     seed: int,
     challenge_task_types: set[str] | None = None,
     scene_order: list[str] | None = None,
+    warn_on_leakage: bool = True,
 ) -> SplitResult:
     validate_split_sizes(train_size, eval_size, test_size)
     challenge_task_types = challenge_task_types or set()
@@ -471,15 +469,16 @@ def grouped_split_records(
                     split_lists[split_name].extend(group_records)
                 continue
 
-            warnings.warn(
-                "Cypher-equivalent groups shared by task types "
-                f"{', '.join(task_types)} cannot reach the exact "
-                f"{train_size:.3g}/{eval_size:.3g}/{test_size:.3g} split while "
-                "remaining intact. Falling back to exact per-type counts and "
-                "allowing the minimum necessary shared-query leakage.",
-                UserWarning,
-                stacklevel=2,
-            )
+            if warn_on_leakage:
+                warnings.warn(
+                    "Cypher-equivalent groups shared by task types "
+                    f"{', '.join(task_types)} cannot reach the exact "
+                    f"{train_size:.3g}/{eval_size:.3g}/{test_size:.3g} split while "
+                    "remaining intact. Falling back to exact per-type counts and "
+                    "allowing the minimum necessary shared-query leakage.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             component_splits = {"train": [], "eval": [], "test": []}
             for task_type in task_types:
                 task_splits, used_record_level_split = split_one_task_type(
@@ -513,6 +512,7 @@ def grouped_split_records(
             records_by_task_type[task_type],
             split_sizes=split_sizes,
             seed=seed,
+            warn=warn_on_leakage,
         )
         if used_record_level_split:
             record_level_task_types.add(task_type)
@@ -1212,16 +1212,16 @@ def split_command(args: argparse.Namespace) -> None:
     cap_dropped_counts = record_task_type_counts(records_before_cap) - record_task_type_counts(
         records
     )
-    with captured_warnings("Dataset split warnings"):
-        train, eval_records, test, challenge = grouped_split_records(
-            records,
-            train_size=float(split_config.get("train_size", 0.8)),
-            eval_size=float(split_config.get("eval_size", 0.1)),
-            test_size=float(split_config.get("test_size", 0.1)),
-            seed=int(split_config.get("seed", 42)),
-            challenge_task_types=set(split_config.get("challenge_task_types", [])),
-            scene_order=[str(scene["scene_id"]) for scene in config["scenes"]],
-        )
+    train, eval_records, test, challenge = grouped_split_records(
+        records,
+        train_size=float(split_config.get("train_size", 0.8)),
+        eval_size=float(split_config.get("eval_size", 0.1)),
+        test_size=float(split_config.get("test_size", 0.1)),
+        seed=int(split_config.get("seed", 42)),
+        challenge_task_types=set(split_config.get("challenge_task_types", [])),
+        scene_order=[str(scene["scene_id"]) for scene in config["scenes"]],
+        warn_on_leakage=False,
+    )
     paths = config["splits"]
     write_rendered_split(train, paths["train"], args.render_view)
     write_rendered_split(eval_records, paths["eval"], args.render_view)

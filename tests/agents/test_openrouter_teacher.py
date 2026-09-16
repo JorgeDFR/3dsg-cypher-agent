@@ -49,16 +49,24 @@ def test_generate_command_configures_model_output_before_startup(monkeypatch):
     calls = []
 
     def configure_model_library_output():
-        calls.append("configured")
+        calls.append("model output")
+
+    def suppress_neo4j_notification_logs():
+        calls.append("neo4j notifications")
 
     def stop_after_configuration(_path):
-        assert calls == ["configured"]
+        assert calls == ["model output", "neo4j notifications"]
         raise RuntimeError("stop after output configuration")
 
     monkeypatch.setattr(
         openrouter_teacher,
         "configure_model_library_output",
         configure_model_library_output,
+    )
+    monkeypatch.setattr(
+        openrouter_teacher,
+        "suppress_neo4j_notification_logs",
+        suppress_neo4j_notification_logs,
     )
     monkeypatch.setattr(openrouter_teacher, "load_yaml", stop_after_configuration)
 
@@ -408,6 +416,31 @@ def test_synthetic_teacher_accepts_empty_qa_answer_for_invalid_input():
     assert decision.record.cypher_solution == ""
     assert decision.record.expected_solution == ""
     assert decision.record.messages[-1].content == "<answer></answer>"
+
+
+def test_synthetic_teacher_accepts_zero_count_answer_for_invalid_input():
+    validator = FakeValidator(
+        [{"executable": True, "rows": [{"count": 0}], "error": None}]
+    )
+    decision = run_synthetic_teacher_interaction(
+        seed_record(
+            solution=0,
+            solution_formats=["int"],
+            tags=["invalid_input"],
+            task_family="cypher_qa",
+            output_type="SLDP",
+        ),
+        profile=load_experiment_profile(
+            "configs/experiment_profiles/cypher_qa_template.yaml"
+        ),
+        validator=validator,
+        policy=None,
+    )
+
+    assert decision.accepted
+    assert decision.record.cypher_solution == "0"
+    assert decision.record.expected_solution == 0
+    assert decision.record.messages[-1].content == "<answer>0</answer>"
 
 
 def test_synthetic_teacher_accepts_empty_pddl_answer_for_invalid_input():

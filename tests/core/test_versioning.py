@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 
 import pytest
@@ -99,8 +100,34 @@ def test_noninteractive_lineage_mismatch_requires_explicit_override(tmp_path):
     with pytest.raises(RuntimeError, match="allow-dataset-mismatch"):
         confirm_dataset_lineage(model_metadata=metadata, data_config=data_config)
 
-    confirm_dataset_lineage(
+    assert confirm_dataset_lineage(
         model_metadata=metadata,
         data_config=data_config,
         allow_mismatch=True,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [("y", True), ("yes", True), ("n", False), ("", False)],
+)
+def test_interactive_lineage_confirmation_returns_user_choice(
+    monkeypatch, capsys, response, expected
+):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: response)
+
+    confirmed = confirm_dataset_lineage(
+        model_metadata={
+            "dataset": {"dataset_id": "trained", "version": "trained-version"}
+        },
+        data_config={
+            "dataset_id": "selected",
+            "dataset_version": "selected-version",
+        },
     )
+
+    assert confirmed is expected
+    stderr = capsys.readouterr().err
+    assert "Model/dataset lineage mismatch" in stderr
+    assert ("Cancelled:" in stderr) is (not expected)

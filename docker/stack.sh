@@ -402,46 +402,46 @@ run_demo_train() {
     python scripts/prepare_dataset.py split \
       --data-config "${DEMO_DATA_CONFIG}" \
       --render-view ollama_native
-  demo_step 6 "${total_steps}" "Train student LoRA adapter" \
-    python scripts/train_agent_lora.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}"
-  demo_step 7 "${total_steps}" "Evaluate loss on all splits" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split all \
-      --mode eval-loss
-  demo_step 8 "${total_steps}" "Validate generation on the test split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split test \
-      --mode raw-generation \
-      --max-new-tokens 1024
-  demo_step 9 "${total_steps}" "Validate generation on the challenge split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --max-new-tokens 1024
-  demo_step 10 "${total_steps}" "Establish baseline on the test split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split test \
-      --mode raw-generation \
-      --baseline \
-      --max-new-tokens 1024
-  demo_step 11 "${total_steps}" "Establish baseline on the challenge split" \
-    python scripts/evaluate_student.py \
-      --data-config "${DEMO_DATA_CONFIG}" \
-      --student-config "${DEMO_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --baseline \
-      --max-new-tokens 1024
+  # demo_step 6 "${total_steps}" "Train student LoRA adapter" \
+  #   python scripts/train_agent_lora.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}"
+  # demo_step 7 "${total_steps}" "Evaluate loss on all splits" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split all \
+  #     --mode eval-loss
+  # demo_step 8 "${total_steps}" "Validate generation on the test split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split test \
+  #     --mode raw-generation \
+  #     --max-new-tokens 1024
+  # demo_step 9 "${total_steps}" "Validate generation on the challenge split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split challenge \
+  #     --mode raw-generation \
+  #     --max-new-tokens 1024
+  # demo_step 10 "${total_steps}" "Establish baseline on the test split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split test \
+  #     --mode raw-generation \
+  #     --baseline \
+  #     --max-new-tokens 1024
+  # demo_step 11 "${total_steps}" "Establish baseline on the challenge split" \
+  #   python scripts/evaluate_student.py \
+  #     --data-config "${DEMO_DATA_CONFIG}" \
+  #     --student-config "${DEMO_STUDENT_CONFIG}" \
+  #     --split challenge \
+  #     --mode raw-generation \
+  #     --baseline \
+  #     --max-new-tokens 1024
   demo_step 12 "${total_steps}" "Generate HTML workflow report" \
     python scripts/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \

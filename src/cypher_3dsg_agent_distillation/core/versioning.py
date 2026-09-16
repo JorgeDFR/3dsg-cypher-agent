@@ -356,15 +356,16 @@ def confirm_dataset_lineage(
     model_metadata: dict[str, Any],
     data_config: dict[str, Any],
     allow_mismatch: bool = False,
-) -> None:
+) -> bool:
+    """Return whether the operation may continue with the selected lineage."""
     differences = lineage_difference(model_metadata, data_config)
     if not differences:
-        return
+        return True
     details = "; ".join(differences)
     message = f"Model/dataset lineage mismatch: {details}."
     if allow_mismatch:
         print(f"WARNING: {message}", file=sys.stderr)
-        return
+        return True
     if not sys.stdin.isatty():
         raise RuntimeError(
             f"{message} Re-run with --allow-dataset-mismatch to continue non-interactively."
@@ -372,4 +373,6 @@ def confirm_dataset_lineage(
     print(f"WARNING: {message}", file=sys.stderr)
     response = input("Continue with this model and dataset? [y/N] ").strip().lower()
     if response not in {"y", "yes"}:
-        raise RuntimeError("Aborted because the model and dataset lineage do not match.")
+        print("Cancelled: model and dataset lineage do not match.", file=sys.stderr)
+        return False
+    return True

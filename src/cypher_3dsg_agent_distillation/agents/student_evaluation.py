@@ -1976,11 +1976,12 @@ def command(args: argparse.Namespace) -> None:
                 "--allow-dataset-mismatch to use an adapter with unknown lineage."
             )
         if model_metadata is not None:
-            confirm_dataset_lineage(
+            if not confirm_dataset_lineage(
                 model_metadata=model_metadata,
                 data_config=data_config,
                 allow_mismatch=args.allow_dataset_mismatch,
-            )
+            ):
+                return
         selected_reports_dir = model_reports_dir(data_config, student_config)
 
     records = None

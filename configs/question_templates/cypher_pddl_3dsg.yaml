@@ -2,6 +2,8 @@ sampling:
   seed: 42
   empty_ratio: 0.1
   repair_cypher_ratio: 0.2
+  max_solution_size: 50
+  max_result_rows: 50
 
 templates:
   - query_type: pddl_visit_object_symbol

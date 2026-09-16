@@ -66,7 +66,16 @@ The configured `empty_ratio` is enforced across the combined dataset rather
 than independently multiplying the target for every scene. Empty-result and
 controlled-repair records are sampled as disjoint shares: an empty question is
 never selected for Cypher repair. Generated records use the `invalid_input` tag
-for empty questions and the `controlled_repair` tag for repair questions.
+when an empty answer comes from an absent explicit reference and the
+`controlled_repair` tag for repair questions. Valid count queries whose answer
+is zero still count toward the empty quota without being tagged as invalid.
+
+`sampling.max_solution_size` limits the number of entities exposed by a sampled
+solution, while `sampling.max_result_rows` also bounds projected Cartesian
+expansion for multi-field grounding. Either limit can be overridden on an
+individual template. Candidates over a configured limit are skipped before
+question selection; fixed, variable-free inventory and aggregate templates are
+left intact.
 
 Sampling promotes diversity at two levels. Within each scene, it first balances
 the rendered variables and then uses the expected Spark-DSG solution to break

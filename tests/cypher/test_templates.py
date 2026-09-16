@@ -552,6 +552,254 @@ def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch
     assert all("empty_result_feedback" not in record for record in invalid_records)
 
 
+def test_pddl_partial_invalid_grounding_is_fully_empty(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, _variables):
+            return {"first": ["O1"], "second": []}
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "first_classes": ["chair"],
+                "second_classes": ["missing"],
+                "invalid_values": ["missing"],
+            },
+        },
+        question_templates_config={
+            "templates": [
+                {
+                    "query_type": "pddl_pair",
+                    "target_questions": 1,
+                    "empty_ratio": 1.0,
+                    "variables": {
+                        "first_class": "first_classes",
+                        "second_class": "second_classes",
+                    },
+                    "cypher": "RETURN '{first_class}', '{second_class}'",
+                    "grounding": {
+                        "fields": {
+                            "first": {"source": "first", "cardinality": "set"},
+                            "second": {"source": "second", "cardinality": "set"},
+                        }
+                    },
+                    "goal": {
+                        "operator": "and",
+                        "clauses": [
+                            {"fact": "safe", "arguments": [{"result": "first"}]},
+                            {"fact": "safe", "arguments": [{"result": "second"}]},
+                        ],
+                    },
+                    "questions": ["Use {first_class} and {second_class}."],
+                }
+            ]
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert records[0]["solution"] == ""
+    assert records[0]["grounding"]["expected"] == {"first": [], "second": []}
+    assert "invalid_input" in records[0]["tags"]
+
+
+def test_qa_nonempty_result_with_absent_filter_value_is_not_invalid(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, _variables):
+            return "O2"
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "objects": ["O1"],
+                "excluded_classes": ["missing"],
+                "invalid_values": ["missing"],
+            },
+        },
+        question_templates_config={
+            "templates": [
+                {
+                    "query_type": "nearest_excluding",
+                    "target_questions": 1,
+                    "solution_formats": ["str"],
+                    "variables": {
+                        "object": "objects",
+                        "excluded_class": "excluded_classes",
+                    },
+                    "cypher": "RETURN 'O2' AS object",
+                    "questions": ["Nearest to {object}, excluding {excluded_class}?"],
+                }
+            ]
+        },
+        task_family="cypher_qa",
+    )
+
+    assert records[0]["solution"] == "O2"
+    assert "invalid_input" not in records[0]["tags"]
+
+
+def test_qa_zero_count_with_absent_filter_value_is_sampled_as_empty(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            return 0 if variables["class"] == "missing" else 1
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "classes": ["chair", "desk", "lamp", "table", "missing"],
+                "invalid_values": ["missing"],
+            },
+        },
+        question_templates_config={
+            "sampling": {"seed": 7, "empty_ratio": 0.2},
+            "templates": [
+                {
+                    "query_type": "object_class_count",
+                    "target_questions": 10,
+                    "solution_formats": ["int"],
+                    "variables": {"class": "classes"},
+                    "cypher": "RETURN count('{class}') AS count",
+                    "questions": ["Count {class}.", "How many {class}?"],
+                }
+            ]
+        },
+    )
+
+    empty_records = [record for record in records if "invalid_input" in record["tags"]]
+    assert len(records) == 10
+    assert len(empty_records) == 2
+    assert all(record["solution"] == 0 for record in empty_records)
+    assert {"missing"} == {
+        record["question"].removeprefix("Count ").removeprefix("How many ").rstrip(".?")
+        for record in empty_records
+    }
+
+
+def test_qa_zero_count_with_valid_input_is_empty_but_not_invalid(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            return 0 if variables["class"] == "empty" else 1
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {"classes": ["chair", "empty"]},
+        },
+        question_templates_config={
+            "sampling": {"seed": 7, "empty_ratio": 0.5},
+            "templates": [
+                {
+                    "query_type": "object_class_count",
+                    "target_questions": 2,
+                    "solution_formats": ["int"],
+                    "variables": {"class": "classes"},
+                    "cypher": "RETURN count('{class}') AS count",
+                    "questions": ["Count {class}."],
+                }
+            ]
+        },
+    )
+
+    zero_record = next(record for record in records if record["solution"] == 0)
+    assert templates_module.generated_record_has_solution(zero_record) is False
+    assert "invalid_input" not in zero_record["tags"]
+
+
+def test_generation_bounds_solution_size_and_cartesian_result_rows(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            if variables["case"] == "large_solution":
+                return {"first": [f"O{i}" for i in range(11)], "second": ["O20"]}
+            if variables["case"] == "large_product":
+                return {
+                    "first": [f"O{i}" for i in range(5)],
+                    "second": [f"O{i}" for i in range(10, 15)],
+                }
+            return {"first": ["O1", "O2"], "second": ["O3", "O4"]}
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {"cases": ["large_solution", "large_product", "bounded"]},
+        },
+        question_templates_config={
+            "sampling": {
+                "empty_ratio": 0.0,
+                "max_solution_size": 10,
+                "max_result_rows": 20,
+            },
+            "templates": [
+                {
+                    "query_type": "pddl_pair",
+                    "target_questions": 1,
+                    "variables": {"case": "cases"},
+                    "cypher": "RETURN '{case}'",
+                    "grounding": {
+                        "fields": {
+                            "first": {"source": "first", "cardinality": "set"},
+                            "second": {"source": "second", "cardinality": "set"},
+                        }
+                    },
+                    "goal": {
+                        "operator": "and",
+                        "clauses": [
+                            {"fact": "safe", "arguments": [{"result": "first"}]},
+                            {"fact": "safe", "arguments": [{"result": "second"}]},
+                        ],
+                    },
+                    "questions": ["Use {case}."],
+                }
+            ],
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert [record["question"] for record in records] == ["Use bounded."]
+
+
+@pytest.mark.parametrize("key", ["max_solution_size", "max_result_rows"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_generation_rejects_invalid_sampling_size_limits(key, value):
+    with pytest.raises(ValueError, match=f"{key} must be a positive integer"):
+        generate_records(
+            {"values": {"values": ["one"]}},
+            question_templates_config={
+                "sampling": {key: value},
+                "templates": [
+                    {
+                        "query_type": "lookup",
+                        "variables": {"value": "values"},
+                        "cypher": "RETURN '{value}'",
+                        "questions": ["Find {value}."],
+                    }
+                ],
+            },
+        )
+
+
 def test_empty_sampling_prioritizes_distinct_variables(monkeypatch):
     class FakeSceneIndex:
         def __init__(self, _path):
@@ -745,6 +993,35 @@ def test_qa_templates_have_at_least_five_distinct_question_variants():
         len(template["questions"]) == len(set(template["questions"]))
         for template in templates
     )
+
+
+def test_qa_templates_disable_empty_sampling_for_deterministic_and_count_queries():
+    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+
+    zero_empty_ratio_types = {
+        template["query_type"]
+        for template in templates
+        if template.get("empty_ratio") == 0.0
+    }
+
+    assert zero_empty_ratio_types == {
+        "object_class_inventory",
+        "object_class_count",
+        "top_object_classes_by_count",
+        "objects_in_bounding_box",
+        "room_adjacency_count",
+        "object_total",
+        "room_total",
+        "combined_place_total",
+        "room_object_count",
+        "most_connected_rooms",
+        "least_connected_rooms",
+        "count_objects_of_class_in_room_class",
+        "place_object_count",
+        "closest_cross_class_object_pairs",
+        "closest_room_pairs",
+        "write_refusal",
+    }
 
 
 def test_qa_templates_return_only_fields_required_by_the_answer():

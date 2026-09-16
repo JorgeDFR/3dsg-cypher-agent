@@ -3442,11 +3442,12 @@ def command(args: argparse.Namespace) -> None:
         student_config = load_student_config(
             args.student_config, model_version=args.model_version
         )
-        confirm_dataset_lineage(
+        if not confirm_dataset_lineage(
             model_metadata=read_metadata(student_config["model_metadata_path"]),
             data_config=data_config,
             allow_mismatch=args.allow_dataset_mismatch,
-        )
+        ):
+            return
     output_path = write_workflow_report(
         data_config,
         student_config,

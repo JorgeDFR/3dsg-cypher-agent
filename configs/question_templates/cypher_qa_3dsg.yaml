@@ -2,9 +2,12 @@ sampling:
   seed: 42
   empty_ratio: 0.1
   repair_cypher_ratio: 0.2
+  max_solution_size: 50
+  max_result_rows: 50
 
 templates:
   - query_type: object_class_inventory
+    empty_ratio: 0.0
     tags: [class_inventory]
     solution_formats: ["set[str]"]
     cypher: |
@@ -37,6 +40,7 @@ templates:
 
   - query_type: object_class_count
     target_questions: 20
+    empty_ratio: 0.0
     tags: [aggregation]
     solution_formats: [int]
     variables:
@@ -209,6 +213,7 @@ templates:
 
   - query_type: room_adjacency_count
     target_questions: 20
+    empty_ratio: 0.0
     tags: [connectivity, aggregation]
     solution_formats: [int]
     variables:
@@ -306,6 +311,7 @@ templates:
       - Which scene objects belong to a {room_class} room?
 
   - query_type: object_total
+    empty_ratio: 0.0
     tags: [aggregation, totals]
     solution_formats: [int]
     cypher: |
@@ -319,6 +325,7 @@ templates:
       - Give me the scene-wide object count.
 
   - query_type: room_total
+    empty_ratio: 0.0
     tags: [aggregation, totals]
     solution_formats: [int]
     cypher: |
@@ -332,6 +339,7 @@ templates:
       - Give me the scene-wide room count.
 
   - query_type: combined_place_total
+    empty_ratio: 0.0
     tags: [aggregation, totals]
     requires_any_layers: [[Place, MeshPlace]]
     solution_formats: [int]
@@ -380,6 +388,7 @@ templates:
 
   - query_type: room_object_count
     target_questions: 20
+    empty_ratio: 0.0
     tags: [hierarchy, aggregation]
     solution_formats: [int]
     variables:
@@ -433,6 +442,7 @@ templates:
       - Show all regions sharing a direct adjacency edge with {room}.
 
   - query_type: most_connected_rooms
+    empty_ratio: 0.0
     tags: [connectivity, extrema, ties]
     solution_formats: ["set[str]"]
     cypher: |
@@ -452,6 +462,7 @@ templates:
       - List the room nodes with maximal connectivity degree.
 
   - query_type: least_connected_rooms
+    empty_ratio: 0.0
     tags: [connectivity, extrema, ties]
     solution_formats: ["set[str]"]
     cypher: |
@@ -592,6 +603,7 @@ templates:
 
   - query_type: count_objects_of_class_in_room_class
     target_questions: 20
+    empty_ratio: 0.0
     tags: [hierarchy, class_restriction, aggregation, symbol_free]
     solution_formats: [int]
     variables:
@@ -853,6 +865,7 @@ templates:
 
   - query_type: place_object_count
     target_questions: 20
+    empty_ratio: 0.0
     tags: [hierarchy, aggregation]
     requires_any_layers: [[Place, MeshPlace]]
     solution_formats: [int]
@@ -890,6 +903,7 @@ templates:
       - Enumerate the classes of objects associated directly with location {case.place}.
 
   - query_type: closest_cross_class_object_pairs
+    empty_ratio: 0.0
     tags: [spatial, nearest, class_contrast, ties]
     solution_formats: ["set[list[str]]"]
     cypher: |
@@ -910,6 +924,7 @@ templates:
       - Identify the minimum-distance object pairs with unequal class labels.
 
   - query_type: closest_room_pairs
+    empty_ratio: 0.0
     tags: [spatial, nearest, room, ties]
     solution_formats: ["set[list[str]]"]
     cypher: |
@@ -971,6 +986,7 @@ templates:
       - Locate the room closest to scene object {object}.
 
   - query_type: write_refusal
+    empty_ratio: 0.0
     repair_cypher_ratio: 0.0
     tags: [safety, read_only]
     solution_formats: [str]
