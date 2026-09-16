@@ -347,7 +347,7 @@ def mix_invalid_cases(
     return select_balanced_cases(valid, invalid, limit, empty_ratio)
 
 
-def interleave_case_groups(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+def interleave_case_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cases = []
     max_size = max((len(group) for group in groups), default=0)
     for index in range(max_size):
@@ -661,6 +661,45 @@ def scene_values(
             for value in invalid_mesh_place_symbols
         )
 
+    mesh_place_hop_cases = mix_invalid_cases(
+        valid_mesh_hop_cases,
+        [
+            {"mesh_place": value, "hops": mesh_place_hop_counts[0]}
+            for value in invalid_mesh_place_symbols
+        ],
+        max_mesh_place_hop_cases,
+        empty_ratio,
+    )
+    place_hop_cases = mix_invalid_cases(
+        valid_place_hop_cases,
+        [
+            {"place": value, "hops": place_hop_counts[0]}
+            for value in invalid_place_symbols
+        ],
+        max_place_hop_cases,
+        empty_ratio,
+    )
+    location_hop_cases = interleave_case_groups(
+        [
+            {
+                "location": case["place"],
+                "hops": case["hops"],
+                "layer": "Place",
+                "relationship": "PLACE_CONNECTED",
+            }
+            for case in place_hop_cases
+        ],
+        [
+            {
+                "location": case["mesh_place"],
+                "hops": case["hops"],
+                "layer": "MeshPlace",
+                "relationship": "MESH_PLACE_CONNECTED",
+            }
+            for case in mesh_place_hop_cases
+        ],
+    )
+
     return {
         "invalid_values": invalid_values,
         "object_classes": [*object_classes, *invalid_object_classes],
@@ -751,24 +790,9 @@ def scene_values(
             max_nearest_object_cases,
             empty_ratio,
         ),
-        "mesh_place_hop_cases": mix_invalid_cases(
-            valid_mesh_hop_cases,
-            [
-                {"mesh_place": value, "hops": mesh_place_hop_counts[0]}
-                for value in invalid_mesh_place_symbols
-            ],
-            max_mesh_place_hop_cases,
-            empty_ratio,
-        ),
-        "place_hop_cases": mix_invalid_cases(
-            valid_place_hop_cases,
-            [
-                {"place": value, "hops": place_hop_counts[0]}
-                for value in invalid_place_symbols
-            ],
-            max_place_hop_cases,
-            empty_ratio,
-        ),
+        "mesh_place_hop_cases": mesh_place_hop_cases,
+        "place_hop_cases": place_hop_cases,
+        "location_hop_cases": location_hop_cases,
     }
 
 
@@ -1394,6 +1418,15 @@ class SceneIndex:
                     str(template_value(variables, "place")),
                     "Place",
                     int(template_value(variables, "hops")),
+                )
+            )
+        if query_type == "location_hops":
+            case = variables["case"]
+            return scalar_or_set(
+                self.hop_symbols(
+                    str(case["location"]),
+                    str(case["layer"]),
+                    int(case["hops"]),
                 )
             )
         if query_type == "write_refusal":

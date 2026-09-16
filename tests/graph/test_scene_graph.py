@@ -81,6 +81,18 @@ def test_extract_scene_values_from_spark_dsg():
     assert len(values["nearest_object_cases"]) == 50
     assert len(values["mesh_place_hop_cases"]) == 50
     assert len(values["place_hop_cases"]) == 50
+    assert len(values["location_hop_cases"]) == 100
+    assert Counter(case["layer"] for case in values["location_hop_cases"]) == {
+        "Place": 50,
+        "MeshPlace": 50,
+    }
+    assert {
+        (case["layer"], case["relationship"])
+        for case in values["location_hop_cases"]
+    } == {
+        ("Place", "PLACE_CONNECTED"),
+        ("MeshPlace", "MESH_PLACE_CONNECTED"),
+    }
     assert (
         sum(
             case["object"] in values["invalid_values"]
@@ -97,6 +109,15 @@ def test_extract_scene_values_from_spark_dsg():
     assert all(
         len(index.hop_symbols(case["place"], "Place", case["hops"])) < 50
         for case in values["place_hop_cases"]
+    )
+    place_case = next(
+        case
+        for case in values["location_hop_cases"]
+        if case["layer"] == "Place" and case["location"] not in values["invalid_values"]
+    )
+    assert index.solution_for("location_hops", {"case": place_case}) == index.solution_for(
+        "place_hops",
+        {"case": {"place": place_case["location"], "hops": place_case["hops"]}},
     )
 
 

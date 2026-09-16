@@ -24,9 +24,9 @@ split:
   split_by_scene: false
   challenge_questions_per_task_type: 10
   challenge_task_types:
-    - nearest_object_to_object
-    - place_hops
     - objects_in_room_class
-    - pddl_inspect_object_class
-    - pddl_object_not_in_place
-    - pddl_visit_place_and_end_in_room
+    - nearest_object_different_class
+    - location_hops
+    - pddl_inspect_nearest_object
+    - pddl_not_holding_object_class
+    - pddl_visit_object_without_holding

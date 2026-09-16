@@ -6,21 +6,22 @@ Heracles benchmark results.
 
 ## Observed validation and benchmark syntax failures
 
-The saved raw-generation validation reports contain **107**
+The saved raw-generation validation reports contain **138**
 Neo4j syntax-error validations across
-**7** report files. The Heracles artifacts contain
+**11** report files. The Heracles artifacts contain
 **63** failed tool executions across
 **4** result files. Combined, they cover
-**46** distinct first-line error signatures.
+**50** distinct first-line error signatures.
 
 | Error family | Validation | Heracles | Total | Distinct signatures |
 | --- | ---: | ---: | ---: | ---: |
-| Invalid token or malformed expression | 52 | 16 | 68 | 20 |
-| Unknown or obsolete function syntax | 21 | 18 | 39 | 14 |
-| Projection, function-argument, or type error | 24 | 6 | 30 | 4 |
-| Premature RETURN or clause order | 6 | 10 | 16 | 1 |
+| Invalid token or malformed expression | 63 | 16 | 79 | 23 |
+| Unknown or obsolete function syntax | 22 | 18 | 40 | 14 |
+| Projection, function-argument, or type error | 30 | 6 | 36 | 4 |
+| Premature RETURN or clause order | 18 | 10 | 28 | 1 |
 | Undefined variable or scope loss | 2 | 9 | 11 | 5 |
 | Pattern expression in an invalid context | 2 | 4 | 6 | 2 |
+| Other parser error | 1 | 0 | 1 | 1 |
 
 The reusable mutations cover the observed missing separators, invalid tokens,
 undefined variables, unknown functions, and premature `RETURN` failures. Highly
@@ -31,13 +32,13 @@ the template set because they apply to too few configured question types.
 
 | Template | Description | Applicable question types | Coverage |
 | --- | --- | ---: | ---: |
-| `misspelled_match_clause` | Misspell the first MATCH clause keyword. | 56 | 98.2% |
-| `unclosed_match_parenthesis` | Remove a closing parenthesis from the first MATCH pattern. | 56 | 98.2% |
-| `missing_property_map_value` | Remove a value from a node or point property map. | 51 | 89.5% |
-| `undefined_return_variable` | Replace a returned property owner with an undefined variable. | 49 | 86.0% |
-| `unknown_function` | Replace a valid Cypher function with an unknown function. | 19 | 33.3% |
-| `missing_projection_comma` | Add a second RETURN projection without its required comma. | 56 | 98.2% |
-| `premature_return_clause` | Insert RETURN before later query clauses. | 56 | 98.2% |
+| `misspelled_match_clause` | Misspell the first MATCH clause keyword. | 57 | 98.3% |
+| `unclosed_match_parenthesis` | Remove a closing parenthesis from the first MATCH pattern. | 57 | 98.3% |
+| `missing_property_map_value` | Remove a value from a node or point property map. | 52 | 89.7% |
+| `undefined_return_variable` | Replace a returned property owner with an undefined variable. | 50 | 86.2% |
+| `unknown_function` | Replace a valid Cypher function with an unknown function. | 19 | 32.8% |
+| `missing_projection_comma` | Add a second RETURN projection without its required comma. | 57 | 98.3% |
+| `premature_return_clause` | Insert RETURN before later query clauses. | 57 | 98.3% |
 
 ## Coverage by question type
 
@@ -57,6 +58,7 @@ the template set because they apply to too few configured question types.
 | `room_adjacency_count` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `nearest_object_to_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
 | `place_hops` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `location_hops` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `objects_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `object_total` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 5 |
 | `room_total` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 5 |

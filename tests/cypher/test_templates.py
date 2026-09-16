@@ -702,6 +702,7 @@ def test_qa_templates_return_only_fields_required_by_the_answer():
         "room_adjacency_count": "RETURN count(DISTINCT neighbor) AS adjacent_rooms",
         "nearest_object_to_object": "RETURN target.nodeSymbol AS object",
         "place_hops": "RETURN DISTINCT p.nodeSymbol AS place",
+        "location_hops": "RETURN DISTINCT location.nodeSymbol AS location",
         "objects_in_room_class": "RETURN DISTINCT o.nodeSymbol AS object",
         "object_total": "RETURN count(o) AS count",
         "room_total": "RETURN count(r) AS count",
@@ -762,6 +763,18 @@ def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
     }
 
     assert len(place_hop_questions & mesh_hop_questions) >= 2
+
+
+def test_location_hops_composes_both_place_layers():
+    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    template = next(
+        template for template in templates if template["query_type"] == "location_hops"
+    )
+
+    assert template["variables"] == {"case": "location_hop_cases"}
+    assert template["requires_layers"] == ["Place", "MeshPlace"]
+    assert template["sampling_group"] == "case.layer"
+    assert ":{case.relationship}*1..{case.hops}" in template["cypher"]
 
 
 def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkeypatch):

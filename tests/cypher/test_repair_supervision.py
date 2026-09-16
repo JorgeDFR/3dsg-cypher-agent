@@ -119,13 +119,13 @@ def test_configured_repair_templates_have_broad_question_type_coverage():
     by_template, by_question_type = repair_template_coverage(question_templates)
 
     assert {name: len(types) for name, types in by_template.items()} == {
-        "misspelled_match_clause": 56,
-        "unclosed_match_parenthesis": 56,
-        "missing_property_map_value": 51,
-        "undefined_return_variable": 49,
+        "misspelled_match_clause": 57,
+        "unclosed_match_parenthesis": 57,
+        "missing_property_map_value": 52,
+        "undefined_return_variable": 50,
         "unknown_function": 19,
-        "missing_projection_comma": 56,
-        "premature_return_clause": 56,
+        "missing_projection_comma": 57,
+        "premature_return_clause": 57,
     }
-    assert len(by_question_type) == 57
-    assert sum(bool(templates) for templates in by_question_type.values()) == 56
+    assert len(by_question_type) == 58
+    assert sum(bool(templates) for templates in by_question_type.values()) == 57

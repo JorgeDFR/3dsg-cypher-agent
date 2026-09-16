@@ -265,6 +265,27 @@ templates:
       - Get all locations reachable from {case.place} in at most {case.hops} steps.
       - Starting from {case.place}, list places no more than {case.hops} connections away.
 
+  - query_type: location_hops
+    target_questions: 20
+    tags: [connectivity, spatial, layer_selection]
+    requires_layers: [Place, MeshPlace]
+    solution_formats: ["set[str]"]
+    variables:
+      case: location_hop_cases
+    sampling_group: case.layer
+    cypher: |
+      MATCH (start:{case.layer} {nodeSymbol: "{case.location}"})
+      MATCH (start)-[:{case.relationship}*1..{case.hops}]-(location:{case.layer})
+      WHERE location <> start
+      RETURN DISTINCT location.nodeSymbol AS location
+      ORDER BY location
+    questions:
+      - Which locations are within {case.hops} hops of {case.location}?
+      - Find all locations reachable from {case.location} in at most {case.hops} steps.
+      - Starting at {case.location}, list locations no more than {case.hops} connections away.
+      - What locations can be reached from {case.location} using at most {case.hops} connectivity edges?
+      - Return the locations within a {case.hops}-hop distance of {case.location}.
+
   - query_type: objects_in_room_class
     target_questions: 20
     tags: [hierarchy]
@@ -323,7 +344,7 @@ templates:
       - Count every location in the combined place layers.
       - What is the total number of Place or MeshPlace nodes?
       - Report the combined size of the place and mesh-place layers.
-      - Give me the scene-wide total of navigable place nodes.
+      - Give me the scene-wide total of place and mesh-place nodes.
 
   - query_type: object_class_by_symbol
     target_questions: 20
