@@ -68,12 +68,23 @@ controlled-repair records are sampled as disjoint shares: an empty question is
 never selected for Cypher repair. Generated records use the `invalid_input` tag
 for empty questions and the `controlled_repair` tag for repair questions.
 
-The QA set covers 30 question types. In addition to the original inventory,
-containment, distance, and hop queries, it includes scene totals; object
-attribute and center lookup; room child counts and class projections;
-adjacent-room enumeration; tied room-connectivity extrema; class-agnostic and
-cross-class object distances; and an object-centered radius query. Every QA
-type provides at least five natural-language variants.
+Sampling promotes diversity at two levels. Within each scene, it first balances
+the rendered variables and then uses the expected Spark-DSG solution to break
+ties before repeating a wording variant. The dataset-wide scene-selection pass
+applies the same variable-first, solution-aware rule while preserving scene and
+empty-result quotas. Case providers for constrained questions are derived from
+valid graph relationships (for example, place/object-class cases come from
+objects actually contained by a place), which avoids spending the budget on
+arbitrary combinations that all return the same empty result.
+
+The QA set covers 52 question types. In addition to inventory, containment,
+distance, and hop queries, it includes scene totals; object attribute and center
+lookup; room and place child counts and class projections; class inclusion,
+exclusion, and allowed-set constraints; symbol-free class-to-class spatial
+queries; adjacent-room filtering; and tied spatial extrema. The PDDL set covers
+39 types, including existential and universal class goals, nested conjunctions
+and disjunctions, per-object negation, hierarchy-restricted destinations, and
+ordered waypoints. Every type provides at least five natural-language variants.
 
 The legacy singular `experiment_profile_path` and `question_templates_path`
 keys are still interpreted as one question set.

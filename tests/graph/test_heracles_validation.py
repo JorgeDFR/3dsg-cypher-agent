@@ -152,4 +152,8 @@ def test_sldp_answer_type_hint_uses_solution_formats_when_available():
         answer_type_hint_from_solution_formats(["set[point]", "point"], "SLDP")
         == "Your answer should be an SLDP set of points or a point"
     )
+    assert (
+        answer_type_hint_from_solution_formats(["set[list[str]]"], "SLDP")
+        == "Your answer should be an SLDP set of lists of strings"
+    )
     assert answer_type_hint_from_solution_formats(["str"], "PDDL") is None

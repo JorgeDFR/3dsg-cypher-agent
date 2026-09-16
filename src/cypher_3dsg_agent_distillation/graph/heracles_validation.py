@@ -242,7 +242,11 @@ def sldp_format_description(solution_format: str) -> str:
         item_type = sldp_format_description(collection_match.group(2))
         if item_type.startswith("primitive "):
             item_type = item_type.removeprefix("primitive ")
-        if item_type.endswith("s"):
+        if item_type.startswith("list of "):
+            plural_item = f"lists of {item_type.removeprefix('list of ')}"
+        elif item_type.startswith("set of "):
+            plural_item = f"sets of {item_type.removeprefix('set of ')}"
+        elif item_type.endswith("s"):
             plural_item = item_type
         else:
             plural_item = f"{item_type}s"
@@ -288,10 +292,14 @@ A SLDP answer represents the answer to a direct question.
 It can be a primitive string, primitive number, list, set, dictionarie, or point.
 It can also be an arbitrary composition of these containers.
 
-Use object and place symbols exactly as they appear in the scene graph. Node symbols should not contain parentheses or quotes. For example, O(1) should be written as O1.
+Use object and place symbols exactly as they appear in the scene graph.
+Node symbols should not contain parentheses or quotes. For example, O(1) should
+be written as O1.
 
 Do not include additional information than what is explicitly asked for in the question.
-E.g., if the question asks for a list of node IDs, the answer should be a list of node IDs and not a list of nodes with their properties or if the question asks for locations a list of points should be provided and not a list of nodes with their locations.
+E.g., if the question asks for a list of node IDs, the answer should be a list
+of node IDs and not a list of nodes with their properties. If the question asks
+for locations, provide a list of points and not a list of nodes with locations.
 
 ### Syntax
 
@@ -304,7 +312,8 @@ A `point` is written as `POINT(x y z)` (note the lack of comma)
 
 ### Denoting Final Answer:
 
-Format your final answer (*not* any intermediate tool calls) as an SLDP expression wrapped between the <answer> and </answer> tags (XML-style format).
+Format your final answer (*not* any intermediate tool calls) as an SLDP
+expression wrapped between the <answer> and </answer> tags (XML-style format).
 Example: <answer> <1,2,3> </answer>
 Only a single pair of answer tags should appear.
 """
@@ -314,11 +323,15 @@ Please format your response according to the PDDL Goal Language:
 
 ## PDDL Goal Language
 
-A PDDL goal describes the desired final state for a planner. It must be a single valid goal expression using predicates from the provided PDDL domain.
+A PDDL goal describes the desired final state for a planner. It must be a single
+valid goal expression using predicates from the provided PDDL domain.
 
-Use object and place symbols exactly as they appear in the scene graph. Node symbols should not contain parentheses or quotes. For example, O(1) should be written as O1.
+Use object and place symbols exactly as they appear in the scene graph.
+Node symbols should not contain parentheses or quotes. For example, O(1) should
+be written as O1.
 
-Do not include explanatory text inside the final answer. Do not invent predicates outside the provided PDDL domain.
+Do not include explanatory text inside the final answer. Do not invent
+predicates outside the provided PDDL domain.
 
 ### Syntax
 
@@ -334,7 +347,8 @@ Examples:
 
 ### Denoting Final Answer:
 
-Format your final answer (*not* any intermediate tool calls) as a PDDL goal wrapped between the <answer> and </answer> tags (XML-style format).
+Format your final answer (*not* any intermediate tool calls) as a PDDL goal
+wrapped between the <answer> and </answer> tags (XML-style format).
 Example: <answer> (visited-place P100) </answer>
 Only a single pair of answer tags should appear.
 """

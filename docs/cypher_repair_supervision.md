@@ -6,16 +6,16 @@ Heracles benchmark results.
 
 ## Observed validation and benchmark syntax failures
 
-The saved raw-generation validation reports contain **138**
+The saved raw-generation validation reports contain **140**
 Neo4j syntax-error validations across
-**11** report files. The Heracles artifacts contain
+**13** report files. The Heracles artifacts contain
 **63** failed tool executions across
 **4** result files. Combined, they cover
-**50** distinct first-line error signatures.
+**51** distinct first-line error signatures.
 
 | Error family | Validation | Heracles | Total | Distinct signatures |
 | --- | ---: | ---: | ---: | ---: |
-| Invalid token or malformed expression | 63 | 16 | 79 | 23 |
+| Invalid token or malformed expression | 65 | 16 | 81 | 24 |
 | Unknown or obsolete function syntax | 22 | 18 | 40 | 14 |
 | Projection, function-argument, or type error | 30 | 6 | 36 | 4 |
 | Premature RETURN or clause order | 18 | 10 | 28 | 1 |
@@ -32,13 +32,13 @@ the template set because they apply to too few configured question types.
 
 | Template | Description | Applicable question types | Coverage |
 | --- | --- | ---: | ---: |
-| `misspelled_match_clause` | Misspell the first MATCH clause keyword. | 57 | 98.3% |
-| `unclosed_match_parenthesis` | Remove a closing parenthesis from the first MATCH pattern. | 57 | 98.3% |
-| `missing_property_map_value` | Remove a value from a node or point property map. | 52 | 89.7% |
-| `undefined_return_variable` | Replace a returned property owner with an undefined variable. | 50 | 86.2% |
-| `unknown_function` | Replace a valid Cypher function with an unknown function. | 19 | 32.8% |
-| `missing_projection_comma` | Add a second RETURN projection without its required comma. | 57 | 98.3% |
-| `premature_return_clause` | Insert RETURN before later query clauses. | 57 | 98.3% |
+| `misspelled_match_clause` | Misspell the first MATCH clause keyword. | 90 | 98.9% |
+| `unclosed_match_parenthesis` | Remove a closing parenthesis from the first MATCH pattern. | 90 | 98.9% |
+| `missing_property_map_value` | Remove a value from a node or point property map. | 85 | 93.4% |
+| `undefined_return_variable` | Replace a returned property owner with an undefined variable. | 81 | 89.0% |
+| `unknown_function` | Replace a valid Cypher function with an unknown function. | 33 | 36.3% |
+| `missing_projection_comma` | Add a second RETURN projection without its required comma. | 90 | 98.9% |
+| `premature_return_clause` | Insert RETURN before later query clauses. | 90 | 98.9% |
 
 ## Coverage by question type
 
@@ -74,6 +74,27 @@ the template set because they apply to too few configured question types.
 | `farthest_object_from_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
 | `nearest_object_different_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
 | `objects_within_radius_of_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `objects_of_class_in_room_symbol` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `objects_of_class_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `count_objects_of_class_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `rooms_containing_object_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `object_classes_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `nearest_object_same_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `nearest_object_excluding_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `nearest_object_in_class_set` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `nearest_object_between_classes` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `farthest_object_of_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `objects_of_class_within_radius_of_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `objects_of_class_near_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `adjacent_rooms_of_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `objects_of_class_in_place` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `objects_excluding_class_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `place_object_count` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `object_classes_in_place_symbol` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `closest_cross_class_object_pairs` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `closest_room_pairs` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `nearest_place_to_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `nearest_room_to_object` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
 | `write_refusal` | — | 0 |
 | `pddl_visit_object_symbol` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `pddl_end_at_object_symbol` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
@@ -102,6 +123,18 @@ the template set because they apply to too few configured question types.
 | `pddl_inspect_object_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `pddl_object_not_in_place` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 | `pddl_visit_place_and_end_in_room` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_visit_all_objects_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_inspect_all_objects_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_visit_any_class_and_end_at_any_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_visit_all_class_and_end_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_visit_any_class_without_holding_any_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_atomic_alternative` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_compound_alternative` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_end_in_room_containing_object_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_visit_object_class_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_end_at_object_class_in_room_class` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
+| `pddl_inspect_closest_between_classes` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `unknown_function`, `missing_projection_comma`, `premature_return_clause` | 7 |
+| `pddl_ordered_places` | `misspelled_match_clause`, `unclosed_match_parenthesis`, `missing_property_map_value`, `undefined_return_variable`, `missing_projection_comma`, `premature_return_clause` | 6 |
 
 `write_refusal` is deliberately ineligible because its gold value is a safety
 sentinel rather than executable Cypher. All other configured question types have

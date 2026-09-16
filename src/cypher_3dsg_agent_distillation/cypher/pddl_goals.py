@@ -91,6 +91,8 @@ def render_goal_spec(spec: dict[str, Any], grounding: dict[str, list[str]]) -> s
             f"({predicate}{' ' if values else ''}{' '.join(values)})"
             for values in combinations
         ]
+        if bool(spec.get("negate_each")):
+            facts = [f"(not {fact})" for fact in facts]
         if len(facts) == 1:
             return facts[0]
         operator = str(spec.get("multiple") or "or")

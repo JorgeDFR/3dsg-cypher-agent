@@ -71,6 +71,7 @@ class QuestionCandidate:
     record: dict[str, Any]
     has_solution: bool
     variable_key: str
+    solution_key: str
     sampling_group_key: str | None
     variant_index: int
 
@@ -272,7 +273,7 @@ def diverse_candidate_sample(
     rng: random.Random,
     variant_usage: Counter[int],
 ) -> list[QuestionCandidate]:
-    """Balance configured groups and maximize distinct variables within each group."""
+    """Balance groups and variables, using solution diversity before wording."""
     if count <= 0:
         return []
 
@@ -284,6 +285,7 @@ def diverse_candidate_sample(
         by_group[group_key][candidate.variable_key].append(candidate)
     group_keys = list(by_group)
     rng.shuffle(group_keys)
+    solution_usage: Counter[tuple[str, str]] = Counter()
     variable_usage: Counter[tuple[str, str]] = Counter()
     for variables in by_group.values():
         for variable_candidates in variables.values():
@@ -315,8 +317,34 @@ def diverse_candidate_sample(
                 for variable_key in available_variables
                 if variable_usage[(group_key, variable_key)] == minimum_variable_usage
             ]
-            variable_key = rng.choice(least_used_variables)
-            choices = variables[variable_key]
+            available_solution_keys = {
+                candidate.solution_key
+                for variable_key in least_used_variables
+                for candidate in variables[variable_key]
+            }
+            minimum_solution_usage = min(
+                solution_usage[(group_key, solution_key)]
+                for solution_key in available_solution_keys
+            )
+            least_used_solutions = {
+                solution_key
+                for solution_key in available_solution_keys
+                if solution_usage[(group_key, solution_key)] == minimum_solution_usage
+            }
+            solution_variables = [
+                variable_key
+                for variable_key in least_used_variables
+                if any(
+                    candidate.solution_key in least_used_solutions
+                    for candidate in variables[variable_key]
+                )
+            ]
+            variable_key = rng.choice(solution_variables)
+            choices = [
+                candidate
+                for candidate in variables[variable_key]
+                if candidate.solution_key in least_used_solutions
+            ]
             minimum_usage = min(variant_usage[candidate.variant_index] for candidate in choices)
             least_used = [
                 candidate
@@ -324,8 +352,9 @@ def diverse_candidate_sample(
                 if variant_usage[candidate.variant_index] == minimum_usage
             ]
             candidate = rng.choice(least_used)
-            choices.remove(candidate)
+            variables[variable_key].remove(candidate)
             selected.append(candidate)
+            solution_usage[(group_key, candidate.solution_key)] += 1
             variable_usage[(group_key, variable_key)] += 1
             variant_usage[candidate.variant_index] += 1
             if len(selected) >= count:
@@ -384,7 +413,7 @@ def format_number(value: int | float) -> str:
     return str(number)
 
 
-COLLECTION_FORMAT_RE = re.compile(r"^(set|list)\[([A-Za-z_][A-Za-z0-9_]*)\]$")
+COLLECTION_FORMAT_RE = re.compile(r"^(set|list)\[(.+)\]$")
 SOLUTION_TYPE_ALIASES = {
     "string": "str",
     "strings": "str",
@@ -413,7 +442,7 @@ def canonical_solution_format(value: str) -> str:
     collection = COLLECTION_FORMAT_RE.fullmatch(compact)
     if collection:
         collection_kind, item_type = collection.groups()
-        return f"{collection_kind}[{canonical_solution_type(item_type)}]"
+        return f"{collection_kind}[{canonical_solution_format(item_type)}]"
     return canonical_solution_type(normalized)
 
 
@@ -811,6 +840,7 @@ def generate_records(
                         record=record,
                         has_solution=has_solution,
                         variable_key=variable_key,
+                        solution_key=str(record["solution"]).strip(),
                         sampling_group_key=sampling_group_key,
                         variant_index=variant_index,
                     )
@@ -900,6 +930,62 @@ def generated_record_has_solution(record: dict[str, Any]) -> bool:
     return not solution_is_empty(solution)
 
 
+def diverse_record_sample(
+    records: list[dict[str, Any]],
+    count: int,
+) -> list[dict[str, Any]]:
+    """Prefer distinct rendered inputs and use answers to break sampling ties."""
+    if count <= 0:
+        return []
+    by_variable: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        variable_key = str(record.get("gold_cypher") or record.get("uid") or "")
+        by_variable[variable_key].append(record)
+
+    variable_usage: Counter[str] = Counter()
+    solution_usage: Counter[str] = Counter()
+    selected: list[dict[str, Any]] = []
+    while len(selected) < count:
+        available_variables = [
+            key for key, variable_records in by_variable.items() if variable_records
+        ]
+        if not available_variables:
+            break
+        minimum_variable_usage = min(
+            variable_usage[variable_key] for variable_key in available_variables
+        )
+        least_used_variables = [
+            variable_key
+            for variable_key in available_variables
+            if variable_usage[variable_key] == minimum_variable_usage
+        ]
+        minimum_solution_usage = min(
+            solution_usage[str(record.get("solution") or "").strip()]
+            for variable_key in least_used_variables
+            for record in by_variable[variable_key]
+        )
+        chosen_variable = next(
+            variable_key
+            for variable_key in least_used_variables
+            if any(
+                solution_usage[str(record.get("solution") or "").strip()]
+                == minimum_solution_usage
+                for record in by_variable[variable_key]
+            )
+        )
+        chosen_index = next(
+            index
+            for index, record in enumerate(by_variable[chosen_variable])
+            if solution_usage[str(record.get("solution") or "").strip()]
+            == minimum_solution_usage
+        )
+        record = by_variable[chosen_variable].pop(chosen_index)
+        selected.append(record)
+        variable_usage[chosen_variable] += 1
+        solution_usage[str(record.get("solution") or "").strip()] += 1
+    return selected
+
+
 def evenly_select_scene_records(
     records: list[dict[str, Any]],
     *,
@@ -941,7 +1027,9 @@ def evenly_select_scene_records(
         return [
             record
             for scene_id in scene_ids
-            for record in buckets[scene_id][: quotas[scene_id]]
+            for record in diverse_record_sample(
+                buckets[scene_id], quotas[scene_id]
+            )
         ]
 
     non_empty = {
@@ -992,8 +1080,10 @@ def evenly_select_scene_records(
         str(record["uid"])
         for scene_id in scene_ids
         for record in (
-            empty[scene_id][: empty_quotas[scene_id]]
-            + non_empty[scene_id][: quotas[scene_id] - empty_quotas[scene_id]]
+            diverse_record_sample(empty[scene_id], empty_quotas[scene_id])
+            + diverse_record_sample(
+                non_empty[scene_id], quotas[scene_id] - empty_quotas[scene_id]
+            )
         )
     }
     return [record for record in records if str(record["uid"]) in selected_uids]

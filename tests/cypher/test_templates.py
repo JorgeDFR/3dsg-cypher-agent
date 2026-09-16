@@ -174,6 +174,27 @@ def test_scene_record_selection_is_even_and_redistributes_unused_capacity():
     assert Counter(record["scene_id"] for record in constrained) == {"a": 1, "b": 4}
 
 
+def test_scene_record_selection_uses_solution_diversity_to_break_variable_ties():
+    records = [
+        {
+            "uid": f"record-{index}",
+            "scene_id": "office",
+            "gold_cypher": f"RETURN {index}",
+            "solution": solution,
+        }
+        for index, solution in enumerate(("R0", "R0", "R0", "R0", "R1", "R2"))
+    ]
+
+    selected = evenly_select_scene_records(
+        records,
+        target=4,
+        scene_ids=["office"],
+    )
+
+    assert len({record["gold_cypher"] for record in selected}) == 4
+    assert {record["solution"] for record in selected} == {"R0", "R1", "R2"}
+
+
 def test_scene_record_selection_preserves_dataset_empty_ratio():
     records = [
         {
@@ -253,6 +274,14 @@ def test_format_solution_field_uses_answer_notation():
 
 def test_solution_format_aliases_are_normalized():
     assert normalize_solution_formats(["set of points", "string"]) == ["set[point]", "str"]
+    assert normalize_solution_formats(["set[list[str]]"]) == ["set[list[str]]"]
+
+
+def test_format_solution_field_supports_sets_of_pairs():
+    assert format_solution_field(
+        [["O1", "O2"], ["O3", "O4"]],
+        solution_formats=["set[list[str]]"],
+    ) == SolutionBlock("<[O1, O2], [O3, O4]>\n")
 
 
 def test_variable_template_samples_target_number_of_unique_questions():
@@ -294,6 +323,49 @@ def test_variable_sampling_uses_distinct_variables_before_wording_reuse():
     )
 
     assert len({record["gold_cypher"] for record in records}) == 10
+
+
+def test_variable_sampling_balances_solutions_before_repeating_them(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, variables):
+            return {
+                "O1": "R0",
+                "O2": "R0",
+                "O3": "R0",
+                "O4": "R0",
+                "O5": "R0",
+                "O6": "R0",
+                "O7": "R1",
+                "O8": "R2",
+            }[variables["object"]]
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {"objects": [f"O{index}" for index in range(1, 9)]},
+        },
+        question_templates_config={
+            "sampling": {"seed": 7, "empty_ratio": 0.0},
+            "templates": [
+                {
+                    "query_type": "room_lookup",
+                    "target_questions": 6,
+                    "solution_formats": ["str"],
+                    "variables": {"object": "objects"},
+                    "cypher": "RETURN '{object}' AS object",
+                    "questions": ["Find {object}.", "Locate {object}."],
+                }
+            ],
+        },
+    )
+
+    solution_counts = Counter(str(record["solution"]) for record in records)
+    assert len({record["gold_cypher"] for record in records}) == 6
+    assert set(solution_counts) == {"R0", "R1", "R2"}
 
 
 def test_variable_sampling_balances_explicit_sampling_groups():
@@ -718,6 +790,27 @@ def test_qa_templates_return_only_fields_required_by_the_answer():
         "farthest_object_from_object": "RETURN target.nodeSymbol AS object",
         "nearest_object_different_class": "RETURN target.nodeSymbol AS object",
         "objects_within_radius_of_object": "RETURN target.nodeSymbol AS object",
+        "objects_of_class_in_room_symbol": "RETURN DISTINCT o.nodeSymbol AS object",
+        "objects_of_class_in_room_class": "RETURN DISTINCT o.nodeSymbol AS object",
+        "count_objects_of_class_in_room_class": "RETURN count(DISTINCT o) AS count",
+        "rooms_containing_object_class": "RETURN DISTINCT r.nodeSymbol AS room",
+        "object_classes_in_room_class": "RETURN DISTINCT o.class AS class",
+        "nearest_object_same_class": "RETURN target.nodeSymbol AS object",
+        "nearest_object_excluding_class": "RETURN target.nodeSymbol AS object",
+        "nearest_object_in_class_set": "RETURN target.nodeSymbol AS object",
+        "nearest_object_between_classes": "RETURN target.nodeSymbol AS object",
+        "farthest_object_of_class": "RETURN target.nodeSymbol AS object",
+        "objects_of_class_within_radius_of_object": "RETURN DISTINCT target.nodeSymbol AS object",
+        "objects_of_class_near_class": "RETURN DISTINCT target.nodeSymbol AS object",
+        "adjacent_rooms_of_class": "RETURN DISTINCT neighbor.nodeSymbol AS room",
+        "objects_of_class_in_place": "RETURN DISTINCT o.nodeSymbol AS object",
+        "objects_excluding_class_in_room_class": "RETURN DISTINCT o.nodeSymbol AS object",
+        "place_object_count": "RETURN count(DISTINCT o) AS count",
+        "object_classes_in_place_symbol": "RETURN DISTINCT o.class AS class",
+        "closest_cross_class_object_pairs": "RETURN row.first AS first, row.second AS second",
+        "closest_room_pairs": "RETURN row.first AS first, row.second AS second",
+        "nearest_place_to_object": "RETURN p.nodeSymbol AS place",
+        "nearest_room_to_object": "RETURN r.nodeSymbol AS room",
     }
 
 

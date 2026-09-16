@@ -55,6 +55,20 @@ def test_render_pddl_solution_supports_nested_negation():
     )
 
 
+def test_render_pddl_solution_can_negate_each_ambiguous_fact():
+    grounding = {"expected": {"object": ["O1", "O2"]}}
+    goal = {
+        "fact": "holding",
+        "arguments": [{"result": "object"}],
+        "multiple": "and",
+        "negate_each": True,
+    }
+
+    assert render_pddl_solution(goal, grounding) == (
+        "(and (not (holding O1)) (not (holding O2)))"
+    )
+
+
 def test_grounding_contract_and_row_validation_are_alias_aware():
     contract = grounding_contract(
         ["O2", "O1"],

@@ -76,6 +76,11 @@ def test_extract_scene_values_from_spark_dsg():
     }
     assert all(len(objects_in_bbox(index, bbox)) <= 20 for bbox in values["bboxes"])
     assert len(values["place_object_cases"]) == 50
+    assert values["place_object_class_cases"]
+    assert all(
+        {"place", "place_label", "object_class"}.issubset(case)
+        for case in values["place_object_class_cases"]
+    )
     assert len(values["object_radius_cases"]) == 50
     assert len(values["nearest_object_mesh_cases"]) == 60
     assert len(values["nearest_object_cases"]) == 50
@@ -268,8 +273,10 @@ def test_new_qa_gold_solutions_cover_attributes_hierarchy_and_spatial_queries():
         "objects_within_radius_of_object",
         {"object": "O0", "radius": 2},
     ) == {"O3", "O4", "O6"}
-    assert index.solution_for("closest_cross_class_object_pairs", {}) == "O121|O154"
-    assert index.solution_for("closest_room_pairs", {}) == "R2|R3"
+    assert index.solution_for("closest_cross_class_object_pairs", {}) == [
+        ["O121", "O154"]
+    ]
+    assert index.solution_for("closest_room_pairs", {}) == [["R2", "R3"]]
 
 
 def test_room_pddl_solutions_support_class_and_object_containment_references():

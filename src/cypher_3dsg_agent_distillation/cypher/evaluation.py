@@ -455,6 +455,7 @@ def rows_to_solution_value(
         "combined_place_total",
         "room_object_count",
         "place_object_count",
+        "count_objects_of_class_in_room_class",
     }:
         return row_count_value(rows)
     if query_type == "object_class_by_symbol":
@@ -475,6 +476,12 @@ def rows_to_solution_value(
         "objects_in_place_symbol",
         "objects_in_bounding_box",
         "objects_within_radius_of_object",
+        "objects_of_class_in_room_symbol",
+        "objects_of_class_in_room_class",
+        "objects_excluding_class_in_room_class",
+        "objects_of_class_in_place",
+        "objects_of_class_within_radius_of_object",
+        "objects_of_class_near_class",
     }:
         return scalar_or_set(
             row_values(
@@ -501,6 +508,11 @@ def rows_to_solution_value(
         "nearest_object_any_class",
         "farthest_object_from_object",
         "nearest_object_different_class",
+        "nearest_object_same_class",
+        "nearest_object_excluding_class",
+        "nearest_object_in_class_set",
+        "nearest_object_between_classes",
+        "farthest_object_of_class",
     }:
         if not rows:
             return set()
@@ -544,6 +556,7 @@ def rows_to_solution_value(
     if query_type in {
         "object_classes_in_room_symbol",
         "object_classes_in_place_symbol",
+        "object_classes_in_room_class",
     }:
         return scalar_or_set(
             row_values(
@@ -557,18 +570,19 @@ def rows_to_solution_value(
         "closest_cross_class_object_pairs",
         "closest_room_pairs",
     }:
-        return scalar_or_set(
-            row_values(
-                rows,
-                "pair",
-                preferred_keys=["pair"],
-                flatten_collections=True,
-            )
-        )
+        return [
+            [
+                row_property(row, "first", preferred_keys=["first"]),
+                row_property(row, "second", preferred_keys=["second"]),
+            ]
+            for row in rows
+        ]
     if query_type in {
         "adjacent_rooms",
         "most_connected_rooms",
         "least_connected_rooms",
+        "rooms_containing_object_class",
+        "adjacent_rooms_of_class",
     }:
         return scalar_or_set(
             row_values(

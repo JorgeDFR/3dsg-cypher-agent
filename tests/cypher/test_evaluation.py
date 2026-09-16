@@ -59,6 +59,24 @@ def test_rows_to_solution_text_uses_declared_set_format():
     assert actual == "<light, cabinet>"
 
 
+def test_rows_to_solution_text_formats_closest_pairs_as_nested_sldp():
+    record = {
+        "query_type": "closest_cross_class_object_pairs",
+        "solution": "<[O1, O2], [O3, O4]>",
+        "solution_formats": ["set[list[str]]"],
+    }
+
+    actual = rows_to_solution_text(
+        record,
+        [
+            {"first": "O1", "second": "O2"},
+            {"first": "O3", "second": "O4"},
+        ],
+    )
+
+    assert actual == "<[O1, O2], [O3, O4]>"
+
+
 def test_rows_to_solution_text_infers_set_format_from_existing_trace_solution():
     top_classes = {
         "query_type": "top_object_classes_by_count",
@@ -228,14 +246,17 @@ def test_rows_to_solution_text_supports_new_qa_result_shapes():
             [{"place": "P5670"}],
             "P5670",
         ),
-        (
-            {
-                "query_type": "closest_cross_class_object_pairs",
-                "solution_formats": ["set[str]"],
-            },
-            [{"pair": "O9|O115"}, {"pair": "O121|O154"}],
-            "<O121|O154, O9|O115>",
-        ),
+            (
+                {
+                    "query_type": "closest_cross_class_object_pairs",
+                    "solution_formats": ["set[list[str]]"],
+                },
+                [
+                    {"first": "O9", "second": "O115"},
+                    {"first": "O121", "second": "O154"},
+                ],
+                "<[O9, O115], [O121, O154]>",
+            ),
         (
             {"query_type": "location_hops", "solution_formats": ["set[str]"]},
             [{"location": "P8350"}, {"location": "P8349"}],

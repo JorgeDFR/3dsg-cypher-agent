@@ -609,6 +609,15 @@ def scene_values(
         limit=max_place_object_cases,
         empty_ratio=0.0,
     )
+    place_object_class_cases = [
+        {
+            "place": case["place"],
+            "place_label": case["place_label"],
+            "object_class": object_class,
+        }
+        for case in valid_place_object_cases
+        for object_class in object_classes
+    ]
     valid_object_parent_cases = build_object_parent_cases(
         index=index,
         limit=max_place_object_cases,
@@ -742,6 +751,7 @@ def scene_values(
             max_place_object_cases,
             empty_ratio,
         ),
+        "place_object_class_cases": place_object_class_cases,
         "object_parent_cases": mix_invalid_cases(
             valid_object_parent_cases,
             [
@@ -1025,7 +1035,7 @@ class SceneIndex:
         nodes: list[spark_dsg.SceneGraphNode],
         *,
         different_classes: bool = False,
-    ) -> list[str]:
+    ) -> list[list[str]]:
         candidates: list[tuple[float, str, str]] = []
         for first_index, first in enumerate(nodes):
             first_symbol = node_symbol(first.id)
@@ -1050,11 +1060,63 @@ class SceneIndex:
         if not candidates:
             return []
         minimum = min(candidate[0] for candidate in candidates)
-        return sorted(
-            f"{first}|{second}"
-            for pair_distance, first, second in candidates
+        return [
+            [first, second]
+            for pair_distance, first, second in sorted(candidates)
             if pair_distance == minimum
-        )
+        ]
+
+    def objects_in_rooms(
+        self,
+        *,
+        object_class: str | None = None,
+        room_class: str | None = None,
+        room_symbol: str | None = None,
+        excluded_class: str | None = None,
+    ) -> list[spark_dsg.SceneGraphNode]:
+        if room_symbol is not None:
+            room = self.nodes_by_symbol.get(room_symbol)
+            rooms = [room] if room is not None else []
+        else:
+            rooms = self.rooms_with_class(room_class)
+        objects: dict[str, spark_dsg.SceneGraphNode] = {}
+        for room in rooms:
+            for obj in self.contained_objects(room):
+                symbol = node_symbol(obj.id)
+                class_name = self.classes_by_symbol.get(symbol)
+                if object_class is not None and class_name != object_class:
+                    continue
+                if excluded_class is not None and class_name == excluded_class:
+                    continue
+                objects[symbol] = obj
+        return [objects[symbol] for symbol in sorted(objects, key=symbol_sort_key)]
+
+    def closest_object_between_classes(
+        self,
+        reference_class: str,
+        target_class: str,
+    ) -> str | None:
+        ranked: list[tuple[float, tuple[Any, ...], tuple[Any, ...], str]] = []
+        for reference in self.objects_with_class(reference_class):
+            reference_symbol = node_symbol(reference.id)
+            reference_point = self.points_by_symbol.get(reference_symbol)
+            for target in self.objects_with_class(target_class):
+                target_symbol = node_symbol(target.id)
+                if target_symbol == reference_symbol:
+                    continue
+                target_distance = distance(
+                    reference_point, self.points_by_symbol.get(target_symbol)
+                )
+                if target_distance is not None:
+                    ranked.append(
+                        (
+                            target_distance,
+                            symbol_sort_key(target_symbol),
+                            symbol_sort_key(reference_symbol),
+                            target_symbol,
+                        )
+                    )
+        return min(ranked)[3] if ranked else None
 
     def solution_for(
         self,
@@ -1077,6 +1139,8 @@ class SceneIndex:
             "pddl_inspect_object_class",
             "pddl_hold_object_class",
             "pddl_not_holding_object_class",
+            "pddl_visit_all_objects_class",
+            "pddl_inspect_all_objects_class",
         }:
             return [
                 node_symbol(node.id)
@@ -1103,6 +1167,76 @@ class SceneIndex:
                     str(template_value(variables, "room_class"))
                 )
             ]
+        if query_type == "pddl_end_in_room_containing_object_class":
+            room_symbols = {
+                node_symbol(room.id)
+                for obj in self.objects_with_class(
+                    str(template_value(variables, "object_class"))
+                )
+                for room in self.containing_rooms(node_symbol(obj.id))
+            }
+            return sorted(room_symbols, key=symbol_sort_key)
+        if query_type in {
+            "pddl_visit_object_class_in_room_class",
+            "pddl_end_at_object_class_in_room_class",
+        }:
+            return [
+                node_symbol(node.id)
+                for node in self.objects_in_rooms(
+                    object_class=str(template_value(variables, "object_class")),
+                    room_class=str(template_value(variables, "room_class")),
+                )
+            ]
+        if query_type == "pddl_inspect_closest_between_classes":
+            return self.closest_object_between_classes(
+                str(template_value(variables, "reference_class")),
+                str(template_value(variables, "target_class")),
+            )
+        if query_type in {
+            "pddl_visit_any_class_and_end_at_any_class",
+            "pddl_atomic_alternative",
+            "pddl_compound_alternative",
+        }:
+            first_class = str(template_value(variables, "first_class"))
+            second_class = str(template_value(variables, "second_class"))
+            return {
+                "first": [
+                    node_symbol(node.id) for node in self.objects_with_class(first_class)
+                ],
+                "second": [
+                    node_symbol(node.id) for node in self.objects_with_class(second_class)
+                ],
+            }
+        if query_type == "pddl_visit_all_class_and_end_in_room_class":
+            return {
+                "object": [
+                    node_symbol(node.id)
+                    for node in self.objects_with_class(
+                        str(template_value(variables, "object_class"))
+                    )
+                ],
+                "room": [
+                    node_symbol(node.id)
+                    for node in self.rooms_with_class(
+                        str(template_value(variables, "room_class"))
+                    )
+                ],
+            }
+        if query_type == "pddl_visit_any_class_without_holding_any_class":
+            return {
+                "visit": [
+                    node_symbol(node.id)
+                    for node in self.objects_with_class(
+                        str(template_value(variables, "visit_class"))
+                    )
+                ],
+                "unheld": [
+                    node_symbol(node.id)
+                    for node in self.objects_with_class(
+                        str(template_value(variables, "unheld_class"))
+                    )
+                ],
+            }
         if query_type in {
             "pddl_visit_room_containing_object",
             "pddl_end_in_room_containing_object",
@@ -1160,7 +1294,11 @@ class SceneIndex:
         if query_type == "pddl_ordered_places":
             first = str(template_value(variables, "first"))
             second = str(template_value(variables, "second"))
-            if first not in self.nodes_by_symbol or second not in self.nodes_by_symbol:
+            if (
+                first == second
+                or first not in self.nodes_by_symbol
+                or second not in self.nodes_by_symbol
+            ):
                 return None
             return {"first": first, "second": second}
         if query_type == "object_class_inventory":
@@ -1223,6 +1361,60 @@ class SceneIndex:
             for room in self.rooms_with_class(str(template_value(variables, "room_class"))):
                 symbols.extend(node_symbol(node.id) for node in self.contained_objects(room))
             return scalar_or_set(sorted(set(symbols), key=symbol_sort_key))
+        if query_type in {
+            "objects_of_class_in_room_symbol",
+            "objects_of_class_in_room_class",
+        }:
+            kwargs: dict[str, str] = {
+                "object_class": str(template_value(variables, "object_class"))
+            }
+            if query_type.endswith("room_symbol"):
+                kwargs["room_symbol"] = str(template_value(variables, "room"))
+            else:
+                kwargs["room_class"] = str(template_value(variables, "room_class"))
+            return scalar_or_set(
+                [node_symbol(node.id) for node in self.objects_in_rooms(**kwargs)]
+            )
+        if query_type == "count_objects_of_class_in_room_class":
+            return len(
+                self.objects_in_rooms(
+                    object_class=str(template_value(variables, "object_class")),
+                    room_class=str(template_value(variables, "room_class")),
+                )
+            )
+        if query_type == "rooms_containing_object_class":
+            symbols = {
+                node_symbol(room.id)
+                for obj in self.objects_with_class(
+                    str(template_value(variables, "object_class"))
+                )
+                for room in self.containing_rooms(node_symbol(obj.id))
+            }
+            return scalar_or_set(sorted(symbols, key=symbol_sort_key))
+        if query_type == "object_classes_in_room_class":
+            return scalar_or_set(
+                sorted(
+                    {
+                        self.classes_by_symbol[node_symbol(node.id)]
+                        for node in self.objects_in_rooms(
+                            room_class=str(template_value(variables, "room_class"))
+                        )
+                        if self.classes_by_symbol.get(node_symbol(node.id)) is not None
+                    }
+                )
+            )
+        if query_type == "objects_excluding_class_in_room_class":
+            return scalar_or_set(
+                [
+                    node_symbol(node.id)
+                    for node in self.objects_in_rooms(
+                        room_class=str(template_value(variables, "room_class")),
+                        excluded_class=str(
+                            template_value(variables, "excluded_class")
+                        ),
+                    )
+                ]
+            )
         if query_type == "objects_in_place_symbol":
             symbols = [
                 node_symbol(node.id)
@@ -1244,6 +1436,17 @@ class SceneIndex:
                         if self.classes_by_symbol.get(node_symbol(node.id)) is not None
                     }
                 )
+            )
+        if query_type == "objects_of_class_in_place":
+            return scalar_or_set(
+                [
+                    node_symbol(node.id)
+                    for node in self.direct_place_objects(
+                        str(template_value(variables, "place"))
+                    )
+                    if self.classes_by_symbol.get(node_symbol(node.id))
+                    == str(template_value(variables, "object_class"))
+                ]
             )
         if query_type == "object_place_lookup":
             object_value = template_value(variables, "object")
@@ -1320,6 +1523,47 @@ class SceneIndex:
                 candidates,
                 farthest=query_type == "farthest_object_from_object",
             )
+        if query_type in {
+            "nearest_object_same_class",
+            "nearest_object_excluding_class",
+            "nearest_object_in_class_set",
+            "farthest_object_of_class",
+        }:
+            source_symbol = str(template_value(variables, "object"))
+            source_class = self.classes_by_symbol.get(source_symbol)
+            if query_type == "nearest_object_same_class":
+                candidates = self.objects_with_class(source_class)
+            elif query_type == "nearest_object_excluding_class":
+                excluded = str(template_value(variables, "excluded_class"))
+                candidates = [
+                    node
+                    for node in self.objects_with_class()
+                    if self.classes_by_symbol.get(node_symbol(node.id)) != excluded
+                ]
+            elif query_type == "nearest_object_in_class_set":
+                allowed = {
+                    str(template_value(variables, "first_class")),
+                    str(template_value(variables, "second_class")),
+                }
+                candidates = [
+                    node
+                    for node in self.objects_with_class()
+                    if self.classes_by_symbol.get(node_symbol(node.id)) in allowed
+                ]
+            else:
+                candidates = self.objects_with_class(
+                    str(template_value(variables, "target_class"))
+                )
+            return self.nearest_symbol(
+                source_symbol,
+                candidates,
+                farthest=query_type == "farthest_object_of_class",
+            )
+        if query_type == "nearest_object_between_classes":
+            return self.closest_object_between_classes(
+                str(template_value(variables, "reference_class")),
+                str(template_value(variables, "target_class")),
+            )
         if query_type == "nearest_place_to_object":
             return self.nearest_symbol(
                 str(template_value(variables, "object")),
@@ -1346,15 +1590,41 @@ class SceneIndex:
                 if node_distance is not None and node_distance < radius:
                     symbols.append(symbol)
             return scalar_or_set(sorted(symbols, key=symbol_sort_key))
+        if query_type in {
+            "objects_of_class_within_radius_of_object",
+            "objects_of_class_near_class",
+        }:
+            radius = float(template_value(variables, "radius"))
+            target_class = str(template_value(variables, "target_class"))
+            if query_type == "objects_of_class_within_radius_of_object":
+                reference_symbols = [str(template_value(variables, "object"))]
+            else:
+                reference_symbols = [
+                    node_symbol(node.id)
+                    for node in self.objects_with_class(
+                        str(template_value(variables, "reference_class"))
+                    )
+                ]
+            symbols = set()
+            for reference_symbol in reference_symbols:
+                reference_point = self.points_by_symbol.get(reference_symbol)
+                for node in self.objects_with_class(target_class):
+                    symbol = node_symbol(node.id)
+                    if symbol == reference_symbol:
+                        continue
+                    node_distance = distance(
+                        reference_point, self.points_by_symbol.get(symbol)
+                    )
+                    if node_distance is not None and node_distance < radius:
+                        symbols.add(symbol)
+            return scalar_or_set(sorted(symbols, key=symbol_sort_key))
         if query_type == "closest_cross_class_object_pairs":
-            return scalar_or_set(
-                self.closest_pairs(
-                    self.objects_with_class(),
-                    different_classes=True,
-                )
+            return self.closest_pairs(
+                self.objects_with_class(),
+                different_classes=True,
             )
         if query_type == "closest_room_pairs":
-            return scalar_or_set(self.closest_pairs(self.nodes_with_label("Room")))
+            return self.closest_pairs(self.nodes_with_label("Room"))
         if query_type == "objects_in_bounding_box":
             bbox = variables["bbox"]
             lower = bbox["lower"]
@@ -1391,6 +1661,17 @@ class SceneIndex:
                 self.adjacent_symbols(
                     str(template_value(variables, "room")), {"Room"}
                 )
+            )
+        if query_type == "adjacent_rooms_of_class":
+            room_class = str(template_value(variables, "room_class"))
+            return scalar_or_set(
+                [
+                    symbol
+                    for symbol in self.adjacent_symbols(
+                        str(template_value(variables, "room")), {"Room"}
+                    )
+                    if self.classes_by_symbol.get(symbol) == room_class
+                ]
             )
         if query_type == "adjacent_places":
             return scalar_or_set(
