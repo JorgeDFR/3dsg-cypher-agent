@@ -236,6 +236,16 @@ def test_rows_to_solution_text_supports_new_qa_result_shapes():
             [{"pair": "O9|O115"}, {"pair": "O121|O154"}],
             "<O121|O154, O9|O115>",
         ),
+        (
+            {"query_type": "location_hops", "solution_formats": ["set[str]"]},
+            [{"location": "P8350"}, {"location": "P8349"}],
+            "<P8349, P8350>",
+        ),
+        (
+            {"query_type": "location_hops", "solution_formats": ["set[str]"]},
+            [],
+            "<>",
+        ),
     ]
 
     for record, rows, expected in cases:

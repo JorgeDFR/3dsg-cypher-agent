@@ -617,6 +617,16 @@ def rows_to_solution_value(
                 flatten_collections=True,
             )
         )
+    if query_type == "location_hops":
+        return scalar_or_set(
+            row_values(
+                rows,
+                "nodeSymbol",
+                preferred_keys=["location", "nodeSymbol"],
+                node_keys=["location"],
+                flatten_collections=True,
+            )
+        )
     return rows
 
 
