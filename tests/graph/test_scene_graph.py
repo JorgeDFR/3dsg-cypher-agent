@@ -149,8 +149,8 @@ def test_labelspace_prompt_is_derived_per_scene():
     spot = labelspace_description(SPOT_SCENE_PATH)
 
     assert office != spot
-    assert "<object_labels>" in office
-    assert "<mesh_places_labels>" in spot
+    assert "<room_labels>" in office
+    assert "<object_labels>" in spot
     assert "chair" in spot
 
 

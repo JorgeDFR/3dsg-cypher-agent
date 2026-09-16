@@ -194,7 +194,7 @@ def labelspace_description(scene_path: str | Path) -> str:
     ]
     for label, tag in (
         ("Object", "object_labels"),
-        ("MeshPlace", "mesh_places_labels"),
+        #("MeshPlace", "mesh_places_labels"),
         ("Room", "room_labels"),
     ):
         sections.append(f"  <{tag}>")

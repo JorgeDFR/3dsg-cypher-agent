@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 from contextlib import nullcontext
@@ -39,12 +40,16 @@ from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
     load_data_config,
+    load_student_family_config,
     load_yaml,
     resolve_project_path,
     teacher_name_from_config,
     with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
+from cypher_3dsg_agent_distillation.core.model_runtime_output import (
+    configure_model_library_output,
+)
 from cypher_3dsg_agent_distillation.core.scene_ordering import group_records_by_scene
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
@@ -1362,6 +1367,64 @@ def progress_description(
     )
 
 
+def nearest_rank_percentile(values: list[int], percentile: int) -> int | None:
+    """Return an observed value at the requested nearest-rank percentile."""
+    if not values:
+        return None
+    if not 0 < percentile <= 100:
+        raise ValueError("percentile must be in the range 1..100.")
+    ordered = sorted(values)
+    rank = math.ceil(percentile / 100 * len(ordered))
+    return ordered[rank - 1]
+
+
+def trace_token_length_report(
+    records: list[dict[str, Any]],
+    tokenizer: Any,
+    *,
+    max_length: int,
+) -> dict[str, Any]:
+    """Measure traces exactly as they are rendered and tokenized for training."""
+    from cypher_3dsg_agent_distillation.training.train import (
+        rendered_record_text,
+        tokenize_rendered_text,
+    )
+
+    if max_length <= 0:
+        raise ValueError("training.max_length must be greater than zero.")
+
+    traces = []
+    lengths = []
+    for record in records:
+        text = rendered_record_text(record, tokenizer)
+        token_length = len(tokenize_rendered_text(tokenizer, text))
+        lengths.append(token_length)
+        traces.append(
+            {
+                "uid": str(record.get("uid") or ""),
+                "token_length": token_length,
+                "exceeds_max_length": token_length > max_length,
+            }
+        )
+
+    overlength_count = sum(trace["exceeds_max_length"] for trace in traces)
+    return {
+        "trace_count": len(traces),
+        "max_length": max_length,
+        "overlength_count": overlength_count,
+        "overlength_rate": overlength_count / len(traces) if traces else 0.0,
+        "percentile_method": "nearest_rank",
+        "percentiles": {
+            "p50": nearest_rank_percentile(lengths, 50),
+            "p90": nearest_rank_percentile(lengths, 90),
+            "p95": nearest_rank_percentile(lengths, 95),
+            "p99": nearest_rank_percentile(lengths, 99),
+            "max": max(lengths) if lengths else None,
+        },
+        "traces": traces,
+    }
+
+
 def debug_trace_record(
     seed: dict[str, Any],
     decision: TraceDecision,
@@ -1426,7 +1489,15 @@ def debug_trace_record(
 
 
 def generate_command(args: argparse.Namespace) -> None:
+    configure_model_library_output()
     teacher_config = load_yaml(args.teacher_config)
+    student_config = load_student_family_config(args.student_config)
+    from cypher_3dsg_agent_distillation.training.train import load_tokenizer
+
+    training_max_length = int((student_config.get("training") or {}).get("max_length", 4096))
+    if training_max_length <= 0:
+        raise ValueError("training.max_length must be greater than zero.")
+    tokenizer = load_tokenizer(student_config)
     provider = configured_teacher_provider(teacher_config)
     data_config = load_data_config(
         args.data_config, dataset_version=args.dataset_version
@@ -1489,6 +1560,9 @@ def generate_command(args: argparse.Namespace) -> None:
             },
             "teacher_config": config_record(
                 resolve_project_path(args.teacher_config), project_root=PROJECT_ROOT
+            ),
+            "student_config": config_record(
+                student_config["student_config_path"], project_root=PROJECT_ROOT
             ),
             "data_config": config_record(
                 data_config["data_config_path"], project_root=PROJECT_ROOT
@@ -1657,6 +1731,30 @@ def generate_command(args: argparse.Namespace) -> None:
         json.dumps(rejected_debug_records, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    token_report = trace_token_length_report(
+        teacher_records,
+        tokenizer,
+        max_length=training_max_length,
+    )
+    token_report.update(
+        {
+            "schema_version": 1,
+            "artifact_type": "teacher_trace_token_lengths",
+            "created_at": iso_now(),
+            "tokenizer": str(
+                student_config["model"].get("tokenizer")
+                or student_config["model"]["base_model"]
+            ),
+            "student_config": config_record(
+                student_config["student_config_path"], project_root=PROJECT_ROOT
+            ),
+        }
+    )
+    token_length_report_path = str(
+        ensure_parent(data_config["teacher_traces_jsonl_path"]).parent
+        / "token_length_report.yaml"
+    )
+    atomic_write_yaml(token_report, token_length_report_path)
     teacher_metadata = load_yaml(data_config["teacher_metadata_path"])
     teacher_metadata.update(
         {
@@ -1679,6 +1777,14 @@ def generate_command(args: argparse.Namespace) -> None:
                 "rejected": file_fingerprint(
                     data_config["rejected_traces_path"], relative_to=PROJECT_ROOT
                 ),
+                "token_length_report": file_fingerprint(
+                    token_length_report_path, relative_to=PROJECT_ROOT
+                ),
+            },
+            "token_lengths": {
+                key: value
+                for key, value in token_report.items()
+                if key not in {"traces", "student_config"}
             },
         }
     )
@@ -1691,6 +1797,7 @@ def generate_command(args: argparse.Namespace) -> None:
     dataset_metadata["updated_at"] = iso_now()
     atomic_write_yaml(dataset_metadata, data_config["metadata_path"])
     acceptance_rate = len(teacher_records) / total_attempts if total_attempts else 0.0
+    token_percentiles = token_report["percentiles"]
     print_summary(
         "Teacher traces generated",
         [
@@ -1701,6 +1808,40 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
             ("Acceptance rate", f"{acceptance_rate:.1%}"),
+            (
+                "Token length p50",
+                token_percentiles["p50"]
+                if token_percentiles["p50"] is not None
+                else "n/a",
+            ),
+            (
+                "Token length p90",
+                token_percentiles["p90"]
+                if token_percentiles["p90"] is not None
+                else "n/a",
+            ),
+            (
+                "Token length p95",
+                token_percentiles["p95"]
+                if token_percentiles["p95"] is not None
+                else "n/a",
+            ),
+            (
+                "Token length p99",
+                token_percentiles["p99"]
+                if token_percentiles["p99"] is not None
+                else "n/a",
+            ),
+            (
+                "Token length max",
+                token_percentiles["max"]
+                if token_percentiles["max"] is not None
+                else "n/a",
+            ),
+            (
+                f"Traces over max_length={training_max_length}",
+                f"{token_report['overlength_count']} ({token_report['overlength_rate']:.1%})",
+            ),
             ("Scene database reloads", scene_database_reloads),
             (
                 "Max tool calls",
@@ -1711,6 +1852,7 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Training traces", teacher_traces_path),
             ("Accepted debug", data_config["accepted_traces_path"]),
             ("Rejected debug", data_config["rejected_traces_path"]),
+            ("Token length report", token_length_report_path),
         ],
     )
 
@@ -1752,6 +1894,11 @@ def main() -> None:
         default="configs/teacher_gpt_oss_120b.yaml",
     )
     generate_parser.add_argument("--data-config", default="configs/data.yaml")
+    generate_parser.add_argument(
+        "--student-config",
+        default="configs/student_qwen3.5_4b.yaml",
+        help="Student tokenizer and training.max_length used for the token-length report.",
+    )
     generate_parser.add_argument("--dataset-version", default=None)
     generate_parser.add_argument(
         "--teacher",

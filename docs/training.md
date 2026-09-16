@@ -53,9 +53,10 @@ to use tool feedback without training it to reproduce the intentional error.
 The training split does not apply scene-specific ordering. The standard SFT
 sampler shuffles the prepared traces in every training epoch.
 
-`training.warmup_ratio` controls scheduler warmup as a fraction of the total
-optimizer steps, so changes to the split size, batch size, gradient accumulation,
-or epoch count automatically change the number of warmup steps. Before training,
+`training.warmup_steps` accepts an integer number of optimizer steps or a float
+in `[0, 1)`. A value of `0.05` warms up for 5% of the total optimizer steps, so
+changes to the split size, batch size, gradient accumulation, or epoch count
+automatically change the number of warmup steps. Before training,
 every rendered trace is tokenized and checked against `training.max_length`.
 Overlength traces are excluded without truncation, and a warning reports the
 number rejected from each split.

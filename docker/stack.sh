@@ -396,7 +396,8 @@ run_demo_train() {
   demo_step 4 "${total_steps}" "Generate and validate teacher traces" \
     python scripts/generate_traces.py generate \
       --data-config "${DEMO_DATA_CONFIG}" \
-      --teacher-config "${DEMO_TEACHER_CONFIG}"
+      --teacher-config "${DEMO_TEACHER_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}"
   demo_step 5 "${total_steps}" "Create grouped dataset splits" \
     python scripts/prepare_dataset.py split \
       --data-config "${DEMO_DATA_CONFIG}" \

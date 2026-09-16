@@ -1,8 +1,76 @@
-FROM pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime
+ARG PYTORCH_VERSION=2.13.0
+ARG CUDA_VERSION=13.0
+ARG CUDNN_VERSION=9
+
+# Build CUDA extensions and llama.cpp with the compiler toolchain, but do not
+# carry that toolchain into the final image.
+FROM pytorch/pytorch:${PYTORCH_VERSION}-cuda${CUDA_VERSION}-cudnn${CUDNN_VERSION}-devel AS builder
+
+ARG LLAMA_CPP_REF=master
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV HOME=/home/user
+ENV WORKSPACE_DIR=/home/user/workspace
+ENV PROJECT_DIR=/home/user/workspace/3dsg-cypher-agent
+ENV MAIN_VENV=/home/user/workspace/.venv
+ENV LLAMA_CPP_DIR=/home/user/workspace/llama.cpp
+ENV LLAMA_CPP_PYTHON=/home/user/workspace/llama.cpp/.venv/bin/python
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ninja-build \
+        python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p "${PROJECT_DIR}" \
+    && git clone --depth 1 https://github.com/ggml-org/llama.cpp "${LLAMA_CPP_DIR}" \
+    && cd "${LLAMA_CPP_DIR}" \
+    && if [ "${LLAMA_CPP_REF}" != "master" ]; then \
+        git fetch --depth 1 origin "${LLAMA_CPP_REF}" \
+        && git checkout FETCH_HEAD; \
+    fi \
+    && python -m venv "${LLAMA_CPP_DIR}/.venv" \
+    && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir --upgrade pip \
+    && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir -r requirements.txt \
+    && cmake -S "${LLAMA_CPP_DIR}" -B "${LLAMA_CPP_DIR}/build" -G Ninja \
+    && cmake --build "${LLAMA_CPP_DIR}/build" --target llama-quantize \
+    && cp "${LLAMA_CPP_DIR}/build/bin/llama-quantize" /tmp/llama-quantize \
+    && rm -rf "${LLAMA_CPP_DIR}/build" "${LLAMA_CPP_DIR}/.git" \
+    && mkdir -p "${LLAMA_CPP_DIR}/build/bin" \
+    && mv /tmp/llama-quantize "${LLAMA_CPP_DIR}/build/bin/llama-quantize" \
+    && chmod -R a+rX "${LLAMA_CPP_DIR}"
+
+WORKDIR ${PROJECT_DIR}
+
+COPY pyproject.toml README.md ${PROJECT_DIR}/
+COPY src ${PROJECT_DIR}/src
+COPY scripts ${PROJECT_DIR}/scripts
+COPY tests ${PROJECT_DIR}/tests
+COPY configs ${PROJECT_DIR}/configs
+COPY data/scenes ${PROJECT_DIR}/data/scenes
+
+RUN python -m venv --system-site-packages "${MAIN_VENV}" \
+    && "${MAIN_VENV}/bin/python" -m pip install --no-cache-dir --upgrade pip \
+    && "${MAIN_VENV}/bin/python" -m pip install --no-cache-dir -e '.[train]' \
+    && "${MAIN_VENV}/bin/python" -m pip install --no-cache-dir \
+        "flash-linear-attention[cuda]==0.5.2" \
+    && MAX_JOBS=2 "${MAIN_VENV}/bin/python" -m pip install \
+        --no-cache-dir \
+        --no-build-isolation \
+        "causal-conv1d==1.7.0"
+
+
+# The matching runtime image contains the CUDA/cuDNN libraries required by the
+# compiled extension, without nvcc, CUDA headers, or the compiler toolchain.
+FROM pytorch/pytorch:${PYTORCH_VERSION}-cuda${CUDA_VERSION}-cudnn${CUDNN_VERSION}-runtime AS runtime
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
-ARG LLAMA_CPP_REF=master
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -19,13 +87,9 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         bash \
-        build-essential \
         ca-certificates \
-        cmake \
         curl \
         git \
-        ninja-build \
-        python3-venv \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -65,32 +129,17 @@ RUN set -eux; \
 RUN mkdir -p "${PROJECT_DIR}" /home/user/.cache/huggingface \
     && chown -R "${HOST_UID}:${HOST_GID}" /home/user
 
-RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp "${LLAMA_CPP_DIR}" \
-    && cd "${LLAMA_CPP_DIR}" \
-    && if [ "${LLAMA_CPP_REF}" != "master" ]; then \
-        git fetch --depth 1 origin "${LLAMA_CPP_REF}" \
-        && git checkout FETCH_HEAD; \
-    fi \
-    && python -m venv "${LLAMA_CPP_DIR}/.venv" \
-    && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir --upgrade pip \
-    && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir -r requirements.txt \
-    && cmake -S "${LLAMA_CPP_DIR}" -B "${LLAMA_CPP_DIR}/build" -G Ninja \
-    && cmake --build "${LLAMA_CPP_DIR}/build" --target llama-quantize \
-    && chmod -R a+rX "${LLAMA_CPP_DIR}"
+COPY --from=builder --chown=${HOST_UID}:${HOST_GID} \
+    /home/user/workspace/.venv \
+    /home/user/workspace/.venv
+COPY --from=builder --chown=${HOST_UID}:${HOST_GID} \
+    /home/user/workspace/llama.cpp \
+    /home/user/workspace/llama.cpp
+COPY --from=builder --chown=${HOST_UID}:${HOST_GID} \
+    /home/user/workspace/3dsg-cypher-agent \
+    /home/user/workspace/3dsg-cypher-agent
 
-WORKDIR ${PROJECT_DIR}
-
-COPY --chown=${HOST_UID}:${HOST_GID} pyproject.toml README.md ${PROJECT_DIR}/
-COPY --chown=${HOST_UID}:${HOST_GID} src ${PROJECT_DIR}/src
-COPY --chown=${HOST_UID}:${HOST_GID} scripts ${PROJECT_DIR}/scripts
-COPY --chown=${HOST_UID}:${HOST_GID} tests ${PROJECT_DIR}/tests
-COPY --chown=${HOST_UID}:${HOST_GID} configs ${PROJECT_DIR}/configs
-COPY --chown=${HOST_UID}:${HOST_GID} data/scenes ${PROJECT_DIR}/data/scenes
-
-RUN python -m venv --system-site-packages "${MAIN_VENV}" \
-    && "${MAIN_VENV}/bin/python" -m pip install --no-cache-dir --upgrade pip \
-    && "${MAIN_VENV}/bin/python" -m pip install --no-cache-dir -e '.[train]' \
-    && printf '%s\n' \
+RUN printf '%s\n' \
         '' \
         '# Activate the project environment in interactive shells.' \
         'if [[ -f "${MAIN_VENV}/bin/activate" ]]; then' \
@@ -99,13 +148,12 @@ RUN python -m venv --system-site-packages "${MAIN_VENV}" \
         '    source "${MAIN_VENV}/bin/activate"' \
         'fi' \
         >> /home/user/.bashrc \
-    && chown -R "${HOST_UID}:${HOST_GID}" \
-        "${MAIN_VENV}" \
-        "${PROJECT_DIR}" \
-        /home/user/.bashrc
+    && chown "${HOST_UID}:${HOST_GID}" /home/user/.bashrc
 
 ENV VIRTUAL_ENV=${MAIN_VENV}
 ENV PATH=${MAIN_VENV}/bin:${PATH}
+
+WORKDIR ${PROJECT_DIR}
 
 USER user:user
 

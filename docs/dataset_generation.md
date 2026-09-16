@@ -173,7 +173,8 @@ Generate and validate OpenRouter traces:
 ```bash
 docker/stack.sh main python scripts/generate_traces.py generate \
   --data-config configs/data.yaml \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml
+  --teacher-config configs/teacher_gpt_oss_120b.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml
 ```
 
 Generate deterministic traces without an LLM teacher:
@@ -181,7 +182,8 @@ Generate deterministic traces without an LLM teacher:
 ```bash
 docker/stack.sh main python scripts/generate_traces.py generate \
   --data-config configs/data.yaml \
-  --teacher-config configs/teacher_synthetic.yaml
+  --teacher-config configs/teacher_synthetic.yaml \
+  --student-config configs/student_qwen3.5_4b.yaml
 ```
 
 ### Teacher validation
@@ -220,6 +222,12 @@ include:
 | `accepted.json` | Accepted raw interactions plus validation fields |
 | `rejected.json` | Rejected interactions and failure details |
 | `teacher_traces.jsonl` | Canonical accepted traces for later splitting |
+| `token_length_report.yaml` | Per-trace rendered token lengths, p50/p90/p95/p99/max, and the count above the student's `training.max_length` |
+
+The final terminal summary shows the same token-length percentiles and overlength
+count. Lengths use the tokenizer and chat template from `--student-config`, so
+they match the length check applied during training. Percentiles use the
+nearest-rank method.
 
 ## Agent trace format
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
@@ -171,13 +172,26 @@ def enable_gradient_checkpointing_for_kbit_training(
             input_embeddings.register_forward_hook(make_inputs_require_grad)
 
     if hasattr(model, "gradient_checkpointing_enable"):
-        try:
-            model.gradient_checkpointing_enable(**gradient_checkpointing_kwargs)
-        except TypeError:
+        if not gradient_checkpointing_kwargs:
             model.gradient_checkpointing_enable()
+            return
+        try:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs=gradient_checkpointing_kwargs
+            )
+        except TypeError:
+            try:
+                model.gradient_checkpointing_enable(**gradient_checkpointing_kwargs)
+            except TypeError:
+                model.gradient_checkpointing_enable()
 
 
-def prepare_gemma4_effective_model_for_kbit_training(model: Any):
+def prepare_gemma4_effective_model_for_kbit_training(
+    model: Any,
+    *,
+    use_gradient_checkpointing: bool = True,
+    gradient_checkpointing_kwargs: dict[str, Any] | None = None,
+):
     import torch
 
     for name, param in model.named_parameters():
@@ -188,8 +202,13 @@ def prepare_gemma4_effective_model_for_kbit_training(model: Any):
         ):
             param.data = param.data.to(torch.float32)
 
-    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
-        enable_gradient_checkpointing_for_kbit_training(model)
+    if use_gradient_checkpointing and (
+        getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False)
+    ):
+        enable_gradient_checkpointing_for_kbit_training(
+            model,
+            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
+        )
     return model
 
 
@@ -197,10 +216,21 @@ def prepare_quantized_model_for_training(
     model: Any,
     model_config: dict[str, Any],
     prepare_model_for_kbit_training,
+    *,
+    use_gradient_checkpointing: bool = True,
 ):
+    gradient_checkpointing_kwargs = {"use_reentrant": False} if use_gradient_checkpointing else None
     if is_gemma4_effective_model(model, model_config):
-        return prepare_gemma4_effective_model_for_kbit_training(model)
-    return prepare_model_for_kbit_training(model)
+        return prepare_gemma4_effective_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
+        )
+    return prepare_model_for_kbit_training(
+        model,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+        gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
+    )
 
 
 def align_model_token_ids(model, tokenizer) -> None:
@@ -691,9 +721,26 @@ def training_arguments_kwargs(
     training_config: dict[str, Any],
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
-    warmup_ratio = float(training_config.get("warmup_ratio", 0.05))
-    if not 0.0 <= warmup_ratio <= 1.0:
-        raise ValueError("training.warmup_ratio must be between 0 and 1.")
+    configured_warmup = training_config.get(
+        "warmup_steps",
+        training_config.get("warmup_ratio", 0.05),
+    )
+    if isinstance(configured_warmup, bool):
+        raise ValueError(
+            "training.warmup_steps must be a non-negative integer step count "
+            "or a float in [0, 1)."
+        )
+    warmup_steps = float(configured_warmup)
+    if not math.isfinite(warmup_steps) or warmup_steps < 0 or (
+        warmup_steps >= 1 and not warmup_steps.is_integer()
+    ):
+        raise ValueError(
+            "training.warmup_steps must be a non-negative integer step count "
+            "or a float in [0, 1)."
+        )
+    normalized_warmup_steps: int | float = (
+        warmup_steps if warmup_steps < 1 else int(warmup_steps)
+    )
     kwargs = {
         "output_dir": training_config["output_dir"],
         "per_device_train_batch_size": int(training_config.get("per_device_train_batch_size", 1)),
@@ -701,7 +748,7 @@ def training_arguments_kwargs(
         "gradient_accumulation_steps": int(training_config.get("gradient_accumulation_steps", 8)),
         "learning_rate": float(training_config.get("learning_rate", 2e-4)),
         "num_train_epochs": float(training_config.get("num_train_epochs", 3)),
-        "warmup_steps": warmup_ratio,
+        "warmup_steps": normalized_warmup_steps,
         "logging_steps": int(training_config.get("logging_steps", 10)),
         "eval_steps": int(training_config.get("eval_steps", 100)),
         "save_steps": int(training_config.get("save_steps", 100)),
@@ -884,11 +931,13 @@ def command(args: argparse.Namespace) -> None:
             progress_task_id=task_id,
         )
 
+    training_config = config["training"]
     if config["model"].get("load_in_4bit", False):
         model = prepare_quantized_model_for_training(
             model,
             config["model"],
             prepare_model_for_kbit_training,
+            use_gradient_checkpointing=bool(training_config.get("gradient_checkpointing", True)),
         )
 
     lora_config = config["lora"]
@@ -905,7 +954,6 @@ def command(args: argparse.Namespace) -> None:
         ),
     )
 
-    training_config = config["training"]
     max_length = int(training_config.get("max_length", 4096))
     loss_mode = loss_mode_from_training_config(training_config)
     with phase_progress("Preparing training datasets", 2) as (progress, task_id):

@@ -14,10 +14,12 @@ from cypher_3dsg_agent_distillation.training.train import (
     build_dataset,
     build_training_dataset,
     build_training_example,
+    enable_gradient_checkpointing_for_kbit_training,
     gemma4_effective_target_modules,
     is_gemma4_effective_model,
     lora_target_modules,
     pad_causal_lm_features,
+    prepare_quantized_model_for_training,
     sft_config_kwargs,
     sft_trainer_kwargs,
     should_upcast_gemma4_effective_param,
@@ -245,7 +247,7 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     kwargs = training_arguments_kwargs(
         {
             "output_dir": "out",
-            "warmup_ratio": 0.05,
+            "warmup_steps": 0.05,
             "load_best_model_at_end": True,
             "metric_for_best_model": "eval_loss",
             "greater_is_better": False,
@@ -256,27 +258,94 @@ def test_training_arguments_kwargs_uses_current_eval_strategy_name():
     assert kwargs["eval_strategy"] == "steps"
     assert kwargs["save_strategy"] == "steps"
     assert kwargs["disable_tqdm"] is True
-    assert kwargs["warmup_ratio"] == 0.05
+    assert kwargs["warmup_steps"] == 0.05
     assert kwargs["load_best_model_at_end"] is True
     assert kwargs["metric_for_best_model"] == "eval_loss"
     assert kwargs["greater_is_better"] is False
     assert "evaluation_strategy" not in kwargs
-    assert "warmup_steps" not in kwargs
+    assert "warmup_ratio" not in kwargs
 
 
 def test_training_arguments_kwargs_defaults_to_five_percent_warmup():
     kwargs = training_arguments_kwargs({"output_dir": "out"}, has_eval_dataset=False)
 
-    assert kwargs["warmup_ratio"] == 0.05
+    assert kwargs["warmup_steps"] == 0.05
 
 
-@pytest.mark.parametrize("warmup_ratio", [-0.01, 1.01])
-def test_training_arguments_kwargs_rejects_invalid_warmup_ratio(warmup_ratio):
-    with pytest.raises(ValueError, match="warmup_ratio must be between 0 and 1"):
+@pytest.mark.parametrize("warmup_steps", [-0.01, 1.01, True])
+def test_training_arguments_kwargs_rejects_invalid_warmup_steps(warmup_steps):
+    with pytest.raises(ValueError, match="warmup_steps must be"):
         training_arguments_kwargs(
-            {"output_dir": "out", "warmup_ratio": warmup_ratio},
+            {"output_dir": "out", "warmup_steps": warmup_steps},
             has_eval_dataset=False,
         )
+
+
+def test_training_arguments_kwargs_accepts_exact_warmup_step_count():
+    kwargs = training_arguments_kwargs(
+        {"output_dir": "out", "warmup_steps": 125},
+        has_eval_dataset=False,
+    )
+
+    assert kwargs["warmup_steps"] == 125
+
+
+def test_training_arguments_kwargs_maps_legacy_warmup_ratio():
+    kwargs = training_arguments_kwargs(
+        {"output_dir": "out", "warmup_ratio": 0.1},
+        has_eval_dataset=False,
+    )
+
+    assert kwargs["warmup_steps"] == 0.1
+    assert "warmup_ratio" not in kwargs
+
+
+@pytest.mark.parametrize("use_gradient_checkpointing", [False, True])
+def test_quantized_model_preparation_respects_gradient_checkpointing_setting(
+    use_gradient_checkpointing,
+):
+    model = object()
+    calls = []
+
+    def prepare_model_for_kbit_training(prepared_model, **kwargs):
+        calls.append((prepared_model, kwargs))
+        return "prepared"
+
+    result = prepare_quantized_model_for_training(
+        model,
+        {"base_model": "Qwen/Qwen3.5-4B"},
+        prepare_model_for_kbit_training,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+    )
+
+    assert result == "prepared"
+    assert calls == [
+        (
+            model,
+            {
+                "use_gradient_checkpointing": use_gradient_checkpointing,
+                "gradient_checkpointing_kwargs": (
+                    {"use_reentrant": False} if use_gradient_checkpointing else None
+                ),
+            },
+        )
+    ]
+
+
+def test_gradient_checkpointing_kwargs_are_forwarded_to_transformers_api():
+    class Model:
+        received_kwargs = None
+
+        def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+            self.received_kwargs = gradient_checkpointing_kwargs
+
+    model = Model()
+    enable_gradient_checkpointing_for_kbit_training(
+        model,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+    )
+
+    assert model.received_kwargs == {"use_reentrant": False}
 
 
 def test_sft_config_kwargs_uses_current_sft_config_fields():

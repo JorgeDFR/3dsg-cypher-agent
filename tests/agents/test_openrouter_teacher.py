@@ -2,6 +2,9 @@ import json
 from copy import deepcopy
 from types import SimpleNamespace
 
+import pytest
+
+from cypher_3dsg_agent_distillation.agents import openrouter_teacher
 from cypher_3dsg_agent_distillation.agents.agent_records import (
     DEFAULT_AGENT_TOOL,
     WRITE_REFUSAL_ANSWER,
@@ -12,11 +15,13 @@ from cypher_3dsg_agent_distillation.agents.openrouter_teacher import (
     configured_teacher_provider,
     debug_trace_record,
     evaluate_candidate_trace,
+    nearest_rank_percentile,
     normalize_assistant_message,
     progress_description,
     run_synthetic_teacher_interaction,
     run_teacher_interaction,
     seed_expected_solution,
+    trace_token_length_report,
 )
 from cypher_3dsg_agent_distillation.core.config import load_yaml
 
@@ -40,6 +45,27 @@ class FakeValidator:
         return self.results.pop(0)
 
 
+def test_generate_command_configures_model_output_before_startup(monkeypatch):
+    calls = []
+
+    def configure_model_library_output():
+        calls.append("configured")
+
+    def stop_after_configuration(_path):
+        assert calls == ["configured"]
+        raise RuntimeError("stop after output configuration")
+
+    monkeypatch.setattr(
+        openrouter_teacher,
+        "configure_model_library_output",
+        configure_model_library_output,
+    )
+    monkeypatch.setattr(openrouter_teacher, "load_yaml", stop_after_configuration)
+
+    with pytest.raises(RuntimeError, match="stop after output configuration"):
+        openrouter_teacher.generate_command(SimpleNamespace(teacher_config="teacher.yaml"))
+
+
 class FakeConversationClient:
     model = "openai/gpt-oss-120b"
 
@@ -56,6 +82,21 @@ class FakeConversationClient:
             }
         )
         return deepcopy(self.responses.pop(0))
+
+
+class CountingTokenizer:
+    chat_template = "test-template"
+
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, tools=None):
+        assert tokenize is False
+        assert add_generation_prompt is False
+        tool_names = ",".join(tool["function"]["name"] for tool in tools or [])
+        message_text = "|".join(str(message.get("content") or "") for message in messages)
+        return f"{tool_names}:{message_text}"
+
+    def __call__(self, text, add_special_tokens=False):
+        assert add_special_tokens is False
+        return {"input_ids": list(range(len(text)))}
 
 
 def seed_record(**overrides):
@@ -135,6 +176,31 @@ def candidate_trace(cypher="MATCH (o:Object) RETURN count(o) AS count"):
             {"role": "assistant", "content": "<answer>3</answer>"},
         ]
     }
+
+
+def test_trace_token_length_report_uses_training_rendering_and_nearest_rank():
+    tokenizer = CountingTokenizer()
+    records = [
+        {"uid": "short", "messages": [{"role": "assistant", "content": "x"}]},
+        {"uid": "long", "messages": [{"role": "assistant", "content": "x" * 20}]},
+    ]
+
+    report = trace_token_length_report(records, tokenizer, max_length=30)
+
+    assert report["trace_count"] == 2
+    assert report["traces"][0]["token_length"] < report["traces"][1]["token_length"]
+    assert report["traces"][0]["exceeds_max_length"] is False
+    assert report["traces"][1]["exceeds_max_length"] is True
+    assert report["overlength_count"] == 1
+    assert report["overlength_rate"] == 0.5
+    assert report["percentiles"] == {
+        "p50": report["traces"][0]["token_length"],
+        "p90": report["traces"][1]["token_length"],
+        "p95": report["traces"][1]["token_length"],
+        "p99": report["traces"][1]["token_length"],
+        "max": report["traces"][1]["token_length"],
+    }
+    assert nearest_rank_percentile(list(range(1, 101)), 95) == 95
 
 
 def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static_only=False):
