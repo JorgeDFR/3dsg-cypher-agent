@@ -44,6 +44,7 @@ from pypddl.pddl_goal_types import (  # noqa: E402
 from sldp.sldp_lang import get_sldp_type, lark_parse_sldp, sldp_equals  # noqa: E402
 
 OutputType = Literal["SLDP", "PDDL"]
+SLDP_COLLECTION_FORMAT_RE = re.compile(r"^(set|list)\[(.+)\]$")
 
 PDDL_PREDICATE_SIGNATURES: dict[str, tuple[str, ...]] = {
     "visited-place": ("PlaceOrMeshPlace",),
@@ -124,17 +125,82 @@ def comparator_for_output_type(output_type: str) -> str:
     raise ValueError(f"Unsupported output type: {output_type}")
 
 
+def _canonical_sldp_format(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value).strip().lower())
+    human_collection = re.fullmatch(r"(set|list) of ([a-z_][a-z0-9_]*)", normalized)
+    aliases = {
+        "string": "str",
+        "strings": "str",
+        "integer": "int",
+        "integers": "int",
+        "number": "float",
+        "numbers": "float",
+        "points": "point",
+    }
+    if human_collection:
+        kind, item_type = human_collection.groups()
+        return f"{kind}[{aliases.get(item_type, item_type)}]"
+    compact = normalized.replace(" ", "")
+    collection = SLDP_COLLECTION_FORMAT_RE.fullmatch(compact)
+    if collection:
+        kind, item_type = collection.groups()
+        return f"{kind}[{_canonical_sldp_format(item_type)}]"
+    return aliases.get(normalized, normalized)
+
+
+def _sldp_ast_matches_format(parsed: Any, solution_format: str) -> bool:
+    normalized = _canonical_sldp_format(solution_format)
+    collection = SLDP_COLLECTION_FORMAT_RE.fullmatch(normalized)
+    if collection:
+        kind, item_format = collection.groups()
+        return (
+            isinstance(parsed, tuple)
+            and bool(parsed)
+            and parsed[0] == kind
+            and all(_sldp_ast_matches_format(item, item_format) for item in parsed[1:])
+        )
+    if normalized == "str":
+        return isinstance(parsed, str)
+    if normalized in {"int", "float"}:
+        return isinstance(parsed, float)
+    if normalized == "point":
+        return isinstance(parsed, tuple) and bool(parsed) and parsed[0] == "point"
+    if normalized == "bool":
+        return isinstance(parsed, str) and parsed.lower() in {"true", "false"}
+    return False
+
+
+def sldp_value_matches_solution_formats(value: str, solution_formats: Any) -> bool:
+    """Return whether a non-empty SLDP value has one of its declared shapes."""
+    normalized_value = str(value).strip()
+    if not normalized_value:
+        return True
+    if not solution_formats:
+        return True
+    formats = solution_formats if isinstance(solution_formats, list | tuple) else [solution_formats]
+    try:
+        parsed = lark_parse_sldp(normalized_value)
+    except Exception:
+        return False
+    return any(_sldp_ast_matches_format(parsed, str(item)) for item in formats)
+
+
 def answer_matches_with_heracles(
     answer: str,
     solution: str,
     output_type: OutputType,
     *,
     answer_validation: dict[str, Any] | None = None,
+    solution_formats: Any = None,
 ) -> tuple[bool, bool]:
     """Return (valid_format, correct) using Heracles answer comparators."""
     comparator = comparator_for_output_type(output_type)
     normalized_answer = str(answer).strip()
     normalized_solution = str(solution).strip()
+    if comparator == "SLDP" and not sldp_value_matches_solution_formats(
+        normalized_answer, solution_formats
+    ):
+        return False, False
     if not normalized_solution:
         if not normalized_answer:
             return True, True

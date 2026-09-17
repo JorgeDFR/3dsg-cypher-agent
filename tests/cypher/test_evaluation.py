@@ -91,15 +91,21 @@ def test_rows_to_solution_text_infers_set_format_from_existing_trace_solution():
         "expected_solution": "<POINT(11.832 26.993 1.432)>",
     }
 
-    assert rows_to_solution_text(
-        top_classes,
-        [{"class": "light", "count": 57}, {"class": "cabinet", "count": 28}],
-    ) == "<light, cabinet>"
+    assert (
+        rows_to_solution_text(
+            top_classes,
+            [{"class": "light", "count": 57}, {"class": "cabinet", "count": 28}],
+        )
+        == "<light, cabinet>"
+    )
     assert rows_to_solution_text(singleton_objects, [{"object": "O14"}]) == "<O14>"
-    assert rows_to_solution_text(
-        singleton_points,
-        [{"center": [11.832, 26.993, 1.432]}],
-    ) == "<POINT(11.832 26.993 1.432)>"
+    assert (
+        rows_to_solution_text(
+            singleton_points,
+            [{"center": [11.832, 26.993, 1.432]}],
+        )
+        == "<POINT(11.832 26.993 1.432)>"
+    )
 
 
 def test_rows_to_solution_text_accepts_unaliased_neo4j_expression_keys():
@@ -123,10 +129,13 @@ def test_room_adjacency_count_accepts_gold_and_generated_count_aliases():
         "solution_formats": ["int"],
     }
 
-    assert rows_to_solution_text(
-        record,
-        [{"room": "R1", "adjacent_rooms": 3}],
-    ) == "3"
+    assert (
+        rows_to_solution_text(
+            record,
+            [{"room": "R1", "adjacent_rooms": 3}],
+        )
+        == "3"
+    )
 
 
 def test_invalid_input_query_results_convert_to_empty_answer():
@@ -139,14 +148,31 @@ def test_invalid_input_query_results_convert_to_empty_answer():
 
     assert rows_to_solution_text(record, []) == ""
     assert rows_to_solution_text(record, [{"count": 0}]) == ""
-    assert rows_to_solution_text(
-        record,
-        [{"class": "missing", "object_count": 0}],
-    ) == ""
-    assert rows_to_solution_text(
-        record,
-        [{"room": "R1", "neighbor_count": 3}],
-    ) == "3"
+    assert (
+        rows_to_solution_text(
+            record,
+            [{"class": "missing", "object_count": 0}],
+        )
+        == ""
+    )
+    assert (
+        rows_to_solution_text(
+            record,
+            [{"room": "R1", "neighbor_count": 3}],
+        )
+        == "3"
+    )
+
+
+def test_invalid_input_empty_result_uses_declared_format_not_stored_gold():
+    record = {
+        "query_type": "nearest_object_between_classes",
+        "expected_solution": "[]",
+        "solution_formats": ["str"],
+        "tags": ["invalid_input"],
+    }
+
+    assert rows_to_solution_text(record, []) == ""
 
 
 def test_rows_to_solution_text_flattens_collected_point_values():
@@ -246,17 +272,17 @@ def test_rows_to_solution_text_supports_new_qa_result_shapes():
             [{"place": "P5670"}],
             "P5670",
         ),
-            (
-                {
-                    "query_type": "closest_cross_class_object_pairs",
-                    "solution_formats": ["set[list[str]]"],
-                },
-                [
-                    {"first": "O9", "second": "O115"},
-                    {"first": "O121", "second": "O154"},
-                ],
-                "<[O9, O115], [O121, O154]>",
-            ),
+        (
+            {
+                "query_type": "closest_cross_class_object_pairs",
+                "solution_formats": ["set[list[str]]"],
+            },
+            [
+                {"first": "O9", "second": "O115"},
+                {"first": "O121", "second": "O154"},
+            ],
+            "<[O9, O115], [O121, O154]>",
+        ),
         (
             {"query_type": "location_hops", "solution_formats": ["set[str]"]},
             [{"location": "P8350"}, {"location": "P8349"}],

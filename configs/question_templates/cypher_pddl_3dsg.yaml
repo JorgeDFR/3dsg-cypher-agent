@@ -615,7 +615,7 @@ templates:
           arguments: [{result: destination}]
     questions:
       - Visit object {waypoint_object}, but end the route at {destination_object}.
-      - Stop by {waypoint_object} on the way. The final destination is object {destination_object}.
+      - Pass by {waypoint_object} on the way. The final destination is object {destination_object}.
       - Make sure {waypoint_object} is visited and that the robot ultimately remains at {destination_object}.
       - Include {waypoint_object} as a waypoint before finishing beside {destination_object}.
       - The route must touch object {waypoint_object} and terminate at object {destination_object}.
@@ -705,7 +705,7 @@ templates:
               arguments: [{result: object}]
     questions:
       - Visit object {object}, but do not finish holding it.
-      - Stop by {object} without taking it away in the gripper.
+      - Pass by {object} without taking it away in the gripper.
       - The route must reach object {object}, and the final state must leave it unheld.
       - Visit {object}. Make sure it is unheld in the end.
       - Make object {object} a waypoint while ensuring it is not carried at the end.
@@ -990,8 +990,8 @@ templates:
       first_class: object_classes
       second_class: object_classes
     cypher: |
-      MATCH (first:Object {class: "{first_class}"})
-      MATCH (second:Object {class: "{second_class}"})
+      OPTIONAL MATCH (first:Object {class: "{first_class}"})
+      OPTIONAL MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second
     grounding:
@@ -1029,7 +1029,7 @@ templates:
       first_class: object_classes
       second_class: object_classes
     cypher: |
-      MATCH (first:Object {class: "{first_class}"})
+      OPTIONAL MATCH (first:Object {class: "{first_class}"})
       MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second

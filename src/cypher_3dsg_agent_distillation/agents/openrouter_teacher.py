@@ -314,8 +314,7 @@ def controlled_repair_spec(seed: dict[str, Any]) -> tuple[str, str] | None:
     invalid_cypher = str(metadata.get("repair_cypher") or "").strip()
     if not template_name or not invalid_cypher:
         raise ValueError(
-            "Controlled repair seeds require metadata.repair_template and "
-            "metadata.repair_cypher."
+            "Controlled repair seeds require metadata.repair_template and metadata.repair_cypher."
         )
     return template_name, invalid_cypher
 
@@ -638,6 +637,7 @@ def evaluate_candidate_trace(
             str(real_solution),
             output_type,
             answer_validation=seed.get("answer_validation"),
+            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
         )
     record.cypher_solution = cypher_solution
     record.validation.cypher_solution_match = cypher_matches_real
@@ -683,12 +683,14 @@ def evaluate_candidate_trace(
         str(real_solution),
         output_type,
         answer_validation=seed.get("answer_validation"),
+        solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
     )
     if task_family == "cypher_qa":
         valid_consistency_format, final_matches_cypher = answer_matches_with_heracles(
             inner_answer,
             str(cypher_solution),
             output_type,
+            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
         )
     else:
         valid_consistency_format = True
@@ -993,6 +995,7 @@ def run_teacher_interaction(
                 str(real_solution),
                 output_type,
                 answer_validation=seed.get("answer_validation"),
+                solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
             )
             cypher_checked_validation = validation_with_solution_checks(
                 final_validation or {},
@@ -1020,6 +1023,7 @@ def run_teacher_interaction(
                 inner_answer,
                 str(cypher_solution),
                 output_type,
+                solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
             )
             if not valid_consistency_format:
                 return rejected(
@@ -1044,6 +1048,7 @@ def run_teacher_interaction(
             str(real_solution),
             output_type,
             answer_validation=seed.get("answer_validation"),
+            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
         )
         checked_validation = validation_with_solution_checks(
             final_validation or {},
@@ -1253,6 +1258,7 @@ def run_synthetic_teacher_interaction(
             cypher_solution,
             str(real_solution),
             output_type,
+            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
         )
         if not valid_cypher_format:
             return rejected(
@@ -1295,6 +1301,7 @@ def run_synthetic_teacher_interaction(
         final_answer,
         str(real_solution),
         output_type,
+        solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
     )
     if not valid_final_format or not final_answer_match:
         return rejected(
@@ -1479,9 +1486,7 @@ def debug_trace_record(
         "messages": messages,
         "tags": seed.get("tags", []),
         "details": {
-            key: value
-            for key, value in payload.items()
-            if key not in standard_payload_keys
+            key: value for key, value in payload.items() if key not in standard_payload_keys
         },
     }
     if not decision.accepted:
@@ -1501,14 +1506,10 @@ def generate_command(args: argparse.Namespace) -> None:
         raise ValueError("training.max_length must be greater than zero.")
     tokenizer = load_tokenizer(student_config)
     provider = configured_teacher_provider(teacher_config)
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     profiles = load_experiment_profiles_from_config(data_config)
     if not profiles:
-        raise ValueError(
-            "Teacher trace generation requires at least one experiment profile."
-        )
+        raise ValueError("Teacher trace generation requires at least one experiment profile.")
     model = (
         args.teacher_model or teacher_config.get("model", DEFAULT_TEACHER_MODEL)
         if provider == "openrouter"
@@ -1618,9 +1619,7 @@ def generate_command(args: argparse.Namespace) -> None:
                 seed=0,
                 scene_order=[str(scene["scene_id"]) for scene in data_config["scenes"]],
             )
-            scenes_by_id = {
-                str(scene["scene_id"]): scene for scene in data_config["scenes"]
-            }
+            scenes_by_id = {str(scene["scene_id"]): scene for scene in data_config["scenes"]}
             current_scene_id: str | None = None
             teacher_records: list[dict[str, Any]] = []
             accepted_debug_records: list[dict[str, Any]] = []
@@ -1641,8 +1640,7 @@ def generate_command(args: argparse.Namespace) -> None:
                     seed_scene_id = str(seed.get("scene_id") or "")
                     if seed_scene_id not in scenes_by_id:
                         raise ValueError(
-                            f"Seed {seed.get('uid')} references unknown scene "
-                            f"`{seed_scene_id}`."
+                            f"Seed {seed.get('uid')} references unknown scene `{seed_scene_id}`."
                         )
                     if validator is not None and seed_scene_id != current_scene_id:
                         scene = scenes_by_id[seed_scene_id]
@@ -1657,9 +1655,7 @@ def generate_command(args: argparse.Namespace) -> None:
                         current_scene_id = seed_scene_id
                         scene_database_reloads += 1
                     profile = experiment_profile_for_seed(seed, profiles)
-                    max_tool_calls = configured_max_tool_calls(
-                        args, teacher_config, profile
-                    )
+                    max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
                     for _ in range(traces_per_seed):
                         progress.update(
                             task_id,
@@ -1744,8 +1740,7 @@ def generate_command(args: argparse.Namespace) -> None:
             "artifact_type": "teacher_trace_token_lengths",
             "created_at": iso_now(),
             "tokenizer": str(
-                student_config["model"].get("tokenizer")
-                or student_config["model"]["base_model"]
+                student_config["model"].get("tokenizer") or student_config["model"]["base_model"]
             ),
             "student_config": config_record(
                 student_config["student_config_path"], project_root=PROJECT_ROOT
@@ -1753,8 +1748,7 @@ def generate_command(args: argparse.Namespace) -> None:
         }
     )
     token_length_report_path = str(
-        ensure_parent(data_config["teacher_traces_jsonl_path"]).parent
-        / "token_length_report.yaml"
+        ensure_parent(data_config["teacher_traces_jsonl_path"]).parent / "token_length_report.yaml"
     )
     atomic_write_yaml(token_report, token_length_report_path)
     teacher_metadata = load_yaml(data_config["teacher_metadata_path"])
@@ -1812,33 +1806,23 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Acceptance rate", f"{acceptance_rate:.1%}"),
             (
                 "Token length p50",
-                token_percentiles["p50"]
-                if token_percentiles["p50"] is not None
-                else "n/a",
+                token_percentiles["p50"] if token_percentiles["p50"] is not None else "n/a",
             ),
             (
                 "Token length p90",
-                token_percentiles["p90"]
-                if token_percentiles["p90"] is not None
-                else "n/a",
+                token_percentiles["p90"] if token_percentiles["p90"] is not None else "n/a",
             ),
             (
                 "Token length p95",
-                token_percentiles["p95"]
-                if token_percentiles["p95"] is not None
-                else "n/a",
+                token_percentiles["p95"] if token_percentiles["p95"] is not None else "n/a",
             ),
             (
                 "Token length p99",
-                token_percentiles["p99"]
-                if token_percentiles["p99"] is not None
-                else "n/a",
+                token_percentiles["p99"] if token_percentiles["p99"] is not None else "n/a",
             ),
             (
                 "Token length max",
-                token_percentiles["max"]
-                if token_percentiles["max"] is not None
-                else "n/a",
+                token_percentiles["max"] if token_percentiles["max"] is not None else "n/a",
             ),
             (
                 f"Traces over max_length={training_max_length}",

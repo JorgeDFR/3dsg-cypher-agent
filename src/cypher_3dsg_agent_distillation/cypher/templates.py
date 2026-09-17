@@ -32,7 +32,6 @@ from cypher_3dsg_agent_distillation.core.versioning import (
 )
 from cypher_3dsg_agent_distillation.cypher.pddl_goals import (
     grounding_contract,
-    grounding_is_non_empty,
     render_pddl_solution,
 )
 from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
@@ -326,9 +325,7 @@ def diverse_candidate_sample(
     if count <= 0:
         return []
 
-    by_group: dict[str, dict[str, list[QuestionCandidate]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    by_group: dict[str, dict[str, list[QuestionCandidate]]] = defaultdict(lambda: defaultdict(list))
     for candidate in candidates:
         group_key = candidate.sampling_group_key or "__all__"
         by_group[group_key][candidate.variable_key].append(candidate)
@@ -343,9 +340,7 @@ def diverse_candidate_sample(
     selected: list[QuestionCandidate] = []
     while len(selected) < count:
         available_groups = [
-            group_key
-            for group_key in group_keys
-            if any(by_group[group_key].values())
+            group_key for group_key in group_keys if any(by_group[group_key].values())
         ]
         if not available_groups:
             break
@@ -358,8 +353,7 @@ def diverse_candidate_sample(
                 if variable_candidates
             ]
             minimum_variable_usage = min(
-                variable_usage[(group_key, variable_key)]
-                for variable_key in available_variables
+                variable_usage[(group_key, variable_key)] for variable_key in available_variables
             )
             least_used_variables = [
                 variable_key
@@ -430,9 +424,7 @@ def stable_uid(
 CYPHER_LABEL_PATTERN = re.compile(r":\s*(Object|Place|MeshPlace|Room|Building)\b")
 
 
-def scene_supports_template(
-    template: dict[str, Any], scene_summary: dict[str, Any] | None
-) -> bool:
+def scene_supports_template(template: dict[str, Any], scene_summary: dict[str, Any] | None) -> bool:
     """Return whether a scene has the layers required by a question template."""
     if not scene_summary:
         return True
@@ -597,8 +589,12 @@ def coerce_solution_format(value: Any, solution_format: str | None) -> Any:
             return SolutionSet(items)
         return items
 
+    if value is None:
+        return ""
     if is_collection_value(value):
         items = solution_collection_items(value)
+        if not items:
+            return ""
         if len(items) == 1:
             return items[0]
     return value
@@ -620,8 +616,7 @@ def format_solution_value(value: Any, indent: int = 0) -> str:
         return value
     if isinstance(value, dict):
         parts = [
-            f"{key}: {format_solution_value(child, indent=indent)}"
-            for key, child in value.items()
+            f"{key}: {format_solution_value(child, indent=indent)}" for key, child in value.items()
         ]
         return "{" + ", ".join(parts) + "}"
     if isinstance(value, SolutionSet):
@@ -711,9 +706,7 @@ def generate_records(
     invalid_values = {str(value) for value in (values.get("invalid_values") or [])}
     # Accept previously extracted value files as input, but ignore their legacy
     # typed feedback values. Invalid inputs now have ordinary empty answers.
-    invalid_values.update(
-        str(value) for value in (values.get("invalid_value_feedback") or {})
-    )
+    invalid_values.update(str(value) for value in (values.get("invalid_value_feedback") or {}))
     scene_index = SceneIndex(config["source_3dsg"]) if config.get("source_3dsg") else None
     records: list[dict[str, Any]] = []
     for template in templates:
@@ -721,12 +714,8 @@ def generate_records(
             continue
         query_type = template["query_type"]
         solution_formats = solution_formats_for_template(template)
-        max_solution_size = sampling_size_limit(
-            template, sampling_config, "max_solution_size"
-        )
-        max_result_rows = sampling_size_limit(
-            template, sampling_config, "max_result_rows"
-        )
+        max_solution_size = sampling_size_limit(template, sampling_config, "max_solution_size")
+        max_result_rows = sampling_size_limit(template, sampling_config, "max_result_rows")
         if scene_index is not None and task_family == "cypher_qa" and not solution_formats:
             raise KeyError(f"Template `{query_type}` must define solution_formats.")
         if task_family == "cypher_pddl" and not isinstance(template.get("goal"), dict):
@@ -798,16 +787,17 @@ def generate_records(
             record_grounding = None
             if task_family == "cypher_pddl":
                 record_grounding = grounding_contract(
-                    None if invalid_input else raw_solution,
+                    raw_solution,
                     template.get("grounding") or {},
                     variables,
                 )
-                if invalid_input:
-                    solution = ""
-                elif grounding_is_non_empty(record_grounding):
-                    solution = render_pddl_solution(template["goal"], record_grounding)
-                else:
-                    solution = None
+                solution = render_pddl_solution(template["goal"], record_grounding)
+                if solution is None:
+                    record_grounding = grounding_contract(
+                        None,
+                        template.get("grounding") or {},
+                        variables,
+                    )
                 if solution:
                     valid_goal, _parsed_goal, goal_issues = validate_pddl_goal(solution)
                     if not valid_goal:
@@ -818,9 +808,9 @@ def generate_records(
             else:
                 solution = (
                     raw_solution
-                    if invalid_input and is_zero_count_solution(raw_solution)
+                    if is_zero_count_solution(raw_solution)
                     else empty_solution_value(solution_formats)
-                    if invalid_input
+                    if solution_has_no_matches(raw_solution)
                     else raw_solution
                 )
             answer_validation_for = getattr(scene_index, "answer_validation_for", None)
@@ -876,8 +866,8 @@ def generate_records(
                     "gold_cypher": LiteralString(f"{cypher}\n"),
                     "solution_formats": record_solution_formats,
                     "solution": (
-                        str(solution)
-                        if task_family == "cypher_pddl" and solution is not None
+                        str(solution or "")
+                        if task_family == "cypher_pddl"
                         else format_solution_field(
                             deepcopy(solution),
                             solution_formats=record_solution_formats,
@@ -889,24 +879,18 @@ def generate_records(
                     "tags": deepcopy(template.get("tags", [])),
                 }
                 has_solution = (
-                    not invalid_input
-                    and (
-                        grounding_is_non_empty(record_grounding)
-                        if record_grounding is not None
-                        else scene_index is None or not solution_has_no_matches(solution)
-                    )
+                    bool(solution)
+                    if record_grounding is not None
+                    else scene_index is None or not solution_has_no_matches(solution)
                 )
                 if (
-                    (
-                        invalid_input
-                        or (
-                            not has_solution
-                            and task_family != "cypher_pddl"
-                            and not is_zero_count_solution(solution)
-                        )
+                    invalid_input
+                    or (
+                        not has_solution
+                        and task_family != "cypher_pddl"
+                        and not is_zero_count_solution(solution)
                     )
-                    and "invalid_input" not in record["tags"]
-                ):
+                ) and "invalid_input" not in record["tags"]:
                     record["tags"].append("invalid_input")
                 if answer_validation is not None:
                     record["answer_validation"] = deepcopy(answer_validation)
@@ -933,8 +917,7 @@ def generate_records(
             candidates = [
                 candidate
                 for candidate in candidates
-                if candidate.has_solution
-                or "invalid_input" in candidate.record.get("tags", [])
+                if candidate.has_solution or "invalid_input" in candidate.record.get("tags", [])
             ]
 
         if has_variables and target is not None:
@@ -1005,8 +988,6 @@ def effective_dataset_question_target(
 
 
 def generated_record_has_solution(record: dict[str, Any]) -> bool:
-    if "invalid_input" in (record.get("tags") or []):
-        return False
     solution = record.get("solution")
     if isinstance(solution, str):
         return solution.strip() not in {"", "<>", "[]", "{}"}
@@ -1051,16 +1032,14 @@ def diverse_record_sample(
             variable_key
             for variable_key in least_used_variables
             if any(
-                solution_usage[str(record.get("solution") or "").strip()]
-                == minimum_solution_usage
+                solution_usage[str(record.get("solution") or "").strip()] == minimum_solution_usage
                 for record in by_variable[variable_key]
             )
         )
         chosen_index = next(
             index
             for index, record in enumerate(by_variable[chosen_variable])
-            if solution_usage[str(record.get("solution") or "").strip()]
-            == minimum_solution_usage
+            if solution_usage[str(record.get("solution") or "").strip()] == minimum_solution_usage
         )
         record = by_variable[chosen_variable].pop(chosen_index)
         selected.append(record)
@@ -1080,9 +1059,7 @@ def evenly_select_scene_records(
     if target <= 0:
         return []
     buckets = {
-        scene_id: [
-            record for record in records if str(record.get("scene_id")) == scene_id
-        ]
+        scene_id: [record for record in records if str(record.get("scene_id")) == scene_id]
         for scene_id in scene_ids
     }
     quotas: Counter[str] = Counter()
@@ -1092,52 +1069,36 @@ def evenly_select_scene_records(
     actual_target = min(target, sum(remaining_capacity.values()))
     while sum(quotas.values()) < actual_target:
         available = [
-            scene_id
-            for scene_id in scene_ids
-            if quotas[scene_id] < remaining_capacity[scene_id]
+            scene_id for scene_id in scene_ids if quotas[scene_id] < remaining_capacity[scene_id]
         ]
         if not available:
             break
         minimum = min(quotas[scene_id] for scene_id in available)
-        next_scene = next(
-            scene_id
-            for scene_id in available
-            if quotas[scene_id] == minimum
-        )
+        next_scene = next(scene_id for scene_id in available if quotas[scene_id] == minimum)
         quotas[next_scene] += 1
 
     if empty_ratio is None:
         return [
             record
             for scene_id in scene_ids
-            for record in diverse_record_sample(
-                buckets[scene_id], quotas[scene_id]
-            )
+            for record in diverse_record_sample(buckets[scene_id], quotas[scene_id])
         ]
 
     non_empty = {
-        scene_id: [
-            record
-            for record in buckets[scene_id]
-            if generated_record_has_solution(record)
-        ]
+        scene_id: [record for record in buckets[scene_id] if generated_record_has_solution(record)]
         for scene_id in scene_ids
     }
     empty = {
         scene_id: [
-            record
-            for record in buckets[scene_id]
-            if not generated_record_has_solution(record)
+            record for record in buckets[scene_id] if not generated_record_has_solution(record)
         ]
         for scene_id in scene_ids
     }
     minimum_empty = {
-        scene_id: max(0, quotas[scene_id] - len(non_empty[scene_id]))
-        for scene_id in scene_ids
+        scene_id: max(0, quotas[scene_id] - len(non_empty[scene_id])) for scene_id in scene_ids
     }
     maximum_empty = {
-        scene_id: min(quotas[scene_id], len(empty[scene_id]))
-        for scene_id in scene_ids
+        scene_id: min(quotas[scene_id], len(empty[scene_id])) for scene_id in scene_ids
     }
     desired_empty = round(actual_target * empty_ratio)
     desired_empty = min(
@@ -1147,16 +1108,10 @@ def evenly_select_scene_records(
     empty_quotas = Counter(minimum_empty)
     while sum(empty_quotas.values()) < desired_empty:
         available = [
-            scene_id
-            for scene_id in scene_ids
-            if empty_quotas[scene_id] < maximum_empty[scene_id]
+            scene_id for scene_id in scene_ids if empty_quotas[scene_id] < maximum_empty[scene_id]
         ]
         minimum = min(empty_quotas[scene_id] for scene_id in available)
-        next_scene = next(
-            scene_id
-            for scene_id in available
-            if empty_quotas[scene_id] == minimum
-        )
+        next_scene = next(scene_id for scene_id in available if empty_quotas[scene_id] == minimum)
         empty_quotas[next_scene] += 1
 
     selected_uids = {
@@ -1164,9 +1119,7 @@ def evenly_select_scene_records(
         for scene_id in scene_ids
         for record in (
             diverse_record_sample(empty[scene_id], empty_quotas[scene_id])
-            + diverse_record_sample(
-                non_empty[scene_id], quotas[scene_id] - empty_quotas[scene_id]
-            )
+            + diverse_record_sample(non_empty[scene_id], quotas[scene_id] - empty_quotas[scene_id])
         )
     }
     return [record for record in records if str(record["uid"]) in selected_uids]
@@ -1236,9 +1189,7 @@ def apply_dataset_question_targets(
     return [record for record in records if str(record["uid"]) in selected_uids]
 
 
-def load_question_templates(
-    config: dict[str, Any]
-) -> dict[str, Any] | None:
+def load_question_templates(config: dict[str, Any]) -> dict[str, Any] | None:
     template_path = config.get("question_templates_path")
     if template_path:
         return load_yaml(template_path)
@@ -1263,16 +1214,10 @@ def write_questions_yaml(records: list[dict[str, Any]], path: str) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     split_config = data_config.get("split") or {}
-    challenge_task_types = {
-        str(value) for value in split_config.get("challenge_task_types", [])
-    }
-    challenge_questions_per_task_type = split_config.get(
-        "challenge_questions_per_task_type"
-    )
+    challenge_task_types = {str(value) for value in split_config.get("challenge_task_types", [])}
+    challenge_questions_per_task_type = split_config.get("challenge_questions_per_task_type")
     question_sets = data_config.get("question_sets") or []
     question_targets: dict[str, int | None] = {}
     question_empty_ratios: dict[str, float] = {}
@@ -1293,9 +1238,7 @@ def command(args: argparse.Namespace) -> None:
             if query_type in challenge_task_types:
                 template["target_questions"] = target
             if query_type in question_targets and question_targets[query_type] != target:
-                raise ValueError(
-                    f"Question type `{query_type}` has conflicting dataset targets."
-                )
+                raise ValueError(f"Question type `{query_type}` has conflicting dataset targets.")
             question_targets[query_type] = target
             question_empty_ratios[query_type] = empty_sampling_ratio(
                 template,
@@ -1307,11 +1250,7 @@ def command(args: argparse.Namespace) -> None:
                 templates_config.get("sampling") or {},
                 args.repair_cypher_ratio,
             )
-            if (
-                question_empty_ratios[query_type]
-                + question_repair_ratios[query_type]
-                > 1.0
-            ):
+            if question_empty_ratios[query_type] + question_repair_ratios[query_type] > 1.0:
                 raise ValueError(
                     f"Question type `{query_type}` has empty_ratio + "
                     "repair_cypher_ratio greater than 1."
@@ -1357,9 +1296,7 @@ def command(args: argparse.Namespace) -> None:
     overlapping_supervision = [
         str(record["uid"])
         for record in records
-        if {"invalid_input", "controlled_repair"}.issubset(
-            record.get("tags") or []
-        )
+        if {"invalid_input", "controlled_repair"}.issubset(record.get("tags") or [])
     ]
     if overlapping_supervision:
         raise RuntimeError(
@@ -1379,19 +1316,13 @@ def command(args: argparse.Namespace) -> None:
         outputs={"generated_questions": output_path},
         project_root=PROJECT_ROOT,
         extra={
-            "data_config": config_record(
-                data_config["data_config_path"], project_root=PROJECT_ROOT
-            )
+            "data_config": config_record(data_config["data_config_path"], project_root=PROJECT_ROOT)
         },
     )
     counts = Counter(record["query_type"] for record in records)
-    effective_empty_ratio = (
-        args.empty_ratio if args.empty_ratio is not None else "per set"
-    )
+    effective_empty_ratio = args.empty_ratio if args.empty_ratio is not None else "per set"
     effective_repair_ratio = (
-        args.repair_cypher_ratio
-        if args.repair_cypher_ratio is not None
-        else "per set"
+        args.repair_cypher_ratio if args.repair_cypher_ratio is not None else "per set"
     )
     print_summary(
         "Question templates generated",
@@ -1410,10 +1341,7 @@ def command(args: argparse.Namespace) -> None:
             ),
             (
                 "Cypher repair questions",
-                sum(
-                    "controlled_repair" in (record.get("tags") or [])
-                    for record in records
-                ),
+                sum("controlled_repair" in (record.get("tags") or []) for record in records),
             ),
             ("Output", output_path),
         ],

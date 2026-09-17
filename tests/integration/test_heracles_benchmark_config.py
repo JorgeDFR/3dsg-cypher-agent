@@ -209,13 +209,14 @@ def test_main_stack_exposes_demo_train_and_demo_deploy_workflows():
     assert "run_demo_deploy()" in launcher
     assert "require_trained_student" in launcher
     assert "adapter_config.json" in launcher
-    assert "--stages all" in launcher
-    assert "--modelfile-gguf bf16" in launcher
-    assert "--modelfile-gguf Q8_0" in launcher
-    assert "--modelfile-gguf Q4_K_M" in launcher
-    assert 'ollama create "${DEPLOY_MODEL_NAME}-bf16"' in launcher
-    assert 'ollama create "${DEPLOY_MODEL_NAME}-q8_0"' in launcher
-    assert 'ollama create "${DEPLOY_MODEL_NAME}-q4_k_m"' in launcher
+    assert "--stages merge convert quantize" in deploy_workflow
+    assert "--modelfile-variants bf16 Q8_0 Q4_K_M" in launcher
+    assert "Generate Ollama Modelfiles" in deploy_workflow
+    assert "Start Ollama and register GGUF variants" in deploy_workflow
+    assert "local total_steps=7" in deploy_workflow
+    assert 'ollama create "${model_name}-bf16"' in launcher
+    assert 'ollama create "${model_name}-q8_0"' in launcher
+    assert 'ollama create "${model_name}-q4_k_m"' in launcher
     assert launcher.count("--runtime ollama") >= 3
     assert launcher.count("--split challenge") >= 3
     assert "demo-deploy)" in launcher

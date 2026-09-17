@@ -7,11 +7,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from cypher_3dsg_agent_distillation.core.cli_output import phase_progress, print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
@@ -20,6 +22,9 @@ from cypher_3dsg_agent_distillation.core.config import (
     load_student_family_config,
     load_yaml,
     resolve_project_path,
+)
+from cypher_3dsg_agent_distillation.core.model_runtime_output import (
+    configure_model_library_output,
 )
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
@@ -503,11 +508,37 @@ def resolve_quantize_binary(
     )
 
 
-def run_checked(command: list[str], *, dry_run: bool = False) -> None:
-    print(shlex.join(command))
+def run_checked(
+    command: list[str],
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+) -> None:
     if dry_run:
+        print(shlex.join(command))
         return
-    subprocess.run(command, check=True)
+    if not quiet:
+        print(shlex.join(command))
+        subprocess.run(command, check=True)
+        return
+
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+        except subprocess.CalledProcessError:
+            output.seek(0, os.SEEK_END)
+            output.seek(max(0, output.tell() - 64 * 1024))
+            captured = output.read().decode("utf-8", errors="replace").replace("\r", "\n")
+            tail = "\n".join(captured.splitlines()[-80:]).strip()
+            if tail:
+                print("\nExternal command output (last 80 lines):", file=sys.stderr)
+                print(tail, file=sys.stderr)
+            raise
 
 
 def validate_conversion_cleanup_paths(settings: OllamaExportSettings) -> None:
@@ -548,6 +579,7 @@ def convert_hf_to_gguf(
     convert_script: str | Path | None = None,
     python_bin: str | Path | None = None,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> Path:
     validate_conversion_cleanup_paths(settings)
     source_dir = (
@@ -582,7 +614,7 @@ def convert_hf_to_gguf(
         settings.model_name,
         *settings.convert_args,
     ]
-    run_checked(command, dry_run=dry_run)
+    run_checked(command, dry_run=dry_run, quiet=quiet)
     if not dry_run:
         require_existing_file(output_path, "converted GGUF file")
     remove_merged_model_dir(settings, dry_run=dry_run)
@@ -595,6 +627,7 @@ def quantize_gguf(
     llama_cpp_dir: str | Path | None = None,
     quantize_bin: str | Path | None = None,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> dict[str, Path]:
     if not dry_run:
         require_existing_file(settings.base_gguf_path, "base GGUF file")
@@ -612,7 +645,7 @@ def quantize_gguf(
             str(ensured_output_path),
             quantization,
         ]
-        run_checked(command, dry_run=dry_run)
+        run_checked(command, dry_run=dry_run, quiet=quiet)
         outputs[quantization] = ensured_output_path
     return outputs
 
@@ -701,6 +734,69 @@ def write_settings_modelfile(settings: OllamaExportSettings) -> Path:
     )
 
 
+def settings_for_modelfile_variant(
+    settings: OllamaExportSettings,
+    selector: str,
+) -> OllamaExportSettings:
+    quantization, gguf_path = resolve_modelfile_gguf(
+        selector=selector,
+        model_name=settings.model_name,
+        export_dir=settings.export_dir,
+        base_gguf_path=settings.base_gguf_path,
+        gguf_outtype=settings.gguf_outtype,
+        quantized_gguf_paths=settings.quantized_gguf_paths,
+        configured_gguf_path=None,
+        configured_quantization=DEFAULT_QUANTIZATION,
+    )
+    return replace(
+        settings,
+        modelfile_quantization=quantization,
+        modelfile_gguf_path=gguf_path,
+        modelfile_path=settings.export_dir / f"Modelfile.{quantization.lower()}",
+    )
+
+
+def write_variant_modelfiles(
+    settings: OllamaExportSettings,
+    selectors: Sequence[str],
+    *,
+    show_progress: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Path]:
+    variants: list[OllamaExportSettings] = []
+    seen = set()
+    for selector in selectors:
+        variant = settings_for_modelfile_variant(settings, selector)
+        if variant.modelfile_quantization in seen:
+            continue
+        seen.add(variant.modelfile_quantization)
+        variants.append(variant)
+
+    outputs = {}
+    with phase_progress(
+        "Writing Ollama Modelfiles",
+        len(variants),
+        enabled=show_progress and not dry_run,
+    ) as (progress, task_id):
+        for variant in variants:
+            if progress is not None:
+                progress.update(
+                    task_id,
+                    description=f"Writing {variant.modelfile_quantization} Modelfile",
+                )
+            if dry_run:
+                print(
+                    f"modelfile {variant.modelfile_quantization} "
+                    f"({variant.modelfile_gguf_path}) -> {variant.modelfile_path}"
+                )
+                outputs[variant.modelfile_quantization] = variant.modelfile_path
+            else:
+                outputs[variant.modelfile_quantization] = write_settings_modelfile(variant)
+            if progress is not None:
+                progress.update(task_id, advance=1)
+    return outputs
+
+
 def expand_stages(stages: Sequence[str] | None) -> list[str]:
     if not stages:
         return ["modelfile"]
@@ -728,49 +824,67 @@ def run_export(
     merge_dtype: str | None = None,
     max_shard_size: str = "4GB",
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> None:
-    for stage in expand_stages(stages):
-        if stage == "merge":
-            if settings.base_only:
+    selected_stages = expand_stages(stages)
+    stage_descriptions = {
+        "merge": "Merging LoRA adapter",
+        "convert": "Converting model to GGUF",
+        "quantize": "Creating quantized GGUF variants",
+        "modelfile": "Writing Ollama Modelfile",
+    }
+    with phase_progress(
+        "Exporting Ollama model",
+        len(selected_stages),
+        enabled=quiet and not dry_run,
+    ) as (progress, task_id):
+        for stage in selected_stages:
+            if progress is not None:
+                progress.update(task_id, description=stage_descriptions[stage])
+            if stage == "merge":
+                if settings.base_only:
+                    if dry_run:
+                        print(f"base {settings.base_model} (no LoRA merge)")
+                elif dry_run:
+                    print(
+                        "merge "
+                        f"{settings.base_model} + {settings.adapter_dir} -> "
+                        f"{settings.merged_model_dir}"
+                    )
+                else:
+                    merge_lora_adapter(
+                        settings,
+                        device_map=device_map,
+                        dtype=merge_dtype,
+                        max_shard_size=max_shard_size,
+                    )
+            elif stage == "convert":
+                convert_hf_to_gguf(
+                    settings,
+                    llama_cpp_dir=llama_cpp_dir,
+                    convert_script=convert_script,
+                    python_bin=python_bin,
+                    dry_run=dry_run,
+                    quiet=quiet,
+                )
+            elif stage == "quantize":
+                quantize_gguf(
+                    settings,
+                    llama_cpp_dir=llama_cpp_dir,
+                    quantize_bin=quantize_bin,
+                    dry_run=dry_run,
+                    quiet=quiet,
+                )
+            elif stage == "modelfile":
                 if dry_run:
-                    print(f"base {settings.base_model} (no LoRA merge)")
-                continue
-            if dry_run:
-                print(
-                    "merge "
-                    f"{settings.base_model} + {settings.adapter_dir} -> "
-                    f"{settings.merged_model_dir}"
-                )
-                continue
-            merge_lora_adapter(
-                settings,
-                device_map=device_map,
-                dtype=merge_dtype,
-                max_shard_size=max_shard_size,
-            )
-        elif stage == "convert":
-            convert_hf_to_gguf(
-                settings,
-                llama_cpp_dir=llama_cpp_dir,
-                convert_script=convert_script,
-                python_bin=python_bin,
-                dry_run=dry_run,
-            )
-        elif stage == "quantize":
-            quantize_gguf(
-                settings,
-                llama_cpp_dir=llama_cpp_dir,
-                quantize_bin=quantize_bin,
-                dry_run=dry_run,
-            )
-        elif stage == "modelfile":
-            if dry_run:
-                print(
-                    f"modelfile {settings.modelfile_quantization} "
-                    f"({settings.modelfile_gguf_path}) -> {settings.modelfile_path}"
-                )
-                continue
-            write_settings_modelfile(settings)
+                    print(
+                        f"modelfile {settings.modelfile_quantization} "
+                        f"({settings.modelfile_gguf_path}) -> {settings.modelfile_path}"
+                    )
+                else:
+                    write_settings_modelfile(settings)
+            if progress is not None:
+                progress.update(task_id, advance=1)
 
 
 def replace_stale_export_directory(
@@ -801,6 +915,7 @@ def replace_stale_export_directory(
 
 
 def command(args: argparse.Namespace) -> None:
+    configure_model_library_output()
     student_config = (
         load_student_family_config(args.student_config)
         if args.base_only
@@ -820,6 +935,10 @@ def command(args: argparse.Namespace) -> None:
         gguf_outtype=args.outtype,
     )
     selected_stages = expand_stages(args.stages)
+    if args.modelfile_variants and selected_stages != ["modelfile"]:
+        raise ValueError("--modelfile-variants requires --stages modelfile.")
+    if args.modelfile_variants and args.modelfile_path:
+        raise ValueError("--modelfile-path cannot be combined with --modelfile-variants.")
     source_metadata = None
     if not args.base_only:
         source_metadata = read_metadata(student_config["model_metadata_path"])
@@ -839,18 +958,28 @@ def command(args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
         )
 
-    run_export(
-        settings,
-        stages=selected_stages,
-        llama_cpp_dir=args.llama_cpp_dir,
-        convert_script=args.convert_script,
-        quantize_bin=args.quantize_bin,
-        python_bin=args.python_bin,
-        device_map=args.device_map,
-        merge_dtype=args.merge_dtype,
-        max_shard_size=args.max_shard_size,
-        dry_run=args.dry_run,
-    )
+    variant_modelfiles = None
+    if args.modelfile_variants:
+        variant_modelfiles = write_variant_modelfiles(
+            settings,
+            args.modelfile_variants,
+            show_progress=args.quiet,
+            dry_run=args.dry_run,
+        )
+    else:
+        run_export(
+            settings,
+            stages=selected_stages,
+            llama_cpp_dir=args.llama_cpp_dir,
+            convert_script=args.convert_script,
+            quantize_bin=args.quantize_bin,
+            python_bin=args.python_bin,
+            device_map=args.device_map,
+            merge_dtype=args.merge_dtype,
+            max_shard_size=args.max_shard_size,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
     if not args.dry_run:
         timestamp = iso_now()
         metadata = {
@@ -879,6 +1008,38 @@ def command(args: argparse.Namespace) -> None:
             }
             metadata["dataset"] = source_metadata.get("dataset")
         atomic_write_yaml(metadata, settings.export_dir / "metadata.yaml")
+        if args.quiet:
+            if variant_modelfiles is not None:
+                print_summary(
+                    "Ollama Modelfiles complete",
+                    [
+                        ("Model", settings.model_name),
+                        *(
+                            (quantization, path)
+                            for quantization, path in variant_modelfiles.items()
+                        ),
+                    ],
+                )
+            else:
+                summary_rows = [
+                    ("Model", settings.model_name),
+                    ("Base model", settings.base_model),
+                    ("Export directory", settings.export_dir),
+                    (
+                        "GGUF variants",
+                        ", ".join(
+                            [settings.gguf_outtype.upper(), *settings.quantized_gguf_paths]
+                        ),
+                    ),
+                ]
+                if "modelfile" in selected_stages:
+                    summary_rows.append(
+                        ("Modelfile variant", settings.modelfile_quantization)
+                    )
+                print_summary(
+                    "Ollama export complete",
+                    summary_rows,
+                )
 
 
 def main() -> None:
@@ -919,6 +1080,14 @@ def main() -> None:
     )
     parser.add_argument("--modelfile-path")
     parser.add_argument(
+        "--modelfile-variants",
+        nargs="+",
+        help=(
+            "Write one conventionally named Modelfile per GGUF selector, for example "
+            "bf16 Q8_0 Q4_K_M. Requires --stages modelfile."
+        ),
+    )
+    parser.add_argument(
         "--base-only",
         action="store_true",
         help=(
@@ -949,6 +1118,14 @@ def main() -> None:
         help="Torch dtype used when loading the base model to merge.",
     )
     parser.add_argument("--max-shard-size", default="4GB")
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Suppress third-party converter and quantizer output while retaining "
+            "Rich progress and failure diagnostics."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     command(args)

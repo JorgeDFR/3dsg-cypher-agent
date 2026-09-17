@@ -135,6 +135,101 @@ workflow_step() {
   fi
 }
 
+render_group_progress() {
+  local title="$1"
+  local current="$2"
+  local total="$3"
+  local elapsed="$4"
+  local width=32
+  local filled=$((current * width / total))
+  local empty=$((width - filled))
+  local bar=""
+  local index
+  local padding
+
+  for ((index = 0; index < filled; index++)); do
+    bar+="━"
+  done
+  printf -v padding '%*s' "${empty}" ''
+  bar+="${padding}"
+  if [[ -t 1 ]]; then
+    printf '\r\033[2K%-38s %s %d/%d %d:%02d' \
+      "${title}" "${bar}" "${current}" "${total}" \
+      "$((elapsed / 60))" "$((elapsed % 60))"
+    if [[ "${current}" -eq "${total}" ]]; then
+      printf '\n'
+    fi
+    return
+  fi
+
+  printf '%-38s %s %d/%d %d:%02d\n' \
+    "${title}" "${bar}" "${current}" "${total}" \
+    "$((elapsed / 60))" "$((elapsed % 60))"
+}
+
+quiet_phase() {
+  local current="$1"
+  local total="$2"
+  local started_at="$3"
+  local title="$4"
+  local output_file
+  shift 4
+
+  output_file="$(mktemp "${TMPDIR:-/tmp}/3dsg-deploy.XXXXXX")"
+  if [[ -t 1 ]]; then
+    render_group_progress "${title}" "$((current - 1))" "${total}" \
+      "$((SECONDS - started_at))"
+  fi
+  if "$@" >"${output_file}" 2>&1; then
+    rm -f "${output_file}"
+    render_group_progress "${title}" "${current}" "${total}" \
+      "$((SECONDS - started_at))"
+    return 0
+  fi
+
+  if [[ -t 1 ]]; then
+    printf '\n'
+  fi
+  warn "Captured command output (last 80 lines):"
+  tr '\r' '\n' <"${output_file}" | tail -n 80 >&2
+  rm -f "${output_file}"
+  return 1
+}
+
+register_ollama_models() {
+  local model_name="$1"
+  local model_dir="$2"
+  local started_at="${SECONDS}"
+
+  quiet_phase 1 4 "${started_at}" "Starting Ollama" \
+    compose --profile ollama up -d --wait ollama || return 1
+  quiet_phase 2 4 "${started_at}" "Registering BF16 model" \
+    compose exec -T ollama ollama create "${model_name}-bf16" \
+      -f "${model_dir}/Modelfile.bf16" || return 1
+  quiet_phase 3 4 "${started_at}" "Registering Q8_0 model" \
+    compose exec -T ollama ollama create "${model_name}-q8_0" \
+      -f "${model_dir}/Modelfile.q8_0" || return 1
+  quiet_phase 4 4 "${started_at}" "Registering Q4_K_M model" \
+    compose exec -T ollama ollama create "${model_name}-q4_k_m" \
+      -f "${model_dir}/Modelfile.q4_k_m" || return 1
+
+  compose exec -T main python -c '
+import sys
+
+from cypher_3dsg_agent_distillation.core.cli_output import print_summary
+
+name = sys.argv[1]
+print_summary(
+    "Ollama registration complete",
+    [
+        ("BF16", f"{name}-bf16"),
+        ("Q8_0", f"{name}-q8_0"),
+        ("Q4_K_M", f"{name}-q4_k_m"),
+    ],
+)
+' "${model_name}"
+}
+
 check_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     cat >&2 <<'EOF'
@@ -487,8 +582,7 @@ print(f"[INFO] Found trained student adapter in {adapter_dir}.")
 }
 
 run_demo_deploy() {
-  local total_steps=12
-  local export_dir="outputs/ollama/${DEPLOY_MODEL_NAME}"
+  local total_steps=7
   local ollama_model_dir="/models/${DEPLOY_MODEL_NAME}"
 
   if [[ $# -ne 0 ]]; then
@@ -509,40 +603,18 @@ run_demo_deploy() {
     compose exec main python scripts/export_agent_ollama.py \
       --student-config "${DEPLOY_STUDENT_CONFIG}" \
       --model-name "${DEPLOY_MODEL_NAME}" \
-      --stages all
-  workflow_step 2 "${total_steps}" "Generate BF16 Ollama Modelfile" \
+      --quiet \
+      --stages merge convert quantize
+  workflow_step 2 "${total_steps}" "Generate Ollama Modelfiles" \
     compose exec main python scripts/export_agent_ollama.py \
       --student-config "${DEPLOY_STUDENT_CONFIG}" \
       --model-name "${DEPLOY_MODEL_NAME}" \
+      --quiet \
       --stages modelfile \
-      --modelfile-gguf bf16 \
-      --modelfile-path "${export_dir}/Modelfile.bf16"
-  workflow_step 3 "${total_steps}" "Generate Q8_0 Ollama Modelfile" \
-    compose exec main python scripts/export_agent_ollama.py \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --model-name "${DEPLOY_MODEL_NAME}" \
-      --stages modelfile \
-      --modelfile-gguf Q8_0 \
-      --modelfile-path "${export_dir}/Modelfile.q8_0"
-  workflow_step 4 "${total_steps}" "Generate Q4_K_M Ollama Modelfile" \
-    compose exec main python scripts/export_agent_ollama.py \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --model-name "${DEPLOY_MODEL_NAME}" \
-      --stages modelfile \
-      --modelfile-gguf Q4_K_M \
-      --modelfile-path "${export_dir}/Modelfile.q4_k_m"
-  workflow_step 5 "${total_steps}" "Start Ollama" \
-    compose --profile ollama up -d --wait ollama
-  workflow_step 6 "${total_steps}" "Register BF16 model in Ollama" \
-    compose exec -T ollama ollama create "${DEPLOY_MODEL_NAME}-bf16" \
-      -f "${ollama_model_dir}/Modelfile.bf16"
-  workflow_step 7 "${total_steps}" "Register Q8_0 model in Ollama" \
-    compose exec -T ollama ollama create "${DEPLOY_MODEL_NAME}-q8_0" \
-      -f "${ollama_model_dir}/Modelfile.q8_0"
-  workflow_step 8 "${total_steps}" "Register Q4_K_M model in Ollama" \
-    compose exec -T ollama ollama create "${DEPLOY_MODEL_NAME}-q4_k_m" \
-      -f "${ollama_model_dir}/Modelfile.q4_k_m"
-  workflow_step 9 "${total_steps}" "Validate BF16 generation on the challenge split" \
+      --modelfile-variants bf16 Q8_0 Q4_K_M
+  workflow_step 3 "${total_steps}" "Start Ollama and register GGUF variants" \
+    register_ollama_models "${DEPLOY_MODEL_NAME}" "${ollama_model_dir}"
+  workflow_step 4 "${total_steps}" "Validate BF16 generation on the challenge split" \
     compose exec main python scripts/evaluate_student.py \
       --data-config "${DEPLOY_DATA_CONFIG}" \
       --student-config "${DEPLOY_STUDENT_CONFIG}" \
@@ -551,7 +623,7 @@ run_demo_deploy() {
       --runtime ollama \
       --ollama-model "${DEPLOY_MODEL_NAME}-bf16" \
       --max-new-tokens 1024
-  workflow_step 10 "${total_steps}" "Validate Q8_0 generation on the challenge split" \
+  workflow_step 5 "${total_steps}" "Validate Q8_0 generation on the challenge split" \
     compose exec main python scripts/evaluate_student.py \
       --data-config "${DEPLOY_DATA_CONFIG}" \
       --student-config "${DEPLOY_STUDENT_CONFIG}" \
@@ -560,7 +632,7 @@ run_demo_deploy() {
       --runtime ollama \
       --ollama-model "${DEPLOY_MODEL_NAME}-q8_0" \
       --max-new-tokens 1024
-  workflow_step 11 "${total_steps}" "Validate Q4_K_M generation on the challenge split" \
+  workflow_step 6 "${total_steps}" "Validate Q4_K_M generation on the challenge split" \
     compose exec main python scripts/evaluate_student.py \
       --data-config "${DEPLOY_DATA_CONFIG}" \
       --student-config "${DEPLOY_STUDENT_CONFIG}" \
@@ -569,7 +641,7 @@ run_demo_deploy() {
       --runtime ollama \
       --ollama-model "${DEPLOY_MODEL_NAME}-q4_k_m" \
       --max-new-tokens 1024
-  workflow_step 12 "${total_steps}" "Generate HTML workflow report" \
+  workflow_step 7 "${total_steps}" "Generate HTML workflow report" \
     compose exec main python scripts/generate_workflow_report.py \
       --data-config "${DEPLOY_DATA_CONFIG}" \
       --student-config "${DEPLOY_STUDENT_CONFIG}"

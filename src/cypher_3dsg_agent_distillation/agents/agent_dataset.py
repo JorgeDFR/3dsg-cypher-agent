@@ -176,9 +176,7 @@ def repair_rejected_invalid_answer_trace(
         return None
 
     output_type = str(
-        trace.get("output_type")
-        or (trace.get("metadata") or {}).get("output_type")
-        or "SLDP"
+        trace.get("output_type") or (trace.get("metadata") or {}).get("output_type") or "SLDP"
     )
     if output_type.upper() != "SLDP":
         return None
@@ -187,6 +185,7 @@ def repair_rejected_invalid_answer_trace(
         str(real_solution),
         output_type,
         answer_validation=trace.get("answer_validation"),
+        solution_formats=trace.get("solution_formats") or trace.get("solution_format"),
     )
     if not valid_cypher_format or not cypher_matches_real:
         return None
@@ -351,8 +350,10 @@ def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
 
     final_answer = None
     for message in reversed(messages):
-        if message.get("role") == "assistant" and message.get("content") and not message.get(
-            "tool_calls"
+        if (
+            message.get("role") == "assistant"
+            and message.get("content")
+            and not message.get("tool_calls")
         ):
             final_answer = message
             break
@@ -411,10 +412,7 @@ def validate_split_sizes(train_size: float, eval_size: float, test_size: float) 
             raise ValueError(f"{name} must be between 0 and 1, got {value}.")
     total = train_size + eval_size + test_size
     if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-9):
-        raise ValueError(
-            "train_size, eval_size, and test_size must sum to 1.0, "
-            f"got {total:.6g}."
-        )
+        raise ValueError(f"train_size, eval_size, and test_size must sum to 1.0, got {total:.6g}.")
 
 
 def grouped_split_records(
@@ -447,9 +445,7 @@ def grouped_split_records(
     for task_types in cross_task_components(records_by_task_type):
         if len(task_types) > 1:
             component_records = [
-                record
-                for task_type in task_types
-                for record in records_by_task_type[task_type]
+                record for task_type in task_types for record in records_by_task_type[task_type]
             ]
             target_counts = {
                 task_type: stratified_split_counts(
@@ -496,8 +492,7 @@ def grouped_split_records(
             rebalance_task_types_after_consolidation(
                 component_splits,
                 records_by_task_type={
-                    task_type: records_by_task_type[task_type]
-                    for task_type in task_types
+                    task_type: records_by_task_type[task_type] for task_type in task_types
                 },
                 split_sizes=split_sizes,
                 leakage_exemptions=record_level_task_types,
@@ -580,9 +575,7 @@ def split_one_task_type(
     shuffled_records = list(task_records)
     rng.shuffle(shuffled_records)
     record_counts = stratified_split_counts(len(shuffled_records), split_sizes)
-    used_record_level_split = (
-        sum(count > 0 for count in record_counts.values()) > len(group_items)
-    )
+    used_record_level_split = sum(count > 0 for count in record_counts.values()) > len(group_items)
     if used_record_level_split and warn:
         warnings.warn(
             f"Task type `{task_type}` has {len(shuffled_records)} questions but only "
@@ -659,9 +652,7 @@ def joint_cypher_group_assignments(
         vectors.append(tuple(vector))
 
     active_splits = tuple(
-        split_name
-        for split_name in ("train", "eval", "test")
-        if split_sizes[split_name] > 0
+        split_name for split_name in ("train", "eval", "test") if split_sizes[split_name] > 0
     )
     if not active_splits:
         return None
@@ -671,9 +662,7 @@ def joint_cypher_group_assignments(
             target_counts[task_type][split_name] for task_type in task_types
         ),
     )
-    tracked_splits = tuple(
-        split_name for split_name in active_splits if split_name != base_split
-    )
+    tracked_splits = tuple(split_name for split_name in active_splits if split_name != base_split)
     width = len(task_types)
     zero_state = (0,) * (len(tracked_splits) * width)
     states: dict[tuple[int, ...], int] = {zero_state: 0}
@@ -683,13 +672,8 @@ def joint_cypher_group_assignments(
     max_states = 250_000
 
     for vector in vectors:
-        processed = [
-            count + increment
-            for count, increment in zip(processed, vector, strict=True)
-        ]
-        remaining = [
-            total - count for total, count in zip(totals, processed, strict=True)
-        ]
+        processed = [count + increment for count, increment in zip(processed, vector, strict=True)]
+        remaining = [total - count for total, count in zip(totals, processed, strict=True)]
         next_states: dict[tuple[int, ...], int] = {}
         for state, code in states.items():
             for choice_index, split_name in enumerate(active_splits):
@@ -713,10 +697,7 @@ def joint_cypher_group_assignments(
                         break
                     base_count = processed[index] - tracked_total
                     base_target = target_counts[task_type][base_split]
-                    if (
-                        base_count > base_target
-                        or base_count + remaining[index] < base_target
-                    ):
+                    if base_count > base_target or base_count + remaining[index] < base_target:
                         possible = False
                         break
                 if possible:
@@ -759,9 +740,7 @@ def rebalance_task_types_after_consolidation(
     for task_type, task_records in records_by_task_type.items():
         task_splits = {
             split_name: [
-                record
-                for record in split_records
-                if record_stratum_key(record) == task_type
+                record for record in split_records if record_stratum_key(record) == task_type
             ]
             for split_name, split_records in splits.items()
         }
@@ -771,9 +750,7 @@ def rebalance_task_types_after_consolidation(
         leakage_exemptions.add(task_type)
         for split_name in splits:
             splits[split_name][:] = [
-                record
-                for record in splits[split_name]
-                if record_stratum_key(record) != task_type
+                record for record in splits[split_name] if record_stratum_key(record) != task_type
             ]
             splits[split_name].extend(task_splits[split_name])
 
@@ -782,9 +759,7 @@ def consolidate_cross_task_cypher(
     splits: dict[str, list[AgentTraceRecord]],
 ) -> None:
     """Keep a Cypher-equivalent group in one split even across task families."""
-    locations: dict[str, dict[str, list[AgentTraceRecord]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    locations: dict[str, dict[str, list[AgentTraceRecord]]] = defaultdict(lambda: defaultdict(list))
     task_keys: dict[str, set[str]] = defaultdict(set)
     for split_name, records in splits.items():
         for record in records:
@@ -1044,9 +1019,7 @@ def split_records_payload(
         payload[split_name] = {
             "questions": len(records),
             "task_type_counts": counter_to_sorted_dict(record_task_type_counts(records)),
-            "task_family_counts": counter_to_sorted_dict(
-                record_task_family_counts(records)
-            ),
+            "task_family_counts": counter_to_sorted_dict(record_task_family_counts(records)),
             "optimized_questions": sum(1 for record in records if optimization_kinds(record)),
             "uids": [record.uid for record in records],
             "scene_counts": counter_to_sorted_dict(Counter(scene_sequence)),
@@ -1056,9 +1029,7 @@ def split_records_payload(
                 else 1
                 + sum(
                     left != right
-                    for left, right in zip(
-                        scene_sequence, scene_sequence[1:], strict=False
-                    )
+                    for left, right in zip(scene_sequence, scene_sequence[1:], strict=False)
                 )
             ),
         }
@@ -1165,18 +1136,14 @@ def split_report_lines(
     lines.append("  split counts:")
     for split_name in ("train", "eval", "test", "challenge"):
         records = split_records[split_name]
-        lines.append(
-            f"    {split_name}: {len(records)} traces -> {split_paths[split_name]}"
-        )
+        lines.append(f"    {split_name}: {len(records)} traces -> {split_paths[split_name]}")
     return lines
 
 
 def split_command(args: argparse.Namespace) -> None:
     config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     split_config = config.get("split", {})
-    if getattr(args, "split_by_scene", False) or bool(
-        split_config.get("split_by_scene", False)
-    ):
+    if getattr(args, "split_by_scene", False) or bool(split_config.get("split_by_scene", False)):
         print("Scene-aware splitting is not implemented yet.")
         return
     teacher_name = args.teacher or config.get("teacher_name")
@@ -1188,15 +1155,11 @@ def split_command(args: argparse.Namespace) -> None:
         config,
         teacher_name=str(teacher_name),
         teacher_run=(
-            args.teacher_run
-            if args.teacher or args.teacher_run
-            else config.get("teacher_run")
+            args.teacher_run if args.teacher or args.teacher_run else config.get("teacher_run")
         ),
     )
     prospective_report = split_report_output_path(config, args.report_output)
-    require_new_outputs(
-        [*config["splits"].values(), prospective_report], force=args.force
-    )
+    require_new_outputs([*config["splits"].values(), prospective_report], force=args.force)
     optimize_enabled = args.optimize_student_traces or bool(
         config.get("optimize_student_traces", False)
     )
@@ -1262,9 +1225,7 @@ def split_command(args: argparse.Namespace) -> None:
             "teacher_name": config["teacher_name"],
             "teacher_run": config["teacher_run"],
             "split_fingerprint": split_fingerprint,
-            "data_config": config_record(
-                config["data_config_path"], project_root=PROJECT_ROOT
-            ),
+            "data_config": config_record(config["data_config_path"], project_root=PROJECT_ROOT),
         },
     )
     metadata["status"] = "complete"
@@ -1305,14 +1266,10 @@ def split_command(args: argparse.Namespace) -> None:
 
 
 def prepare_seeds_command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     profiles = load_experiment_profiles_from_config(data_config)
     if not profiles:
-        raise ValueError(
-            "Seed preparation requires at least one experiment profile."
-        )
+        raise ValueError("Seed preparation requires at least one experiment profile.")
     default_profile = next(iter(profiles.values()))
     seed_defaults = profile_seed_defaults(default_profile)
     raw_records = load_raw_seed_records_from_config(data_config)
@@ -1336,9 +1293,7 @@ def prepare_seeds_command(args: argparse.Namespace) -> None:
         outputs={"seed_records": output_path},
         project_root=PROJECT_ROOT,
         extra={
-            "data_config": config_record(
-                data_config["data_config_path"], project_root=PROJECT_ROOT
-            )
+            "data_config": config_record(data_config["data_config_path"], project_root=PROJECT_ROOT)
         },
     )
     counts = Counter(record.query_type for record in prepared)

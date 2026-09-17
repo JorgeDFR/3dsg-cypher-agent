@@ -13,7 +13,11 @@ from rich.table import Table
 
 from cypher_3dsg_agent_distillation.core.config import ensure_parent
 from cypher_3dsg_agent_distillation.cypher.pddl_goals import validate_grounding_rows
-from cypher_3dsg_agent_distillation.cypher.templates import format_solution_field
+from cypher_3dsg_agent_distillation.cypher.templates import (
+    empty_solution_value,
+    format_solution_field,
+    is_zero_count_solution,
+)
 from cypher_3dsg_agent_distillation.graph.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     Neo4jValidator,
@@ -157,12 +161,14 @@ def answer_matches(
     output_type: str = "SLDP",
     *,
     answer_validation: dict[str, Any] | None = None,
+    solution_formats: Any = None,
 ) -> bool:
     valid_format, correct = answer_matches_with_heracles(
         str(actual),
         str(expected),
         output_type,
         answer_validation=answer_validation,
+        solution_formats=solution_formats,
     )
     return valid_format and correct
 
@@ -342,9 +348,7 @@ def row_values(
         value = row_property(row, property_name, preferred_keys, node_keys)
         if value is None:
             columns = ", ".join(row) or "<none>"
-            raise ResultShapeError(
-                f"missing `{property_name}` in returned columns: {columns}"
-            )
+            raise ResultShapeError(f"missing `{property_name}` in returned columns: {columns}")
         if flatten_collections and is_aggregate_result_value(value):
             values.extend(value)
         else:
@@ -646,15 +650,21 @@ def rows_to_solution_value(
 
 def rows_to_solution_text(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     if "invalid_input" in (record.get("tags") or []) and rows_indicate_no_match(rows):
+        solution_formats = solution_formats_for_record(record)
         expected = next(
             (
                 record[key]
                 for key in ("expected_solution", "real_solution", "solution")
                 if key in record and record[key] is not None
             ),
-            "",
+            None,
         )
-        return str(expected).strip()
+        if is_zero_count_solution(expected):
+            return rendered_solution(expected, solution_formats=solution_formats)
+        return rendered_solution(
+            empty_solution_value(solution_formats),
+            solution_formats=solution_formats,
+        )
     value = rows_to_solution_value(record.get("query_type", ""), rows)
     solution_formats = solution_formats_for_record(record)
     return rendered_solution(value, solution_formats=solution_formats)
@@ -707,8 +717,8 @@ def evaluate_records(
             }
             if validation["executable"]:
                 if str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
-                    grounding_match, actual_solution, _actual_grounding = (
-                        validate_grounding_rows(rows, record.get("grounding"))
+                    grounding_match, actual_solution, _actual_grounding = validate_grounding_rows(
+                        rows, record.get("grounding")
                     )
                     execution["grounding_match"] = grounding_match
                 else:

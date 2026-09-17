@@ -78,18 +78,17 @@ def _argument_values(argument: Any, grounding: dict[str, list[str]]) -> list[str
     raise KeyError("PDDL goal argument requires `literal` or `result`.")
 
 
-def render_goal_spec(spec: dict[str, Any], grounding: dict[str, list[str]]) -> str:
+def render_goal_spec(spec: dict[str, Any], grounding: dict[str, list[str]]) -> str | None:
     if "fact" in spec:
         predicate = str(spec["fact"])
         argument_values = [
             _argument_values(argument, grounding) for argument in spec.get("arguments", [])
         ]
         if any(not values for values in argument_values):
-            raise ValueError(f"PDDL fact `{predicate}` has an empty grounding.")
+            return None
         combinations = list(itertools.product(*argument_values)) if argument_values else [()]
         facts = [
-            f"({predicate}{' ' if values else ''}{' '.join(values)})"
-            for values in combinations
+            f"({predicate}{' ' if values else ''}{' '.join(values)})" for values in combinations
         ]
         if bool(spec.get("negate_each")):
             facts = [f"(not {fact})" for fact in facts]
@@ -103,21 +102,27 @@ def render_goal_spec(spec: dict[str, Any], grounding: dict[str, list[str]]) -> s
     operator = str(spec.get("operator") or "")
     if operator not in {"and", "or", "not"}:
         raise ValueError("PDDL goal specification requires `fact` or a supported `operator`.")
-    clauses = [render_goal_spec(clause, grounding) for clause in spec.get("clauses", [])]
-    if operator == "not" and len(clauses) != 1:
+    rendered_clauses = [render_goal_spec(clause, grounding) for clause in spec.get("clauses", [])]
+    if operator == "not" and len(rendered_clauses) != 1:
         raise ValueError("PDDL `not` requires exactly one clause.")
-    if operator in {"and", "or"} and not clauses:
+    if operator in {"and", "or"} and not rendered_clauses:
         raise ValueError(f"PDDL `{operator}` requires at least one clause.")
+    if operator in {"and", "not"} and any(clause is None for clause in rendered_clauses):
+        return None
+
+    clauses = [clause for clause in rendered_clauses if clause is not None]
+    if not clauses:
+        return None
+    if operator == "or" and len(clauses) == 1:
+        return clauses[0]
     return f"({operator} {' '.join(clauses)})"
 
 
 def render_pddl_solution(
     goal_spec: dict[str, Any],
     grounding: dict[str, Any],
-) -> str:
+) -> str | None:
     expected = grounding.get("expected") or {}
-    if not grounding_is_non_empty(grounding):
-        raise ValueError("Cannot render a PDDL goal from empty grounding values.")
     return render_goal_spec(goal_spec, expected)
 
 
@@ -171,9 +176,7 @@ def _inferred_symbols_for_field(
         for symbol in _symbols_in_value(value):
             matching_fields = []
             for candidate_name, candidate_spec in fields.items():
-                pattern = SYMBOL_PATTERNS.get(
-                    str(candidate_spec.get("symbol_type") or "")
-                )
+                pattern = SYMBOL_PATTERNS.get(str(candidate_spec.get("symbol_type") or ""))
                 if pattern is not None and pattern.fullmatch(symbol):
                     matching_fields.append(str(candidate_name))
             if matching_fields == [field_name]:
@@ -210,6 +213,92 @@ def grounding_from_rows(
     return extracted
 
 
+def _semantic_grounding_from_rows(
+    rows: list[dict[str, Any]], contract: dict[str, Any]
+) -> dict[str, list[str]] | None:
+    """Map result columns to grounding roles by their values, not their aliases."""
+    fields = contract.get("fields") or {}
+    expected = {
+        str(key): _ordered_values(value) for key, value in (contract.get("expected") or {}).items()
+    }
+    match_mode = str(contract.get("match") or "exact")
+    column_values: dict[str, list[str]] = {}
+    for row in rows:
+        for column, value in row.items():
+            column_values.setdefault(str(column), []).extend(_grounding_values_in_value(value))
+
+    candidates: dict[str, list[str]] = {}
+    for field_name, field_spec in fields.items():
+        field_name = str(field_name)
+        expected_values = set(expected.get(field_name, []))
+        if not expected_values:
+            candidates[field_name] = []
+            continue
+        pattern = SYMBOL_PATTERNS.get(str(field_spec.get("symbol_type") or ""))
+        matching_columns = []
+        for column, raw_values in column_values.items():
+            values = {value for value in raw_values if pattern is None or pattern.fullmatch(value)}
+            matches = (
+                expected_values.issubset(values)
+                if match_mode == "subset"
+                else values == expected_values
+            )
+            if matches:
+                matching_columns.append(column)
+        if not matching_columns:
+            return None
+        candidates[field_name] = matching_columns
+
+    assignments: dict[str, str] = {}
+
+    def assign(field_names: list[str], used: dict[str, str]) -> bool:
+        if not field_names:
+            return True
+        field_name = min(field_names, key=lambda name: len(candidates[name]))
+        remaining = [name for name in field_names if name != field_name]
+        for column in candidates[field_name]:
+            previous_field = used.get(column)
+            if previous_field is not None and set(expected[previous_field]) != set(
+                expected[field_name]
+            ):
+                continue
+            assignments[field_name] = column
+            used[column] = field_name
+            if assign(remaining, used):
+                return True
+            assignments.pop(field_name, None)
+            if previous_field is None:
+                used.pop(column, None)
+            else:
+                used[column] = previous_field
+        return False
+
+    non_empty_fields = [name for name in candidates if expected.get(name)]
+    if not assign(non_empty_fields, {}):
+        return None
+
+    return {
+        field_name: (
+            sorted(
+                {
+                    value
+                    for value in column_values[assignments[field_name]]
+                    if (
+                        SYMBOL_PATTERNS.get(str(fields[field_name].get("symbol_type") or ""))
+                        is None
+                        or SYMBOL_PATTERNS[
+                            str(fields[field_name].get("symbol_type") or "")
+                        ].fullmatch(value)
+                    )
+                }
+            )
+            if field_name in assignments
+            else []
+        )
+        for field_name in fields
+    }
+
+
 def validate_grounding_rows(
     rows: list[dict[str, Any]],
     contract: dict[str, Any] | None,
@@ -217,21 +306,46 @@ def validate_grounding_rows(
     if not contract:
         return True, None, None
     expected = {
-        str(key): _ordered_values(value)
-        for key, value in (contract.get("expected") or {}).items()
+        str(key): _ordered_values(value) for key, value in (contract.get("expected") or {}).items()
     }
     actual = grounding_from_rows(rows, contract)
     match_mode = str(contract.get("match") or "exact")
     if match_mode == "subset":
         matches = all(
-            set(values).issubset(set(actual.get(key, [])))
-            for key, values in expected.items()
+            set(values).issubset(set(actual.get(key, []))) for key, values in expected.items()
         )
     elif match_mode == "exact":
         matches = all(set(actual.get(key, [])) == set(values) for key, values in expected.items())
     else:
         raise ValueError(f"Unsupported grounding match mode `{match_mode}`.")
     expected_is_empty = bool(expected) and all(not values for values in expected.values())
+    if matches and expected_is_empty:
+        patterns = {
+            pattern
+            for field_spec in (contract.get("fields") or {}).values()
+            if (pattern := SYMBOL_PATTERNS.get(str(field_spec.get("symbol_type") or "")))
+            is not None
+        }
+        matches = not any(
+            pattern.fullmatch(symbol)
+            for row in rows
+            for symbol in _symbols_in_value(row)
+            for pattern in patterns
+        )
+    if not matches and not expected_is_empty:
+        semantic_actual = _semantic_grounding_from_rows(rows, contract)
+        if semantic_actual is not None:
+            actual = semantic_actual
+            if match_mode == "subset":
+                matches = all(
+                    set(values).issubset(set(actual.get(key, [])))
+                    for key, values in expected.items()
+                )
+            else:
+                matches = all(
+                    set(actual.get(key, [])) == set(values) for key, values in expected.items()
+                )
+
     actual_is_empty = bool(actual) and all(not values for values in actual.values())
     rendered = (
         ""

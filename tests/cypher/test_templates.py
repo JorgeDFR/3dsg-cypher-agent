@@ -31,7 +31,7 @@ def test_generate_records_expands_nested_values():
                     "query_type": "radius",
                     "solution_formats": ["int"],
                     "variables": {"class": "classes", "point": "points"},
-                    "cypher": "MATCH (o:Object {class: \"{class}\"}) RETURN {point.x}",
+                    "cypher": 'MATCH (o:Object {class: "{class}"}) RETURN {point.x}',
                     "questions": ["Where is {class} near {point.x}?"],
                 }
             ],
@@ -82,7 +82,7 @@ def test_any_layer_requirement_does_not_require_every_label_mentioned_in_cypher(
                     "variables": {"case": "cases"},
                     "cypher": (
                         "MATCH (p)-[:CONTAINS]->(o:Object {nodeSymbol: "
-                        "\"{case.object}\"}) WHERE p:Place OR p:MeshPlace "
+                        '"{case.object}"}) WHERE p:Place OR p:MeshPlace '
                         "RETURN p.nodeSymbol AS place"
                     ),
                     "questions": ["Where is {case.object}?"],
@@ -155,12 +155,8 @@ def test_challenge_quota_overrides_template_question_target():
 
 
 def test_scene_record_selection_is_even_and_redistributes_unused_capacity():
-    records = [
-        {"uid": f"a{index}", "scene_id": "a"}
-        for index in range(4)
-    ] + [
-        {"uid": f"b{index}", "scene_id": "b"}
-        for index in range(4)
+    records = [{"uid": f"a{index}", "scene_id": "a"} for index in range(4)] + [
+        {"uid": f"b{index}", "scene_id": "b"} for index in range(4)
     ]
 
     balanced = evenly_select_scene_records(records, target=5, scene_ids=["a", "b"])
@@ -245,9 +241,7 @@ def test_dataset_targets_preserve_scene_grouped_generation_order():
     )
 
     shared_scene_counts = Counter(
-        record["scene_id"]
-        for record in selected
-        if record["query_type"] == "shared"
+        record["scene_id"] for record in selected if record["query_type"] == "shared"
     )
     assert shared_scene_counts == {"office": 2, "spot": 2}
     assert sum(record["query_type"] == "room_only" for record in selected) == 3
@@ -270,6 +264,9 @@ def test_format_solution_field_uses_answer_notation():
         "<chair>\n"
     )
     assert format_solution_field("O12", solution_formats=["set[str]", "str"]) == "O12"
+    assert format_solution_field(None, solution_formats=["str"]) == ""
+    assert format_solution_field([], solution_formats=["str"]) == ""
+    assert format_solution_field(set(), solution_formats=["str"]) == ""
 
 
 def test_solution_format_aliases_are_normalized():
@@ -391,9 +388,7 @@ def test_variable_sampling_balances_explicit_sampling_groups():
         }
     )
 
-    region_counts = Counter(
-        str(record["gold_cypher"]).split("'")[1] for record in records
-    )
+    region_counts = Counter(str(record["gold_cypher"]).split("'")[1] for record in records)
     assert region_counts == Counter({"R0": 3, "R1": 3, "R2": 3, "R3": 3})
 
 
@@ -447,8 +442,7 @@ def test_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
     assert len(records) == 10
     assert sum(str(record["solution"]).strip() != "<>" for record in records) >= 9
     assert all(
-        ("invalid_input" in record["tags"])
-        == (str(record["solution"]).strip() == "<>")
+        ("invalid_input" in record["tags"]) == (str(record["solution"]).strip() == "<>")
         for record in records
     )
 
@@ -519,8 +513,7 @@ def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch
                     "target_questions": 10,
                     "variables": {"object": "objects"},
                     "cypher": (
-                        "MATCH (o:Object {nodeSymbol: '{object}'}) "
-                        "RETURN o.nodeSymbol AS object"
+                        "MATCH (o:Object {nodeSymbol: '{object}'}) RETURN o.nodeSymbol AS object"
                     ),
                     "grounding": {
                         "fields": {
@@ -675,7 +668,7 @@ def test_qa_zero_count_with_absent_filter_value_is_sampled_as_empty(monkeypatch)
                     "cypher": "RETURN count('{class}') AS count",
                     "questions": ["Count {class}.", "How many {class}?"],
                 }
-            ]
+            ],
         },
     )
 
@@ -714,7 +707,7 @@ def test_qa_zero_count_with_valid_input_is_empty_but_not_invalid(monkeypatch):
                     "cypher": "RETURN count('{class}') AS count",
                     "questions": ["Count {class}."],
                 }
-            ]
+            ],
         },
     )
 
@@ -913,15 +906,133 @@ def test_pddl_template_generates_goal_and_grounding_contract(monkeypatch):
     assert records[0]["task_family"] == "cypher_pddl"
 
 
+def test_pddl_disjunction_preserves_available_branch(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, _variables):
+            return {"first": ["O1", "O2"], "second": []}
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {
+            "source_3dsg": "unused.json",
+            "values": {
+                "first_classes": ["light"],
+                "second_classes": ["missing"],
+                "invalid_values": ["missing"],
+            },
+        },
+        question_templates_config={
+            "sampling": {"empty_ratio": 0.0},
+            "templates": [
+                {
+                    "query_type": "pddl_atomic_alternative",
+                    "target_questions": 1,
+                    "variables": {
+                        "first_class": "first_classes",
+                        "second_class": "second_classes",
+                    },
+                    "cypher": "RETURN '{first_class}', '{second_class}'",
+                    "grounding": {
+                        "fields": {
+                            "first": {
+                                "source": "first",
+                                "aliases": ["first"],
+                                "symbol_type": "Object",
+                                "cardinality": "set",
+                            },
+                            "second": {
+                                "source": "second",
+                                "aliases": ["second"],
+                                "symbol_type": "Object",
+                                "cardinality": "set",
+                            },
+                        }
+                    },
+                    "goal": {
+                        "operator": "or",
+                        "clauses": [
+                            {
+                                "fact": "safe",
+                                "arguments": [{"result": "first"}],
+                                "multiple": "or",
+                            },
+                            {
+                                "fact": "visited-object",
+                                "arguments": [{"result": "second"}],
+                                "multiple": "or",
+                            },
+                        ],
+                    },
+                    "questions": ["Inspect {first_class} or visit {second_class}."],
+                }
+            ],
+        },
+        task_family="cypher_pddl",
+        output_type="PDDL",
+    )
+
+    assert records[0]["solution"] == "(or (safe O1) (safe O2))"
+    assert records[0]["grounding"]["expected"] == {
+        "first": ["O1", "O2"],
+        "second": [],
+    }
+    assert templates_module.generated_record_has_solution(records[0]) is True
+
+
+def test_valid_empty_scalar_solution_uses_empty_answer(monkeypatch):
+    class FakeSceneIndex:
+        def __init__(self, _path):
+            pass
+
+        def solution_for(self, _query_type, _variables):
+            return None
+
+    monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
+    records = generate_records(
+        {"source_3dsg": "unused.json", "values": {"classes": ["bed"]}},
+        question_templates_config={
+            "sampling": {"empty_ratio": 1.0},
+            "templates": [
+                {
+                    "query_type": "nearest_object_between_classes",
+                    "target_questions": 1,
+                    "solution_formats": ["str"],
+                    "variables": {"class": "classes"},
+                    "cypher": "RETURN '{class}'",
+                    "questions": ["Find {class}."],
+                }
+            ],
+        },
+        task_family="cypher_qa",
+        output_type="SLDP",
+    )
+
+    assert records[0]["solution"] == ""
+
+
+def test_pddl_alternative_queries_preserve_only_satisfiable_branches():
+    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    by_query_type = {template["query_type"]: template for template in templates}
+
+    atomic = by_query_type["pddl_atomic_alternative"]["cypher"]
+    assert atomic.count("OPTIONAL MATCH") == 2
+
+    compound = by_query_type["pddl_compound_alternative"]["cypher"]
+    assert "OPTIONAL MATCH (first:Object" in compound
+    assert "MATCH (second:Object" in compound
+    assert "OPTIONAL MATCH (second:Object" not in compound
+
+
 def test_qa_stable_uid_remains_backward_compatible():
     query_type = "object_count"
     question = "How many chairs?"
     cypher = "MATCH (o:Object) RETURN count(o) AS count"
     expected = hashlib.sha1(f"{query_type}\n{question}\n{cypher}".encode()).hexdigest()
 
-    assert templates_module.stable_uid(query_type, question, cypher) == (
-        f"tpl_{expected[:12]}"
-    )
+    assert templates_module.stable_uid(query_type, question, cypher) == (f"tpl_{expected[:12]}")
 
 
 def test_pddl_template_without_scene_grounding_does_not_emit_invalid_goal():
@@ -933,11 +1044,7 @@ def test_pddl_template_without_scene_grounding_does_not_emit_invalid_goal():
                     "query_type": "pddl_visit_object_symbol",
                     "variables": {"object": "objects"},
                     "cypher": "RETURN '{object}' AS object",
-                    "grounding": {
-                        "fields": {
-                            "object": {"source": "value", "aliases": ["object"]}
-                        }
-                    },
+                    "grounding": {"fields": {"object": {"source": "value", "aliases": ["object"]}}},
                     "goal": {
                         "fact": "visited-object",
                         "arguments": [{"result": "object"}],
@@ -980,8 +1087,7 @@ def test_pddl_templates_have_multiple_distinct_instruction_variants():
 
     assert all(len(template["questions"]) >= 5 for template in templates)
     assert all(
-        len(template["questions"]) == len(set(template["questions"]))
-        for template in templates
+        len(template["questions"]) == len(set(template["questions"])) for template in templates
     )
 
 
@@ -990,8 +1096,7 @@ def test_qa_templates_have_at_least_five_distinct_question_variants():
 
     assert all(len(template["questions"]) >= 5 for template in templates)
     assert all(
-        len(template["questions"]) == len(set(template["questions"]))
-        for template in templates
+        len(template["questions"]) == len(set(template["questions"])) for template in templates
     )
 
 
@@ -999,9 +1104,7 @@ def test_qa_templates_disable_empty_sampling_for_deterministic_and_count_queries
     templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
 
     zero_empty_ratio_types = {
-        template["query_type"]
-        for template in templates
-        if template.get("empty_ratio") == 0.0
+        template["query_type"] for template in templates if template.get("empty_ratio") == 0.0
     }
 
     assert zero_empty_ratio_types == {
@@ -1137,9 +1240,7 @@ def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
 
 def test_location_hops_composes_both_place_layers():
     templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
-    template = next(
-        template for template in templates if template["query_type"] == "location_hops"
-    )
+    template = next(template for template in templates if template["query_type"] == "location_hops")
 
     assert template["variables"] == {"case": "location_hop_cases"}
     assert template["requires_layers"] == ["Place", "MeshPlace"]
@@ -1236,9 +1337,7 @@ def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypat
         "pddl_end_at_place_symbol",
         "pddl_end_at_mesh_place_symbol",
     }
-    at_templates = [
-        template for template in templates if template["query_type"] in at_query_types
-    ]
+    at_templates = [template for template in templates if template["query_type"] in at_query_types]
     records = generate_records(
         {
             "source_3dsg": "unused.json",
@@ -1309,9 +1408,7 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
         "pddl_visit_object_without_holding",
     }
     compound_templates = [
-        template
-        for template in templates
-        if template["query_type"] in compound_query_types
+        template for template in templates if template["query_type"] in compound_query_types
     ]
     records = generate_records(
         {
@@ -1331,23 +1428,13 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
     )
 
     assert {record["query_type"]: record["solution"] for record in records} == {
-        "pddl_inspect_object_and_end_at_place": (
-            "(and (safe O0) (at-place p4))"
-        ),
-        "pddl_visit_object_and_end_at_object": (
-            "(and (visited-object O1) (at-object O2))"
-        ),
-        "pddl_visit_place_and_end_in_room": (
-            "(and (visited-place p4) (in-region R1))"
-        ),
+        "pddl_inspect_object_and_end_at_place": ("(and (safe O0) (at-place p4))"),
+        "pddl_visit_object_and_end_at_object": ("(and (visited-object O1) (at-object O2))"),
+        "pddl_visit_place_and_end_in_room": ("(and (visited-place p4) (in-region R1))"),
         "pddl_not_holding_object_symbol": "(not (holding O0))",
-        "pddl_not_holding_object_class": (
-            "(not (or (holding O1) (holding O2)))"
-        ),
+        "pddl_not_holding_object_class": ("(not (or (holding O1) (holding O2)))"),
         "pddl_object_not_in_place": "(not (object-in-place O0 p4))",
-        "pddl_visit_object_without_holding": (
-            "(and (visited-object O0) (not (holding O0)))"
-        ),
+        "pddl_visit_object_without_holding": ("(and (visited-object O0) (not (holding O0)))"),
     }
 
 
@@ -1360,16 +1447,12 @@ def test_pddl_object_in_place_templates_accept_both_place_layers():
         assert template["variables"]["place"] == "place_or_mesh_place_symbols"
         assert template["requires_any_layers"] == [["Place", "MeshPlace"]]
         assert "WHERE p:Place OR p:MeshPlace" in template["cypher"]
-        assert template["grounding"]["fields"]["place"]["symbol_type"] == (
-            "PlaceOrMeshPlace"
-        )
+        assert template["grounding"]["fields"]["place"]["symbol_type"] == ("PlaceOrMeshPlace")
 
 
 def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
     qa_templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
-    pddl_templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")[
-        "templates"
-    ]
+    pddl_templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
     affected_query_types = {
         "objects_in_room_symbol",
         "objects_in_room_class",
@@ -1384,7 +1467,6 @@ def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
 
     assert {template["query_type"] for template in affected_templates} == affected_query_types
     assert all(
-        "(r:Room" in template["cypher"]
-        and "[:CONTAINS*2..2]->(o:Object" in template["cypher"]
+        "(r:Room" in template["cypher"] and "[:CONTAINS*2..2]->(o:Object" in template["cypher"]
         for template in affected_templates
     )

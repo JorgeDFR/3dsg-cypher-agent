@@ -37,12 +37,18 @@ RUN mkdir -p "${PROJECT_DIR}" \
     && python -m venv "${LLAMA_CPP_DIR}/.venv" \
     && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir --upgrade pip \
     && "${LLAMA_CPP_PYTHON}" -m pip install --no-cache-dir -r requirements.txt \
-    && cmake -S "${LLAMA_CPP_DIR}" -B "${LLAMA_CPP_DIR}/build" -G Ninja \
+    && cmake \
+        -S "${LLAMA_CPP_DIR}" \
+        -B "${LLAMA_CPP_DIR}/build" \
+        -G Ninja \
+        -DBUILD_SHARED_LIBS=OFF \
     && cmake --build "${LLAMA_CPP_DIR}/build" --target llama-quantize \
     && cp "${LLAMA_CPP_DIR}/build/bin/llama-quantize" /tmp/llama-quantize \
     && rm -rf "${LLAMA_CPP_DIR}/build" "${LLAMA_CPP_DIR}/.git" \
     && mkdir -p "${LLAMA_CPP_DIR}/build/bin" \
     && mv /tmp/llama-quantize "${LLAMA_CPP_DIR}/build/bin/llama-quantize" \
+    && ( "${LLAMA_CPP_DIR}/build/bin/llama-quantize" --help >/dev/null 2>&1; \
+        status="$?"; [ "${status}" -eq 0 ] || [ "${status}" -eq 1 ] ) \
     && chmod -R a+rX "${LLAMA_CPP_DIR}"
 
 WORKDIR ${PROJECT_DIR}

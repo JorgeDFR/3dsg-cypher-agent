@@ -134,9 +134,7 @@ def test_pddl_domain_validation_uses_region_predicates_for_room_symbols():
 
 
 def test_pddl_domain_validation_accepts_conjunction_and_negation():
-    assert validate_pddl_goal(
-        "(and (safe O1) (at-place p2) (not (holding O1)))"
-    )[0]
+    assert validate_pddl_goal("(and (safe O1) (at-place p2) (not (holding O1)))")[0]
 
 
 def test_sldp_answer_type_hint_uses_heracles_parser():
@@ -157,3 +155,15 @@ def test_sldp_answer_type_hint_uses_solution_formats_when_available():
         == "Your answer should be an SLDP set of lists of strings"
     )
     assert answer_type_hint_from_solution_formats(["str"], "PDDL") is None
+
+
+def test_sldp_validation_enforces_declared_solution_format():
+    assert answer_matches_with_heracles("[]", "[]", "SLDP", solution_formats=["str"]) == (
+        False,
+        False,
+    )
+    assert answer_matches_with_heracles("", "", "SLDP", solution_formats=["str"]) == (True, True)
+    assert answer_matches_with_heracles("<O1>", "<O1>", "SLDP", solution_formats=["set[str]"]) == (
+        True,
+        True,
+    )

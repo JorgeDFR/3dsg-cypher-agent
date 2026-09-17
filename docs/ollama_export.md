@@ -83,6 +83,17 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
 `--dry-run` prints external operations without merging, converting,
 quantizing, or writing files.
 
+`--quiet` replaces third-party Hugging Face and llama.cpp output with the
+project's Rich progress and completion summary. If an external command fails,
+the exporter restores its last 80 output lines before raising the error. The
+automated `demo-deploy` workflow enables this mode.
+
+The llama.cpp Python environment follows llama.cpp's own dependency pins. It
+can therefore use an older Transformers release than the project environment.
+For newer architectures such as Qwen3.5, `convert_hf_to_gguf.py` may be unable
+to instantiate `AutoConfig`; it then reads `config.json` directly. That
+fallback is expected when GGUF conversion continues successfully.
+
 ## Output layout
 
 With BF16 conversion plus Q8_0 and Q4_K_M quantization, the output resembles:
@@ -152,11 +163,26 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
 The command fails if the selected GGUF is absent. The selector and resolved
 path are saved in `Modelfile.json`.
 
+Generate conventionally named Modelfiles for several existing GGUFs in one
+operation:
+
+```bash
+docker/stack.sh main python scripts/export_agent_ollama.py \
+  --student-config configs/student_qwen3.5_4b.yaml \
+  --model-name qwen3.5-4b-finetune \
+  --stages modelfile \
+  --modelfile-variants bf16 Q8_0 Q4_K_M \
+  --quiet
+```
+
+This writes `Modelfile.bf16`, `Modelfile.q8_0`, and
+`Modelfile.q4_k_m` with one Rich progress display and summary.
+
 ## Register models in the project stack
 
-The automated deployment workflow exports BF16, Q8_0, and Q4_K_M, registers
-each with a distinct name, validates the challenge split, and updates the HTML
-report:
+The automated deployment workflow exports BF16, Q8_0, and Q4_K_M, generates
+their Modelfiles as one phase, starts Ollama and registers all variants as one
+phase, validates the challenge split, and updates the HTML report:
 
 ```bash
 docker/stack.sh demo-deploy

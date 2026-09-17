@@ -15,9 +15,7 @@ def test_render_pddl_solution_uses_or_for_ambiguous_grounding():
         "multiple": "or",
     }
 
-    assert render_pddl_solution(goal, grounding) == (
-        "(or (holding O1) (holding O2))"
-    )
+    assert render_pddl_solution(goal, grounding) == ("(or (holding O1) (holding O2))")
 
 
 def test_render_pddl_solution_supports_compound_goals():
@@ -30,9 +28,63 @@ def test_render_pddl_solution_supports_compound_goals():
         ],
     }
 
-    assert render_pddl_solution(goal, grounding) == (
-        "(and (visited-place p1) (at-place P2))"
-    )
+    assert render_pddl_solution(goal, grounding) == ("(and (visited-place p1) (at-place P2))")
+
+
+def test_render_pddl_solution_skips_only_unavailable_disjunction_branches():
+    grounding = {"expected": {"first": ["O1", "O2"], "second": []}}
+    goal = {
+        "operator": "or",
+        "clauses": [
+            {
+                "fact": "safe",
+                "arguments": [{"result": "first"}],
+                "multiple": "or",
+            },
+            {
+                "fact": "visited-object",
+                "arguments": [{"result": "second"}],
+                "multiple": "or",
+            },
+        ],
+    }
+
+    assert render_pddl_solution(goal, grounding) == "(or (safe O1) (safe O2))"
+
+
+def test_render_pddl_solution_rejects_partial_conjunction():
+    grounding = {"expected": {"first": ["O1"], "second": []}}
+    goal = {
+        "operator": "and",
+        "clauses": [
+            {"fact": "safe", "arguments": [{"result": "first"}]},
+            {"fact": "visited-object", "arguments": [{"result": "second"}]},
+        ],
+    }
+
+    assert render_pddl_solution(goal, grounding) is None
+
+
+def test_render_pddl_solution_keeps_available_nested_or_branch():
+    grounding = {"expected": {"first": [], "second": ["O3"]}}
+    goal = {
+        "operator": "or",
+        "clauses": [
+            {
+                "operator": "and",
+                "clauses": [
+                    {"fact": "safe", "arguments": [{"result": "first"}]},
+                    {
+                        "fact": "visited-object",
+                        "arguments": [{"result": "second"}],
+                    },
+                ],
+            },
+            {"fact": "at-object", "arguments": [{"result": "second"}]},
+        ],
+    }
+
+    assert render_pddl_solution(goal, grounding) == "(at-object O3)"
 
 
 def test_render_pddl_solution_supports_nested_negation():
@@ -43,16 +95,12 @@ def test_render_pddl_solution_supports_nested_negation():
             {"fact": "visited-object", "arguments": [{"result": "object"}]},
             {
                 "operator": "not",
-                "clauses": [
-                    {"fact": "holding", "arguments": [{"result": "object"}]}
-                ],
+                "clauses": [{"fact": "holding", "arguments": [{"result": "object"}]}],
             },
         ],
     }
 
-    assert render_pddl_solution(goal, grounding) == (
-        "(and (visited-object O1) (not (holding O1)))"
-    )
+    assert render_pddl_solution(goal, grounding) == ("(and (visited-object O1) (not (holding O1)))")
 
 
 def test_render_pddl_solution_can_negate_each_ambiguous_fact():
@@ -64,9 +112,7 @@ def test_render_pddl_solution_can_negate_each_ambiguous_fact():
         "negate_each": True,
     }
 
-    assert render_pddl_solution(goal, grounding) == (
-        "(and (not (holding O1)) (not (holding O2)))"
-    )
+    assert render_pddl_solution(goal, grounding) == ("(and (not (holding O1)) (not (holding O2)))")
 
 
 def test_grounding_contract_and_row_validation_are_alias_aware():
@@ -109,6 +155,65 @@ def test_grounding_validation_rejects_wrong_entities():
     }
 
     assert validate_grounding_rows([{"object": "O2"}], contract)[0] is False
+
+
+def test_grounding_validation_accepts_semantically_mapped_aliases():
+    contract = {
+        "expected": {"first": ["O1", "O2"], "second": ["O3"]},
+        "fields": {
+            "first": {
+                "aliases": ["first"],
+                "symbol_type": "Object",
+                "cardinality": "set",
+            },
+            "second": {
+                "aliases": ["second"],
+                "symbol_type": "Object",
+                "cardinality": "set",
+            },
+        },
+        "match": "exact",
+    }
+
+    matches, _rendered, actual = validate_grounding_rows(
+        [
+            {"object": "O1", "bench": "O3"},
+            {"object": "O2", "bench": "O3"},
+        ],
+        contract,
+    )
+
+    assert matches
+    assert actual == {"first": ["O1", "O2"], "second": ["O3"]}
+
+
+def test_grounding_validation_rejects_columns_that_collapse_distinct_roles():
+    contract = {
+        "expected": {"first": ["O1", "O2"], "second": ["O3"]},
+        "fields": {
+            "first": {"aliases": ["first"], "symbol_type": "Object"},
+            "second": {"aliases": ["second"], "symbol_type": "Object"},
+        },
+        "match": "exact",
+    }
+
+    assert (
+        validate_grounding_rows([{"object": "O1"}, {"object": "O2"}, {"object": "O3"}], contract)[0]
+        is False
+    )
+
+
+def test_empty_grounding_rejects_symbols_hidden_behind_unknown_alias():
+    contract = {
+        "expected": {"first": [], "second": []},
+        "fields": {
+            "first": {"aliases": ["first"], "symbol_type": "Object"},
+            "second": {"aliases": ["second"], "symbol_type": "Object"},
+        },
+        "match": "exact",
+    }
+
+    assert validate_grounding_rows([{"object": "O1"}], contract)[0] is False
 
 
 def test_room_grounding_accepts_region_result_alias():

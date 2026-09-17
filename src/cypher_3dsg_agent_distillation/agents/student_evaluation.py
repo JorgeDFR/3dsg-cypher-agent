@@ -63,8 +63,7 @@ DEFAULT_E2E_MAX_TOOL_ROWS = 128
 DEFAULT_E2E_MAX_TOOL_RESPONSE_CHARS = 16384
 DEFAULT_E2E_MAX_QUERY_CHARS = 4096
 E2E_REPAIR_MESSAGE = (
-    "The query was not executed successfully. Return one corrected "
-    "run_cypher_query tool call."
+    "The query was not executed successfully. Return one corrected run_cypher_query tool call."
 )
 
 
@@ -125,6 +124,8 @@ CODE_BLOCK_RE = re.compile(
     r"```(?:json|python)?\s*(?P<body>.*?)```",
     flags=re.IGNORECASE | re.DOTALL,
 )
+
+
 def record_expected_solution(record: dict[str, Any]) -> Any:
     for key in ("expected_solution", "real_solution", "solution"):
         if key in record and record[key] is not None:
@@ -164,10 +165,14 @@ def record_is_refusal(record: dict[str, Any]) -> bool:
 
     gold_cypher = normalize_cypher(record_gold_cypher(record))
     expected_solution = record_expected_solution(record)
-    return gold_cypher in {
-        WRITE_REFUSAL_ANSWER,
-        f"// {WRITE_REFUSAL_ANSWER}",
-    } or str(expected_solution or "").strip() == WRITE_REFUSAL_ANSWER
+    return (
+        gold_cypher
+        in {
+            WRITE_REFUSAL_ANSWER,
+            f"// {WRITE_REFUSAL_ANSWER}",
+        }
+        or str(expected_solution or "").strip() == WRITE_REFUSAL_ANSWER
+    )
 
 
 def initial_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -220,9 +225,7 @@ def add_raw_generation_debug_fields(
     generation: GenerationResult,
 ) -> None:
     score["raw_generated_text"] = generation.raw_text
-    score["raw_generated_text_had_artifacts"] = generation_artifacts_present(
-        generation.raw_text
-    )
+    score["raw_generated_text_had_artifacts"] = generation_artifacts_present(generation.raw_text)
 
 
 def generation_debug_report(
@@ -231,12 +234,8 @@ def generation_debug_report(
     return {
         "rendered_prompt": generation.prompt if generation is not None else None,
         "raw_completion": generation.raw_text if generation is not None else None,
-        "structured_tool_calls": (
-            list(generation.tool_calls) if generation is not None else []
-        ),
-        "provider_metadata": (
-            generation.provider_metadata if generation is not None else {}
-        ),
+        "structured_tool_calls": (list(generation.tool_calls) if generation is not None else []),
+        "provider_metadata": (generation.provider_metadata if generation is not None else {}),
     }
 
 
@@ -368,8 +367,7 @@ def parse_generated_tool_calls(
     try:
         if structured_tool_calls:
             tool_calls = [
-                normalize_structured_tool_call(tool_call)
-                for tool_call in structured_tool_calls
+                normalize_structured_tool_call(tool_call) for tool_call in structured_tool_calls
             ]
             return ToolCallParseResult(True, tool_calls)
 
@@ -411,6 +409,7 @@ def score_final_answer_generation(
             str(expected_solution),
             record_output_type(record),
             answer_validation=record.get("answer_validation"),
+            solution_formats=record.get("solution_formats") or record.get("solution_format"),
         )
 
     status = "pass"
@@ -748,9 +747,7 @@ def evaluate_end_to_end_record(
                             attempt["elapsed_ms"] = validation.get("elapsed_ms")
                             rows = validation.get("rows") or []
                             attempt["row_count"] = len(rows)
-                            attempt["rows_truncated"] = bool(
-                                validation.get("rows_truncated")
-                            )
+                            attempt["rows_truncated"] = bool(validation.get("rows_truncated"))
                             if not validation.get("executable"):
                                 failure_reason = "execution_error"
                                 failure_issues = [
@@ -773,9 +770,7 @@ def evaluate_end_to_end_record(
                                         f"{max_tool_response_chars}-character safety limit."
                                     ]
                                 else:
-                                    attempt["tool_response_chars"] = len(
-                                        candidate_content
-                                    )
+                                    attempt["tool_response_chars"] = len(candidate_content)
                                     tool_content = candidate_content
 
         if tool_content is not None and retry_tool_call is not None:
@@ -990,9 +985,8 @@ def score_tool_call_generation(
             "correct_tool_name": correct_tool_name,
             "cypher_argument_present": cypher_argument_present,
             "generated_cypher": cypher or None,
-            "cypher_exact_match": normalize_cypher(cypher) == normalize_cypher(
-                record_gold_cypher(record)
-            ),
+            "cypher_exact_match": normalize_cypher(cypher)
+            == normalize_cypher(record_gold_cypher(record)),
         }
     )
     if not correct_tool_name:
@@ -1045,9 +1039,7 @@ def score_tool_call_generation(
     ):
         result_too_large = True
     report_validation = (
-        {**validation, "rows": [], "rows_omitted": True}
-        if result_too_large
-        else validation
+        {**validation, "rows": [], "rows_omitted": True} if result_too_large else validation
     )
     base.update(
         {
@@ -1089,6 +1081,7 @@ def score_tool_call_generation(
                 str(expected_solution),
                 record_output_type(record),
                 answer_validation=record.get("answer_validation"),
+                solution_formats=record.get("solution_formats") or record.get("solution_format"),
             )
     status = "pass"
     if expected_solution is None:
@@ -1128,15 +1121,12 @@ def summarize_raw_section(
     metric_keys: tuple[str, ...],
 ) -> dict[str, Any]:
     total = len(records)
-    section_records = [
-        record.get(section) or {"status": "skipped"} for record in records
-    ]
+    section_records = [record.get(section) or {"status": "skipped"} for record in records]
     status_counts = Counter(str(record.get("status") or "unknown") for record in section_records)
     skipped = status_counts.get("skipped", 0)
     evaluated = total - skipped
     metrics = {
-        key: sum(1 for record in section_records if bool(record.get(key)))
-        for key in metric_keys
+        key: sum(1 for record in section_records if bool(record.get(key))) for key in metric_keys
     }
     denominator = evaluated if evaluated else total
     return {
@@ -1145,8 +1135,7 @@ def summarize_raw_section(
         "skipped": skipped,
         "metrics": metrics,
         "rates": {
-            key: (value / denominator if denominator else 0.0)
-            for key, value in metrics.items()
+            key: (value / denominator if denominator else 0.0) for key, value in metrics.items()
         },
         "statuses": dict(status_counts),
     }
@@ -1315,9 +1304,7 @@ def raw_generation_report_record(
         "task_family": family,
         "output_type": record_output_type(record),
         "question": record.get("question"),
-        "controlled_repair": bool(
-            (record.get("metadata") or {}).get("controlled_repair")
-        ),
+        "controlled_repair": bool((record.get("metadata") or {}).get("controlled_repair")),
         "repair_template": (record.get("metadata") or {}).get("repair_template"),
         "expected": expected,
         "generated": generated,
@@ -1328,9 +1315,8 @@ def raw_generation_report_record(
         },
         FINAL_ANSWER_CHECK: final_answer_result,
         TOOL_CALL_CHECK: tool_call_result,
-        END_TO_END_CHECK: end_to_end_result or end_to_end_skipped_result(
-            "end-to-end validation was not run"
-        ),
+        END_TO_END_CHECK: end_to_end_result
+        or end_to_end_skipped_result("end-to-end validation was not run"),
     }
 
 
@@ -1377,9 +1363,7 @@ def evaluate_raw_generation(
     )
     if limit is not None:
         records = records[:limit]
-    scenes_by_id = {
-        str(scene["scene_id"]): scene for scene in data_config.get("scenes", [])
-    }
+    scenes_by_id = {str(scene["scene_id"]): scene for scene in data_config.get("scenes", [])}
     current_scene_id: str | None = None
     scene_database_reloads = 0
     tool_schemas = [run_cypher_tool_schema()]
@@ -1404,8 +1388,7 @@ def evaluate_raw_generation(
             if validator is not None and scene_loader is not None:
                 if record_scene_id not in scenes_by_id:
                     raise ValueError(
-                        f"Record {record.get('uid')} references unknown scene "
-                        f"`{record_scene_id}`."
+                        f"Record {record.get('uid')} references unknown scene `{record_scene_id}`."
                     )
                 if record_scene_id != current_scene_id:
                     scene_loader(scenes_by_id[record_scene_id])
@@ -1439,9 +1422,7 @@ def evaluate_raw_generation(
                     final_generation.text,
                 )
                 add_raw_generation_debug_fields(final_answer_result, final_generation)
-                final_answer_result["generation"] = generation_report_fields(
-                    final_generation
-                )
+                final_answer_result["generation"] = generation_report_fields(final_generation)
                 final_generation_debug = generation_debug_report(
                     final_generation,
                 )
@@ -1488,9 +1469,7 @@ def evaluate_raw_generation(
                         structured_tool_calls=tool_generation.tool_calls,
                     )
                     add_raw_generation_debug_fields(tool_call_result, tool_generation)
-                    tool_call_result["generation"] = generation_report_fields(
-                        tool_generation
-                    )
+                    tool_call_result["generation"] = generation_report_fields(tool_generation)
                     tool_generation_debug = generation_debug_report(
                         tool_generation,
                     )
@@ -1540,9 +1519,7 @@ def evaluate_raw_generation(
                         query_attempts=0,
                         max_query_retries=max_query_retries,
                         attempts=[],
-                        generation_error=bounded_text(
-                            f"{type(exc).__name__}: {exc}", 1024
-                        ),
+                        generation_error=bounded_text(f"{type(exc).__name__}: {exc}", 1024),
                     )
 
             evaluated_records.append(
@@ -1638,9 +1615,7 @@ def build_report(
             else None
         ),
     }
-    metadata["trained_on_dataset"] = (
-        None if baseline else (model_metadata or {}).get("dataset")
-    )
+    metadata["trained_on_dataset"] = None if baseline else (model_metadata or {}).get("dataset")
     if batch_size is not None:
         metadata["batch_size"] = batch_size
     if max_length is not None:
@@ -1887,9 +1862,7 @@ def print_raw_generation_summary(
 
 def command(args: argparse.Namespace) -> None:
     configure_model_library_output()
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     family_config = load_student_family_config(args.student_config)
     if args.baseline and args.mode != RAW_GENERATION_MODE:
         raise ValueError("--baseline is supported only with --mode raw-generation.")
@@ -1905,12 +1878,8 @@ def command(args: argparse.Namespace) -> None:
     model_metadata = None
     if args.baseline:
         student_config = family_config
-        adapter_dir = args.adapter_dir or str(
-            Path(family_config["model_family_root"]) / "baseline"
-        )
-        selected_reports_dir = model_reports_dir(
-            data_config, student_config, baseline=True
-        )
+        adapter_dir = args.adapter_dir or str(Path(family_config["model_family_root"]) / "baseline")
+        selected_reports_dir = model_reports_dir(data_config, student_config, baseline=True)
     else:
         exported_version = None
         adapter_metadata = None
@@ -1929,10 +1898,7 @@ def command(args: argparse.Namespace) -> None:
                     f"Requested model version {args.model_version} does not match Ollama "
                     f"export source version {exported_version}."
                 )
-        if (
-            adapter_version
-            and args.model_version not in (None, "latest", adapter_version)
-        ):
+        if adapter_version and args.model_version not in (None, "latest", adapter_version):
             raise ValueError(
                 f"Requested model version {args.model_version} does not match adapter "
                 f"metadata version {adapter_version}."
@@ -1958,9 +1924,7 @@ def command(args: argparse.Namespace) -> None:
         else:
             student_config = load_student_config(
                 args.student_config,
-                model_version=str(
-                    exported_version or args.model_version or "latest"
-                ),
+                model_version=str(exported_version or args.model_version or "latest"),
             )
         adapter_dir = args.adapter_dir or default_adapter_dir(student_config)
         metadata_file = Path(adapter_dir) / "metadata.yaml"
@@ -2103,9 +2067,7 @@ def command(args: argparse.Namespace) -> None:
                 "generation_config": raw_generation["generation_config"],
                 "neo4j": neo4j_metadata,
                 "show_db_notifications": show_db_notifications,
-                "scene_database_reloads": raw_generation[
-                    "scene_database_reloads"
-                ],
+                "scene_database_reloads": raw_generation["scene_database_reloads"],
             }
         }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -224,6 +225,32 @@ def test_write_settings_modelfile_rejects_missing_quantization_file(tmp_path):
         write_settings_modelfile(settings)
 
 
+def test_write_variant_modelfiles_generates_conventional_paths(tmp_path):
+    settings = build_export_settings(student_config(tmp_path), modelfile_gguf="bf16")
+    settings.base_gguf_path.parent.mkdir(parents=True)
+    settings.base_gguf_path.touch()
+    for path in settings.quantized_gguf_paths.values():
+        path.touch()
+
+    outputs = ollama_export.write_variant_modelfiles(
+        settings,
+        ["bf16", "Q8_0", "Q4_K_M"],
+        show_progress=False,
+    )
+
+    assert outputs == {
+        "BF16": settings.export_dir / "Modelfile.bf16",
+        "Q8_0": settings.export_dir / "Modelfile.q8_0",
+        "Q4_K_M": settings.export_dir / "Modelfile.q4_k_m",
+    }
+    for quantization, path in outputs.items():
+        assert path.read_text(encoding="utf-8").startswith("FROM ./agent-distilled.")
+        metadata = json.loads(
+            path.with_suffix(path.suffix + ".json").read_text(encoding="utf-8")
+        )
+        assert metadata["modelfile_quantization"] == quantization
+
+
 def test_base_only_modelfile_metadata_omits_merge_fields(tmp_path):
     settings = build_export_settings(
         student_config(tmp_path),
@@ -417,6 +444,33 @@ def test_quantize_gguf_invokes_llama_quantize_for_each_quantization(tmp_path, mo
             True,
         ),
     ]
+
+
+def test_run_checked_quiet_suppresses_success_output(capsys):
+    ollama_export.run_checked(
+        [sys.executable, "-c", "print('converter noise')"],
+        quiet=True,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_run_checked_quiet_prints_captured_output_on_failure(capsys):
+    with pytest.raises(ollama_export.subprocess.CalledProcessError):
+        ollama_export.run_checked(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('useful failure'); raise SystemExit(2)",
+            ],
+            quiet=True,
+        )
+
+    captured = capsys.readouterr()
+    assert "External command output" in captured.err
+    assert "useful failure" in captured.err
 
 
 def test_expand_stages_keeps_deployment_order():
