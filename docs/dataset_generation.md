@@ -54,7 +54,7 @@ scenes:
 ```
 
 Question templates are generated once per compatible scene. Templates that
-require a missing layer are skipped for that scene; for example, room templates
+require a missing layer are skipped for that scene. For example, room templates
 are not generated for a graph without `Room`. Object-containment templates use
 a label-agnostic query that accepts either parent layer (`Place` or
 `MeshPlace`). Each resulting record keeps its `scene_id`.
@@ -74,7 +74,7 @@ is zero still count toward the empty quota without being tagged as invalid.
 solution, while `sampling.max_result_rows` also bounds projected Cartesian
 expansion for multi-field grounding. Either limit can be overridden on an
 individual template. Candidates over a configured limit are skipped before
-question selection; fixed, variable-free inventory and aggregate templates are
+question selection. Fixed, variable-free inventory and aggregate templates are
 left intact.
 
 Sampling promotes diversity at two levels. Within each scene, it first balances
@@ -87,10 +87,11 @@ objects actually contained by a place), which avoids spending the budget on
 arbitrary combinations that all return the same empty result.
 
 The QA set covers 52 question types. In addition to inventory, containment,
-distance, and hop queries, it includes scene totals; object attribute and center
-lookup; room and place child counts and class projections; class inclusion,
-exclusion, and allowed-set constraints; symbol-free class-to-class spatial
-queries; adjacent-room filtering; and tied spatial extrema. The PDDL set covers
+distance, and hop queries, it includes scene totals plus object attribute and
+center lookup. It also covers room and place child counts and class projections,
+as well as class inclusion, exclusion, and allowed-set constraints. Other queries
+include symbol-free class-to-class spatial queries, adjacent-room filtering,
+and tied spatial extrema. The PDDL set covers
 39 types, including existential and universal class goals, nested conjunctions
 and disjunctions, per-object negation, hierarchy-restricted destinations, and
 ordered waypoints. Every type provides at least five natural-language variants.
@@ -166,9 +167,9 @@ docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
 ```
 
 Seed records contain gold Cypher and expected outputs for validation. They are
-internal generation support; the public training and evaluation format is the
+internal generation support. The public training and evaluation format is the
 agent trace described below. Each seed also contains a labelspace prompt built
-from the labelspaces embedded in its source scene JSON; experiment profiles do
+from the labelspaces embedded in its source scene JSON. Experiment profiles do
 not select a scene-specific, hard-coded labelspace file.
 
 ## Generate teacher traces
@@ -206,12 +207,26 @@ docker/stack.sh main python scripts/generate_traces.py generate \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
 
+Each dataset version contains one `traces/` directory and one `splits/`
+directory. Re-running either teacher on a dataset with existing traces or splits
+creates a new dataset version, copying prepared inputs such as
+`generated_questions.yaml`, `cypher_seed_records.jsonl`, and `scenes/`.
+The original traces, splits, and reports are preserved. The new version is
+printed in the summary. Split it next, using `--dataset-version` if your data
+configuration pins a version. Teacher versions and `--teacher-run` are no longer
+used.
+
+To change the scene list or question generation, edit the data configuration
+and run `docker/stack.sh demo-dataset`. To change only the teacher, run
+`generate_traces.py generate` above against the prepared dataset, then split the
+new version.
+
 ### Teacher validation
 
 The OpenRouter teacher receives the rendered agent prompt and the
 `run_cypher_query` schema. It does not receive the unmodified seed gold Cypher
 or expected answer. The invariant instructions from the prompt template use
-the chat `system` role; scene context, examples, and the question use `user`
+the chat `system` role. Scene context, examples, and the question use `user`
 messages. Each interaction is checked through these gates:
 
 1. Enforce static Cypher safety rules.
@@ -289,7 +304,7 @@ or test.
 
 Validation-oriented splits are written with all records from one scene
 contiguously, minimizing database reloads to once per represented scene. The
-training split does not apply scene-specific ordering; the standard SFT sampler
+training split does not apply scene-specific ordering. The standard SFT sampler
 shuffles its records in every training epoch.
 
 Set `split.split_by_scene: true`, or pass `--split-by-scene`, to request
@@ -308,7 +323,7 @@ docker/stack.sh main python scripts/prepare_dataset.py split \
   --optimize-student-traces
 ```
 
-This optimization changes only split/render output; the raw teacher traces are
+This optimization changes only split/render output. The raw teacher traces are
 preserved. Intentional controlled-repair prefixes are never pruned. It can also
 be enabled with `optimize_student_traces: true` in the data configuration.
 
@@ -319,9 +334,7 @@ Use explicit selectors when a command must not use the latest artifacts:
 ```bash
 docker/stack.sh main python scripts/prepare_dataset.py split \
   --data-config configs/data.yaml \
-  --dataset-version 2026-09-08-T-12-05-47-Z \
-  --teacher synthetic \
-  --teacher-run 2026-09-08-T-12-10-03-Z
+  --dataset-version 2026-09-08-T-12-05-47-Z
 ```
 
 List valid version identifiers with

@@ -11,7 +11,7 @@ material.
 | 1 | [Dataset generation](dataset_generation.md) | Scene extraction, question templates, seed records, teacher traces, and splits |
 | 2 | [Student training](training.md) | LoRA/QLoRA configuration, training, and token inspection |
 | 3 | [Validation](validation.md) | Trace checks, eval-loss, raw generation, and Ollama evaluation |
-| 4 | [Ollama GGUF export](ollama_export.md) | Adapter merge, GGUF conversion, quantization, and registration |
+| 4 | [Ollama GGUF export](ollama_export.md) | Fine-tuned weight merging, GGUF conversion, quantization, and registration |
 
 ## Setup and operations
 

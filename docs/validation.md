@@ -4,12 +4,28 @@ Validation operates at three levels: dataset trace checks, student eval-loss,
 and end-to-end raw generation. Raw generation can use either Transformers or a
 GGUF model registered in Ollama.
 
+## Automated validation and reuse
+
+Run `docker/stack.sh demo-validate` after training. It evaluates loss, validates
+test/challenge generation for both the student model and baseline, and generates the
+HTML report. It does not create data or train a student model.
+
+`evaluate_student.py` automatically skips a completed report when the dataset,
+split contents, model, runtime, and evaluation settings match. Baseline reuse
+is independent of fine-tuned model versions and training hyperparameters. Ollama
+validation also checks the registered model digest. Changed inputs, incomplete
+reports, or unreadable reports trigger evaluation again. Pass `--force` to
+explicitly repeat a validation. Older reports without a validation fingerprint
+are evaluated once to establish that fingerprint. For remotely hosted HF
+models, reuse identifies the configured model/revision. Use `--force` if its
+upstream contents change under the same identifier.
+
 ## Validation matrix
 
 | Target | Mode/runtime | Main question answered |
 | --- | --- | --- |
 | Teacher traces | `evaluate_traces.py` | Are stored tool calls and answers valid? |
-| Student adapter | `eval-loss` / Transformers | How well does the model fit held-out rendered traces? |
+| Student model | `eval-loss` / Transformers | How well does the model fit held-out rendered traces? |
 | Base or fine-tuned model | `raw-generation` / Transformers | Can the model complete the full tool interaction? |
 | Exported GGUF | `raw-generation` / Ollama | Does the deployed artifact preserve behavior? |
 | External model sweep | Heracles Benchmark | How does the model perform on benchmark-owned questions and metrics? |
@@ -31,7 +47,7 @@ matching, and PDDL grounding and goal validity where applicable.
 
 ### Eval-loss
 
-Compute held-out loss and perplexity for the trained adapter:
+Compute held-out loss and perplexity for the fine-tuned model:
 
 ```bash
 docker/stack.sh main python scripts/evaluate_student.py \
@@ -42,12 +58,12 @@ docker/stack.sh main python scripts/evaluate_student.py \
 ```
 
 Eval-loss uses Transformers only. Its token labels default to
-`training.loss_mode` in the student config; override them with
+`training.loss_mode` in the student config. Override them with
 `--loss-mode full` or `--loss-mode assistant-only`.
 
 ### Raw generation with Transformers
 
-Evaluate the trained adapter end to end:
+Evaluate the fine-tuned model end to end:
 
 ```bash
 docker/stack.sh main python scripts/evaluate_student.py \

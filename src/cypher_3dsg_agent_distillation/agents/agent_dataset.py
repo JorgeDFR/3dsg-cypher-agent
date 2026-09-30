@@ -28,7 +28,7 @@ from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
     load_data_config,
-    with_teacher_run,
+    load_yaml,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl, write_jsonl
 from cypher_3dsg_agent_distillation.core.scene_ordering import group_records_by_scene
@@ -1060,7 +1060,6 @@ def split_report_payload(
             "scene_ids": [scene["scene_id"] for scene in data_config.get("scenes", [])],
             "dataset_version": data_config.get("dataset_version"),
             "teacher_name": data_config.get("teacher_name"),
-            "teacher_run": data_config.get("teacher_run"),
             "render_view": render_view,
             "optimize_student_traces": optimize_enabled,
             "max_per_task_type": data_config.get("max_per_task_type"),
@@ -1146,18 +1145,9 @@ def split_command(args: argparse.Namespace) -> None:
     if getattr(args, "split_by_scene", False) or bool(split_config.get("split_by_scene", False)):
         print("Scene-aware splitting is not implemented yet.")
         return
-    teacher_name = args.teacher or config.get("teacher_name")
-    if not teacher_name:
-        raise ValueError(
-            "No teacher run is active for this dataset. Generate traces first or pass --teacher."
-        )
-    config = with_teacher_run(
-        config,
-        teacher_name=str(teacher_name),
-        teacher_run=(
-            args.teacher_run if args.teacher or args.teacher_run else config.get("teacher_run")
-        ),
-    )
+    teacher_metadata = load_yaml(config["teacher_metadata_path"])
+    if teacher_metadata.get("status") != "complete":
+        raise ValueError("Teacher traces are not complete. Generate traces before splitting.")
     prospective_report = split_report_output_path(config, args.report_output)
     require_new_outputs([*config["splits"].values(), prospective_report], force=args.force)
     optimize_enabled = args.optimize_student_traces or bool(
@@ -1223,7 +1213,6 @@ def split_command(args: argparse.Namespace) -> None:
         project_root=PROJECT_ROOT,
         extra={
             "teacher_name": config["teacher_name"],
-            "teacher_run": config["teacher_run"],
             "split_fingerprint": split_fingerprint,
             "data_config": config_record(config["data_config_path"], project_root=PROJECT_ROOT),
         },
@@ -1231,15 +1220,11 @@ def split_command(args: argparse.Namespace) -> None:
     metadata["status"] = "complete"
     metadata["split_files"] = split_records_metadata
     metadata["split_fingerprint"] = split_fingerprint
-    metadata["active_teacher_run"] = {
-        "teacher_name": config["teacher_name"],
-        "version": config["teacher_run"],
-    }
     atomic_write_yaml(metadata, config["metadata_path"])
     summary_rows = [
         ("Accepted traces", source_counts["accepted_teacher_traces"]),
         ("Dataset version", config["dataset_version"]),
-        ("Teacher run", f"{config['teacher_name']}/{config['teacher_run']}"),
+        ("Teacher", config["teacher_name"]),
         ("Rejected traces scanned", source_counts["rejected_total"] if optimize_enabled else 0),
         ("Optimization", "enabled" if optimize_enabled else "disabled"),
         ("Render view", args.render_view),
@@ -1325,12 +1310,7 @@ def main() -> None:
     split_parser = subparsers.add_parser("split")
     split_parser.add_argument("--data-config", default="configs/data.yaml")
     split_parser.add_argument("--dataset-version", default=None)
-    split_parser.add_argument(
-        "--teacher",
-        default=None,
-        help="Teacher folder name. Defaults to the dataset's active teacher.",
-    )
-    split_parser.add_argument("--teacher-run", default=None)
+
     split_parser.add_argument("--force", action="store_true")
     split_parser.add_argument(
         "--render-view",
@@ -1351,7 +1331,7 @@ def main() -> None:
         default=None,
         help=(
             "Optional JSON split report path. Defaults to "
-            "data/datasets/{dataset_id}/{version}/reports/dataset/split.report.json."
+            "data/datasets/{dataset_id}/{version}/reports/split.report.json."
         ),
     )
     split_parser.set_defaults(func=split_command)

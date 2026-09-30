@@ -239,7 +239,6 @@ def test_ollama_metadata_identifies_source_model_version_and_report_directory(tm
         tmp_path
         / "dataset"
         / "reports"
-        / "models"
         / "qwen-family"
         / "2026-09-08-T-15-05-21-Z"
     )

@@ -22,8 +22,10 @@ Usage: docker/stack.sh COMMAND [ARGS...]
 Recommended first run:
   1. cp docker/.env.example docker/.env and set required credentials.
   2. docker/stack.sh setup
-  3. docker/stack.sh demo-train
-  4. docker/stack.sh demo-deploy
+  3. docker/stack.sh demo-dataset
+  4. docker/stack.sh demo-train
+  5. docker/stack.sh demo-validate
+  6. docker/stack.sh demo-deploy
 
 Setup and lifecycle:
   setup                    Validate, build, and start the complete stack.
@@ -41,8 +43,9 @@ Main project container:
   ollama COMMAND [ARGS...] Run the Ollama CLI in the optional container.
 
 Automated workflow:
-  demo-train               Run the full demo from dataset generation through student
-                           baseline, training, evaluation, and HTML reporting.
+  demo-dataset             Create a dataset, teacher traces, and grouped splits.
+  demo-train               Train a new student model using the current dataset.
+  demo-validate            Evaluate the student and baseline and generate HTML reports.
   demo-deploy              Export the trained student to GGUF, register BF16,
                            Q8_0, and Q4_K_M models in Ollama, validate them on
                            the challenge split, and regenerate the HTML report.
@@ -463,20 +466,20 @@ run_ollama() {
   compose exec -T ollama ollama "$@"
 }
 
-run_demo_train() {
-  local total_steps=12
+run_demo_dataset() {
+  local total_steps=5
 
   if [[ $# -ne 0 ]]; then
-    die "The demo-train command takes no arguments. Configure it with the DEMO_* environment variables."
+    die "The demo-dataset command takes no arguments. Configure it with the DEMO_* environment variables."
   fi
 
   prepare_runtime
   require_service_running main
   require_service_running neo4j
 
-  heading "3DSG Cypher agent demo"
-  info "Data config: ${DEMO_DATA_CONFIG}"
+  heading "3DSG Cypher agent demo: dataset"
   info "Teacher config: ${DEMO_TEACHER_CONFIG}"
+  info "Data config: ${DEMO_DATA_CONFIG}"
   info "Student config: ${DEMO_STUDENT_CONFIG}"
 
   demo_step 1 "${total_steps}" "Extract scene template values" \
@@ -497,31 +500,68 @@ run_demo_train() {
     python scripts/prepare_dataset.py split \
       --data-config "${DEMO_DATA_CONFIG}" \
       --render-view ollama_native
-  demo_step 6 "${total_steps}" "Train student LoRA adapter" \
+
+  heading "Demo dataset complete"
+}
+
+run_demo_train() {
+  local total_steps=1
+
+  if [[ $# -ne 0 ]]; then
+    die "The demo-train command takes no arguments. Configure it with the DEMO_* environment variables."
+  fi
+
+  prepare_runtime
+  require_service_running main
+
+  heading "3DSG Cypher agent demo: train"
+  info "Data config: ${DEMO_DATA_CONFIG}"
+  info "Student config: ${DEMO_STUDENT_CONFIG}"
+
+  demo_step 1 "${total_steps}" "Train student model with LoRA" \
     python scripts/train_agent_lora.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
-  demo_step 7 "${total_steps}" "Evaluate loss on all splits" \
+
+  heading "Demo train complete"
+}
+
+run_demo_validate() {
+  local total_steps=6
+
+  if [[ $# -ne 0 ]]; then
+    die "The demo-validate command takes no arguments. Configure it with the DEMO_* environment variables."
+  fi
+
+  prepare_runtime
+  require_service_running main
+  require_service_running neo4j
+
+  heading "3DSG Cypher agent demo: validate"
+  info "Data config: ${DEMO_DATA_CONFIG}"
+  info "Student config: ${DEMO_STUDENT_CONFIG}"
+
+  demo_step 1 "${total_steps}" "Evaluate loss on all splits" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split all \
       --mode eval-loss
-  demo_step 8 "${total_steps}" "Validate generation on the test split" \
+  demo_step 2 "${total_steps}" "Validate generation on the test split" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split test \
       --mode raw-generation \
       --max-new-tokens 1024
-  demo_step 9 "${total_steps}" "Validate generation on the challenge split" \
+  demo_step 3 "${total_steps}" "Validate generation on the challenge split" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split challenge \
       --mode raw-generation \
       --max-new-tokens 1024
-  demo_step 10 "${total_steps}" "Establish baseline on the test split" \
+  demo_step 4 "${total_steps}" "Establish baseline on the test split" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
@@ -529,7 +569,7 @@ run_demo_train() {
       --mode raw-generation \
       --baseline \
       --max-new-tokens 1024
-  demo_step 11 "${total_steps}" "Establish baseline on the challenge split" \
+  demo_step 5 "${total_steps}" "Establish baseline on the challenge split" \
     python scripts/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
@@ -537,13 +577,12 @@ run_demo_train() {
       --mode raw-generation \
       --baseline \
       --max-new-tokens 1024
-  demo_step 12 "${total_steps}" "Generate HTML workflow report" \
+  demo_step 6 "${total_steps}" "Generate HTML workflow report" \
     python scripts/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
 
-  heading "Demo complete"
-  info "The HTML report path is shown in the final summary above."
+  heading "Demo validate complete"
 }
 
 require_trained_student() {
@@ -572,8 +611,8 @@ has_weights = any(
     for filename in ("adapter_model.safetensors", "adapter_model.bin")
 )
 if not (adapter_dir / "adapter_config.json").is_file() or not has_weights:
-    raise SystemExit(f"Trained student adapter not found in {adapter_dir}")
-print(f"[INFO] Found trained student adapter in {adapter_dir}.")
+    raise SystemExit(f"Trained student model not found in {adapter_dir}")
+print(f"[INFO] Found trained student model in {adapter_dir}.")
 ' "${DEPLOY_STUDENT_CONFIG}"; then
     return
   fi
@@ -668,7 +707,7 @@ case "${command}" in
     preflight
     compose build main
     compose up -d neo4j main
-    info "Stack setup is complete. Next: docker/stack.sh demo-train"
+    info "Stack setup is complete. Next: docker/stack.sh demo-dataset"
     ;;
   check)
     preflight
@@ -687,7 +726,7 @@ case "${command}" in
     ;;
   down)
     check_docker
-    compose down --remove-orphans
+    compose --profile ollama down --remove-orphans
     ;;
   restart)
     prepare_runtime
@@ -711,6 +750,12 @@ case "${command}" in
     ;;
   ollama)
     run_ollama "$@"
+    ;;
+  demo-dataset)
+    run_demo_dataset "$@"
+    ;;
+  demo-validate)
+    run_demo_validate "$@"
     ;;
   demo-train)
     run_demo_train "$@"

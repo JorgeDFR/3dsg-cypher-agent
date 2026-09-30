@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from cypher_3dsg_agent_distillation.core.config import teacher_run_paths
+from cypher_3dsg_agent_distillation.core.config import prepare_teacher_dataset
 from cypher_3dsg_agent_distillation.core.versioning import (
     atomic_write_yaml,
     confirm_dataset_lineage,
@@ -62,23 +62,14 @@ def test_latest_completed_model_ignores_interrupted_run(tmp_path):
     assert selected == complete
 
 
-def test_teacher_paths_are_grouped_by_teacher_then_version(tmp_path):
+def test_teacher_traces_belong_directly_to_the_dataset(tmp_path):
     data_config = {"dataset_dir": str(tmp_path / "dataset")}
-
-    paths = teacher_run_paths(
-        data_config,
-        teacher_name="openai/gpt-oss-120b",
-        teacher_run="2026-09-08-T-12-05-47-Z",
-        create_version=True,
+    resolved = prepare_teacher_dataset(data_config, teacher_name="openai/gpt-oss-120b")
+    assert resolved["teacher_name"] == "openai-gpt-oss-120b"
+    assert resolved["teacher_traces_jsonl_path"] == str(
+        tmp_path / "dataset" / "traces" / "teacher_traces.jsonl"
     )
-
-    assert paths.run_dir == (
-        tmp_path
-        / "dataset"
-        / "traces"
-        / "openai-gpt-oss-120b"
-        / "2026-09-08-T-12-05-47-Z"
-    )
+    assert "teacher_run" not in resolved
 
 
 def test_noninteractive_lineage_mismatch_requires_explicit_override(tmp_path):

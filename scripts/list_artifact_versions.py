@@ -37,7 +37,9 @@ def print_versions(title: str, root: Path, *, completed_only: bool = False) -> N
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="List dataset, teacher, and LoRA versions.")
+    parser = argparse.ArgumentParser(
+        description="List dataset and LoRA versions, including each dataset's teacher."
+    )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--student-config", default="configs/student_qwen3.5_4b.yaml")
     parser.add_argument("--dataset-version", default=None)
@@ -53,13 +55,9 @@ def main() -> None:
     except FileNotFoundError:
         data_config = None
     if data_config:
-        traces_root = Path(data_config["dataset_dir"]) / "traces"
-        for teacher_root in sorted(path for path in traces_root.glob("*") if path.is_dir()):
-            print_versions(
-                f"Teacher runs ({teacher_root.name})",
-                teacher_root,
-                completed_only=True,
-            )
+        print(f"Selected dataset: {data_config['dataset_version']}")
+        print(f"Teacher: {data_config.get('teacher_name') or 'not generated'}")
+        print(f"Traces: {data_config['teacher_traces_jsonl_path']}")
 
     student = load_student_family_config(args.student_config)
     print_versions(

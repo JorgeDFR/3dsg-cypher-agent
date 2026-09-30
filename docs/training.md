@@ -15,12 +15,12 @@ Before training:
 The default training path requires an NVIDIA GPU. Available student profiles
 include:
 
-| Profile | Base model | Default adapter mode |
+| Profile | Base model | Fine-tuning method |
 | --- | --- | --- |
 | `configs/student_qwen3.5_4b.yaml` | `Qwen/Qwen3.5-4B` | LoRA |
 | `configs/student_granite4.1_3b.yaml` | `ibm-granite/granite-4.1-3b` | QLoRA |
 
-`model.load_in_4bit: true` enables 4-bit loading for QLoRA; `false` keeps the
+`model.load_in_4bit: true` enables 4-bit loading for QLoRA. `false` keeps the
 base model at the configured `dtype` for LoRA.
 
 ## Configuration map
@@ -42,7 +42,7 @@ Each `configs/student_*.yaml` file has four main sections:
 | `full` | All non-padding tokens in the rendered conversation |
 
 `assistant-only` is the default. The tokenizer receives the split's native
-`run_cypher_query` JSON schema once through its chat template; the schema is not
+`run_cypher_query` JSON schema once through its chat template. The schema is not
 duplicated in each stored trace message.
 
 Controlled-repair traces identify the initial mutated Cypher call and syntax
@@ -107,13 +107,17 @@ hashes, model configuration, metrics, and key output fingerprints in
 For a reproducible end-to-end demonstration, run:
 
 ```bash
+docker/stack.sh demo-dataset
 docker/stack.sh demo-train
+docker/stack.sh demo-validate
 ```
 
-The command performs question and trace generation, splitting, base-model
-raw-generation validation, training, fine-tuned eval-loss and raw generation,
-and HTML report generation. Database-backed stages load every configured scene
-when needed. Override its inputs with:
+`demo-dataset` creates questions, teacher traces, and splits. `demo-train` only
+trains a new student model using the current dataset, so rerun it to try another
+student or training configuration without regenerating data. `demo-validate`
+runs fine-tuned loss evaluation, test/challenge generation for the student model and
+baseline, and HTML reporting. Matching completed validations are skipped.
+Database-backed stages load every configured scene when needed. Override inputs with:
 
 | Variable | Default |
 | --- | --- |
@@ -123,7 +127,7 @@ when needed. Override its inputs with:
 
 ## Next steps
 
-- Compare the trained adapter with its base model using [Validation](validation.md).
+- Compare the fine-tuned model with its base model using [Validation](validation.md).
 - Package the selected model using [Ollama GGUF export](ollama_export.md).
 - Review lineage and latest-version behavior in
   [Artifact versioning](artifact_versioning.md).

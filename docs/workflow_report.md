@@ -20,13 +20,13 @@ docker/stack.sh main python scripts/generate_workflow_report.py \
 ```
 
 The command prints the generated path, file size, and a `file://` hint. When
-using Docker, the report is written through the repository bind mount; open the
+using Docker, the report is written through the repository bind mount. Open the
 corresponding path in the host checkout.
 
-Both automated workflows regenerate the report after producing new results:
+The validation and deployment workflows regenerate the report after producing results:
 
 ```bash
-docker/stack.sh demo-train
+docker/stack.sh demo-validate
 docker/stack.sh demo-deploy
 ```
 
@@ -56,7 +56,7 @@ report directory:
 
 ```text
 data/datasets/{dataset_id}/{dataset_version}/reports/
-  models/{model_family}/{model_version}/workflow_report.html
+  {model_family}/{model_version}/workflow_report.html
 ```
 
 See [Artifact versioning](artifact_versioning.md) for selection behavior and
@@ -69,7 +69,7 @@ The report uses tabs to separate each workflow stage:
 | Tab | Contents |
 | --- | --- |
 | 3D Scene Graph | Per-scene summary, node counts, classes, and extracted template values |
-| Generated Questions | Total, empty, and repair counts; task families, task types, tags, questions, and seed details |
+| Generated Questions | Total, empty, and repair counts (with task families, task types, tags, questions, and seed details) |
 | Traces | Accepted and rejected teacher traces, outcome counts, and rejection reasons |
 | Splits | Train/eval/test/challenge distributions and per-question details |
 | Train | Student configuration, eval-loss reports, and trainer-state history |
@@ -86,11 +86,11 @@ reports exist. Generate them with `docker/stack.sh demo-deploy` or the manual
 
 Although the output is a single static file, embedded JavaScript supports:
 
-- tabbed navigation;
-- a scene selector in the 3D Scene Graph tab;
-- sortable and filterable tables;
-- expandable question-type summaries;
-- selectable records with detailed prompts, tool calls, and validation data;
+- tabbed navigation.
+- a scene selector in the 3D Scene Graph tab.
+- sortable and filterable tables.
+- expandable question-type summaries.
+- selectable records with detailed prompts, tool calls, and validation data.
 - a quantization selector for comparing BF16 with available GGUF variants.
 
 The report contains its styling and interaction code inline. It does not need a
@@ -100,10 +100,10 @@ running project service after generation.
 
 Regenerate the report after any stage that changes the selected artifacts:
 
-- question or trace generation;
-- dataset splitting or student-trace optimization;
-- training or eval-loss evaluation;
-- baseline or fine-tuned raw-generation validation;
+- question or trace generation.
+- dataset splitting or student-trace optimization.
+- training or eval-loss evaluation.
+- baseline or fine-tuned raw-generation validation.
 - GGUF export and Ollama quantization validation.
 
 The report is a snapshot. It does not update automatically when its source JSON,
@@ -113,7 +113,7 @@ JSONL, YAML, or GGUF files change.
 
 When a student model is included, the generator verifies that its recorded
 dataset and split hashes match the selected data. Interactive runs warn before
-continuing; non-interactive runs require `--allow-dataset-mismatch`.
+continuing. Non-interactive runs require `--allow-dataset-mismatch`.
 
 Use that flag only for an intentional cross-version comparison, and keep the
 selected dataset and model versions with the resulting report.

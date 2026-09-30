@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from cypher_3dsg_agent_distillation.core.versioning import (
+    atomic_write_yaml,
     create_version_dir,
+    iso_now,
     read_metadata,
     resolve_version_dir,
     slugify,
+    utc_now,
     validate_version,
+    version_id,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -63,16 +69,6 @@ class DataPaths:
     splits: dict[str, Path]
     test_report_path: Path
 
-
-@dataclass(frozen=True)
-class TeacherRunPaths:
-    teacher_name: str
-    teacher_run: str
-    run_dir: Path
-    metadata_path: Path
-    teacher_traces_jsonl_path: Path
-    accepted_traces_path: Path
-    rejected_traces_path: Path
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -296,7 +292,7 @@ def data_paths_from_config(
             "test": scene_dir / "splits" / "test.jsonl",
             "challenge": scene_dir / "splits" / "challenge.jsonl",
         },
-        test_report_path=scene_dir / "reports" / "dataset" / "test.agent.report.json",
+        test_report_path=scene_dir / "reports" / "test.agent.report.json",
     )
 
 
@@ -362,19 +358,20 @@ def load_data_config(
         dataset_metadata = read_metadata(paths.metadata_path)
     except (FileNotFoundError, TypeError, yaml.YAMLError):
         dataset_metadata = {}
-    active_teacher = dataset_metadata.get("active_teacher_run")
-    if isinstance(active_teacher, dict):
-        teacher_name = active_teacher.get("teacher_name")
-        teacher_run = active_teacher.get("version")
-        if teacher_name and teacher_run:
-            try:
-                resolved = with_teacher_run(
-                    resolved,
-                    teacher_name=str(teacher_name),
-                    teacher_run=str(teacher_run),
-                )
-            except (FileNotFoundError, ValueError):
-                pass
+    teacher = dataset_metadata.get("teacher") or dataset_metadata.get("active_teacher_run")
+    if isinstance(teacher, dict):
+        resolved["teacher_name"] = teacher.get("teacher_name")
+    traces_dir = paths.dataset_dir / "traces"
+    # Read existing versioned datasets without moving or rewriting their artifacts.
+    if not (traces_dir / "metadata.yaml").exists() and isinstance(teacher, dict):
+        if teacher.get("version") and teacher.get("teacher_name"):
+            traces_dir = traces_dir / teacher["teacher_name"] / validate_version(teacher["version"])
+    resolved.update({
+        "teacher_metadata_path": str(traces_dir / "metadata.yaml"),
+        "teacher_traces_jsonl_path": str(traces_dir / "teacher_traces.jsonl"),
+        "accepted_traces_path": str(traces_dir / "accepted.json"),
+        "rejected_traces_path": str(traces_dir / "rejected.json"),
+    })
     return resolved
 
 
@@ -386,64 +383,99 @@ def teacher_name_from_config(config: dict[str, Any]) -> str:
     return slugify(model.rsplit("/", 1)[-1], fallback=provider)
 
 
-def teacher_run_paths(
-    data_config: dict[str, Any],
-    *,
-    teacher_name: str,
-    teacher_run: str | None = None,
-    create_version: bool = False,
-) -> TeacherRunPaths:
-    name = slugify(teacher_name, fallback="teacher")
-    root = Path(data_config["dataset_dir"]) / "traces" / name
-    if create_version:
-        version, run_dir = create_version_dir(
-            root,
-            None if teacher_run in (None, "latest") else teacher_run,
-        )
-    else:
-        version, run_dir = resolve_version_dir(
-            root,
-            teacher_run,
-            completed_only=True,
-            artifact_label=f"{name} teacher run",
-        )
-    return TeacherRunPaths(
-        teacher_name=name,
-        teacher_run=version,
-        run_dir=run_dir,
-        metadata_path=run_dir / "metadata.yaml",
-        teacher_traces_jsonl_path=run_dir / "teacher_traces.jsonl",
-        accepted_traces_path=run_dir / "accepted.json",
-        rejected_traces_path=run_dir / "rejected.json",
-    )
+def fork_dataset_for_teacher(data_config: dict[str, Any]) -> dict[str, Any]:
+    """Copy prepared inputs into a new dataset, leaving traces/splits/reports behind."""
+    source = Path(data_config["dataset_dir"])
+    for key in ("raw_questions_path", "seed_records_jsonl_path"):
+        if not Path(data_config[key]).is_file():
+            raise FileNotFoundError(f"Prepared dataset input is missing: {data_config[key]}")
+    metadata = read_metadata(source)
+    moment = utc_now()
+    while True:
+        try:
+            version, target = create_version_dir(source.parent, version_id(moment))
+            break
+        except FileExistsError:
+            moment += timedelta(seconds=1)
 
+    def rebase(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: rebase(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rebase(item) for item in value]
+        if isinstance(value, str):
+            value = value.replace(str(source) + "/", str(target) + "/")
+            try:
+                old = str(source.relative_to(PROJECT_ROOT))
+                new = str(target.relative_to(PROJECT_ROOT))
+                value = value.replace(old + "/", new + "/")
+            except ValueError:
+                pass
+            return str(target) if value == str(source) else value
+        return value
 
-def with_teacher_run(
-    data_config: dict[str, Any],
-    *,
-    teacher_name: str,
-    teacher_run: str | None = None,
-    create_version: bool = False,
-) -> dict[str, Any]:
-    paths = teacher_run_paths(
-        data_config,
-        teacher_name=teacher_name,
-        teacher_run=teacher_run,
-        create_version=create_version,
-    )
-    resolved = dict(data_config)
-    resolved.update(
-        {
-            "teacher_name": paths.teacher_name,
-            "teacher_run": paths.teacher_run,
-            "teacher_run_dir": str(paths.run_dir),
-            "teacher_metadata_path": str(paths.metadata_path),
-            "teacher_traces_jsonl_path": str(paths.teacher_traces_jsonl_path),
-            "accepted_traces_path": str(paths.accepted_traces_path),
-            "rejected_traces_path": str(paths.rejected_traces_path),
+    try:
+        for item in source.iterdir():
+            if item.name in {"metadata.yaml", "traces", "splits", "reports"}:
+                continue
+            destination = target / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination)
+            else:
+                shutil.copy2(item, destination)
+        metadata = rebase(metadata)
+        for key in ("teacher", "active_teacher_run", "split_files", "split_fingerprint"):
+            metadata.pop(key, None)
+        metadata["stages"] = {
+            key: value for key, value in metadata.get("stages", {}).items()
+            if key not in {"split", "teacher", "generate_traces"}
         }
-    )
+        metadata.update({
+            "version": version,
+            "created_at": iso_now(),
+            "updated_at": iso_now(),
+            "status": "building",
+            "parent_dataset": {
+                "dataset_id": data_config["dataset_id"],
+                "version": data_config["dataset_version"],
+            },
+        })
+        atomic_write_yaml(metadata, target / "metadata.yaml")
+    except BaseException:
+        shutil.rmtree(target)
+        raise
+    resolved = rebase(data_config)
+    resolved["dataset_version"] = version
+    resolved.pop("teacher_name", None)
     return resolved
+
+
+def prepare_teacher_dataset(
+    data_config: dict[str, Any], *, teacher_name: str
+) -> dict[str, Any]:
+    """Reserve the dataset's sole trace set; existing work always causes a fork."""
+    traces = Path(data_config["dataset_dir"]) / "traces"
+    splits = Path(data_config["dataset_dir"]) / "splits"
+    if (traces.exists() and any(traces.iterdir())) or (
+        splits.exists() and any(splits.iterdir())
+    ):
+        data_config = fork_dataset_for_teacher(data_config)
+        traces = Path(data_config["dataset_dir"]) / "traces"
+    traces.mkdir(parents=True, exist_ok=True)
+    # Exclusive creation prevents concurrent teachers from sharing a trace set.
+    try:
+        with (traces / "metadata.yaml").open("x", encoding="utf-8") as handle:
+            yaml.safe_dump({"status": "running", "teacher_name": teacher_name}, handle)
+    except FileExistsError:
+        return prepare_teacher_dataset(data_config, teacher_name=teacher_name)
+    return {
+        **data_config,
+        "teacher_name": slugify(teacher_name, fallback="teacher"),
+        "teacher_metadata_path": str(traces / "metadata.yaml"),
+        "teacher_traces_jsonl_path": str(traces / "teacher_traces.jsonl"),
+        "accepted_traces_path": str(traces / "accepted.json"),
+        "rejected_traces_path": str(traces / "rejected.json"),
+    }
 
 
 def load_student_config(
@@ -526,7 +558,21 @@ def model_reports_dir(
         reports_root = (
             legacy_reports.parent if legacy_reports.name == "dataset" else legacy_reports
         )
-    return reports_root / "models" / family / version
+    return reports_root / family / version
+
+
+def existing_report_path(path: str | Path) -> Path:
+    """Read historical reports while always writing to the current flat layout."""
+    selected = Path(path)
+    if selected.exists():
+        return selected
+    for root in selected.parents:
+        if root.name != "reports":
+            continue
+        relative = selected.relative_to(root)
+        legacy = root / ("dataset" if len(relative.parts) == 1 else "models") / relative
+        return legacy if legacy.exists() else selected
+    return selected
 
 
 def ollama_export_metadata(

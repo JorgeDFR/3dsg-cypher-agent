@@ -1,11 +1,11 @@
 # Ollama GGUF Export
 
-The exporter packages either a trained adapter or its configured base model as
+The exporter packages either a fine-tuned model or its configured base model as
 GGUF artifacts for Ollama.
 
 | Variant | Input | Pipeline |
 | --- | --- | --- |
-| Fine-tuned | Base model plus LoRA/QLoRA adapter | Merge, convert, quantize, write Modelfile |
+| Fine-tuned | Base model plus fine-tuned LoRA/QLoRA weights | Merge, convert, quantize, write Modelfile |
 | Baseline | Hugging Face base checkpoint | Convert, quantize, write Modelfile |
 
 The generated Modelfile is neutral: it selects a GGUF and stop parameters but
@@ -21,7 +21,7 @@ export dependencies. Start it before running individual export commands:
 docker/stack.sh up
 ```
 
-A fine-tuned export also requires a completed adapter from
+A fine-tuned export also requires a completed student model from
 [Student training](training.md).
 
 For host execution, complete the centralized [Native setup](setup.md), including
@@ -31,7 +31,7 @@ its PyTorch, llama.cpp, and optional Ollama sections.
 
 ### Fine-tuned model
 
-Merge the latest completed Qwen adapter and run every export stage:
+Export the latest completed Qwen student model through every stage:
 
 ```bash
 docker/stack.sh main python scripts/export_agent_ollama.py \
@@ -40,7 +40,7 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
   --stages all
 ```
 
-Use `--model-version VERSION` to select an adapter other than the latest
+Use `--model-version VERSION` to select a fine-tuned model other than the latest
 completed version.
 
 ### Baseline model
@@ -55,7 +55,7 @@ docker/stack.sh main python scripts/export_agent_ollama.py \
   --base-only
 ```
 
-Baseline export skips the adapter merge and converts the local Hugging Face
+Baseline export skips merging fine-tuned weights and converts the local Hugging Face
 path or resolved Hub snapshot directly.
 
 ## Export stages
@@ -64,7 +64,7 @@ path or resolved Hub snapshot directly.
 
 | Stage | Output or action |
 | --- | --- |
-| `merge` | Merge the selected adapter into a temporary Hugging Face checkpoint |
+| `merge` | Merge the fine-tuned weights with the base model into a temporary Hugging Face checkpoint |
 | `convert` | Convert the merged or base checkpoint to the configured GGUF type |
 | `quantize` | Produce each configured llama.cpp quantization |
 | `modelfile` | Write an Ollama Modelfile for one selected GGUF |
@@ -91,7 +91,7 @@ automated `demo-deploy` workflow enables this mode.
 The llama.cpp Python environment follows llama.cpp's own dependency pins. It
 can therefore use an older Transformers release than the project environment.
 For newer architectures such as Qwen3.5, `convert_hf_to_gguf.py` may be unable
-to instantiate `AutoConfig`; it then reads `config.json` directly. That
+to instantiate `AutoConfig`. It then reads `config.json` directly. That
 fallback is expected when GGUF conversion continues successfully.
 
 ## Output layout
@@ -116,7 +116,7 @@ outputs/ollama/
     `-- metadata.yaml
 ```
 
-The directory identifies the model variant; the filename and metadata identify
+The directory identifies the model variant. The filename and metadata identify
 the quantization. Fine-tuned export uses `merged-hf` only as a temporary
 conversion input.
 
@@ -138,7 +138,7 @@ The `ollama_export` section of each `configs/student_*.yaml` profile controls:
 | `convert_args` | Extra `convert_hf_to_gguf.py` arguments |
 | `quantize_args` | Extra `llama-quantize` arguments |
 
-CLI arguments can override the adapter, merged checkpoint, GGUF, and Modelfile
+CLI arguments can override the fine-tuned model, merged checkpoint, GGUF, and Modelfile
 paths.
 
 ## Select a Modelfile artifact
@@ -146,8 +146,8 @@ paths.
 `--modelfile-gguf` selects an existing artifact without repeating conversion.
 It accepts:
 
-- unquantized types such as `bf16`, `f16`, and `f32`;
-- short aliases such as `q4` and `q8`;
+- unquantized types such as `bf16`, `f16`, and `f32`.
+- short aliases such as `q4` and `q8`.
 - full llama.cpp names such as `Q4_K_M` and `Q8_0`.
 
 For example, point the default Modelfile at BF16:

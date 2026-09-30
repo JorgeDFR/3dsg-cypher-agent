@@ -52,21 +52,23 @@ docker/stack.sh status
 
 ## Automated workflows
 
-### Train and validate
+### Create data, train, and validate
 
 ```bash
+docker/stack.sh demo-dataset
 docker/stack.sh demo-train
+docker/stack.sh demo-validate
 ```
 
-This workflow performs dataset and trace preparation, grouped splitting,
-base-model validation, adapter training, fine-tuned validation, and HTML report
-generation. Database-backed stages load each configured scene when needed. For
-its stages and overrides, see
+These commands independently prepare a new dataset, train on existing splits,
+and validate the selected student model plus baseline. Validation reuses matching
+completed reports. Database-backed stages load each configured scene when needed.
+For their stages and overrides, see
 [Student training](../docs/training.md#automated-training-workflow).
 
 ### Export and deploy
 
-After training has produced an adapter:
+After training has produced a fine-tuned model:
 
 ```bash
 docker/stack.sh demo-deploy
@@ -121,7 +123,9 @@ docker/stack.sh ollama list
 | `exec COMMAND [ARGS...]` | Compatibility alias for `main` |
 | `ollama COMMAND [ARGS...]` | Run the CLI in the optional Ollama container |
 | `load-neo4j [SCENE]` | Load a scene into the project Neo4j service |
-| `demo-train` | Run the automated training and validation workflow |
+| `demo-dataset` | Generate a new dataset, teacher traces, and splits |
+| `demo-train` | Train a new student model using the current dataset |
+| `demo-validate` | Validate the student model and baseline and generate the HTML report |
 | `demo-deploy` | Export, register, and validate deployable GGUF variants |
 
 ### Inspection

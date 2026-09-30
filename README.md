@@ -24,7 +24,7 @@ The repository covers the complete distillation workflow:
   Hugging Face student and inspect its supervised token spans.
 - **[Model validation](docs/validation.md)** — evaluate trace quality, held-out
   loss, and raw generation through Transformers or Ollama.
-- **[GGUF model export](docs/ollama_export.md)** — merge adapters, convert
+- **[GGUF model export](docs/ollama_export.md)** — merge fine-tuned weights, convert
   models, quantize GGUF artifacts, and register them in Ollama.
 
 ## Repository structure
@@ -50,7 +50,7 @@ The project supports two execution environments:
   CUDA-enabled PyTorch, llama.cpp, and an optional Ollama service. It is the
   supported path for the complete GPU training and deployment workflow.
 - **[Native setup](docs/setup.md)** installs the Python package and dependencies directly on the
-  host. Use it when Docker is unavailable or for host-side development; CUDA,
+  host. Use it when Docker is unavailable or for host-side development. CUDA,
   PyTorch, Neo4j, and llama.cpp may require separate setup.
 
 Both approaches use the same YAML configuration and versioned artifacts. The
@@ -59,8 +59,8 @@ commands below use Docker.
 ## Configuration and versioning
 
 The workflow is driven by a small set of YAML files. Data configuration selects
-the scene, question families, and splits; teacher configuration controls trace
-generation; and student configuration defines the base model, LoRA/QLoRA
+the scene, question families, and splits. Teacher configuration controls trace
+generation. Student configuration defines the base model, LoRA/QLoRA
 training, and GGUF export. Experiment profiles and prompt fragments define the
 task-specific behavior shared across generation, training, and validation.
 
@@ -74,9 +74,10 @@ task-specific behavior shared across generation, training, and validation.
 | `configs/question_templates/` | QA and PDDL question templates |
 | `configs/schema_3dsg.yaml` | Scene graph schema used for generation and validation |
 
-Dataset extraction, teacher generation, and model training create timestamped
-artifact versions. Downstream commands select the latest compatible version by
-default and accept explicit dataset, teacher-run, or model selectors for
+Dataset extraction and model training create timestamped artifact versions.
+Each dataset owns one teacher trace set. Generating traces again forks a new
+dataset version with the prepared inputs. Downstream commands select the latest
+version by default and accept explicit dataset or model selectors for
 reproducible experiments. See [Artifact versioning](docs/artifact_versioning.md)
 for the directory layout, selection rules, lineage checks, and legacy migration.
 
@@ -114,14 +115,18 @@ Set `OPENROUTER_API_KEY` in `docker/.env` only when using an OpenRouter teacher.
 The default demonstration uses the synthetic teacher and needs no API key:
 
 ```bash
+docker/stack.sh demo-dataset
 docker/stack.sh demo-train
+docker/stack.sh demo-validate
 ```
 
-This prepares the configured multi-scene dataset, trains the student, loads each
-scene when required for database-backed stages, runs baseline and fine-tuned
-validation, and generates an HTML workflow report.
+Run `demo-dataset` to generate questions, teacher traces, and splits. Run
+`demo-train` to train a new student model on the current dataset. Run `demo-validate` to evaluate
+the student model and baseline and generate the HTML report. Each command can run
+independently. Matching completed validations are skipped automatically. Changing
+the student model does not invalidate the baseline on the same dataset.
 
-After an adapter has been trained, export and validate BF16, Q8_0, and Q4_K_M
+After a student model has been trained, export and validate BF16, Q8_0, and Q4_K_M
 GGUF variants:
 
 ```bash

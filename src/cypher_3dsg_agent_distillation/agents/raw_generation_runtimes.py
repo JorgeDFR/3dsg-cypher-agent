@@ -380,6 +380,18 @@ class OllamaRawGenerationRuntime:
             raise RuntimeError(f"Ollama request {path} failed: {result['error']}")
         return result
 
+    def cache_identity(self) -> dict[str, Any]:
+        """Identify the registered model even when its mutable tag is reused."""
+        name = self.model if ":" in self.model else f"{self.model}:latest"
+        for model in self._request("/api/tags").get("models", []):
+            if name in {model.get("name"), model.get("model")} and model.get("digest"):
+                return {
+                    "model": name,
+                    "digest": model["digest"],
+                    "server_version": self._request("/api/version").get("version"),
+                }
+        raise RuntimeError(f"No registered Ollama model digest found for {self.model}.")
+
     def validate(self) -> None:
         version = self._request("/api/version")
         self._server_version = str(version.get("version") or "unknown")

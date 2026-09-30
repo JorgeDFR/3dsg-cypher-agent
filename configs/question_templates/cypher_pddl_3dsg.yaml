@@ -947,41 +947,41 @@ templates:
     target_questions: 20
     tags: [pddl, navigation, manipulation, class_reference, conjunction, disjunction, negation, universal, symbol_free]
     variables:
-      visit_class: object_classes
-      unheld_class: object_classes
+      first_class: object_classes
+      second_class: object_classes
     cypher: |
-      MATCH (visit:Object {class: "{visit_class}"})
-      MATCH (unheld:Object {class: "{unheld_class}"})
-      RETURN visit.nodeSymbol AS visit, unheld.nodeSymbol AS unheld
-      ORDER BY visit, unheld
+      MATCH (first:Object {class: "{first_class}"})
+      MATCH (second:Object {class: "{second_class}"})
+      RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
+      ORDER BY first, second
     grounding:
       fields:
-        visit:
-          source: visit
-          aliases: [visit]
+        first:
+          source: first
+          aliases: [first]
           symbol_type: Object
           cardinality: set
-        unheld:
-          source: unheld
-          aliases: [unheld]
+        second:
+          source: second
+          aliases: [second]
           symbol_type: Object
           cardinality: set
     goal:
       operator: and
       clauses:
         - fact: visited-object
-          arguments: [{result: visit}]
+          arguments: [{result: first}]
           multiple: or
         - fact: holding
-          arguments: [{result: unheld}]
+          arguments: [{result: second}]
           multiple: and
           negate_each: true
     questions:
-      - Visit any {visit_class}, but finish without holding any {unheld_class}.
-      - Pass by one {visit_class} and leave every {unheld_class} outside the gripper at completion.
-      - The route must reach a {visit_class}, while all {unheld_class} objects remain unheld in the final state.
-      - Visit some object classified as {visit_class} and do not end up carrying a {unheld_class}.
-      - Include a {visit_class} waypoint, and ensure no {unheld_class} is held when the mission ends.
+      - Visit any {first_class}, but finish without holding any {second_class}.
+      - Pass by one {first_class} and leave every {second_class} outside the gripper at completion.
+      - The route must reach a {first_class}, while all {second_class} objects remain unheld in the final state.
+      - Visit some object classified as {first_class} and do not end up carrying a {second_class}.
+      - Include a {first_class} waypoint, and ensure no {second_class} is held when the mission ends.
 
   - query_type: pddl_atomic_alternative
     target_questions: 20

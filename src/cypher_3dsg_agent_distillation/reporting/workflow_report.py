@@ -16,6 +16,7 @@ from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
+    existing_report_path,
     load_data_config,
     load_student_config,
     model_reports_dir,
@@ -85,7 +86,7 @@ def read_yaml_if_exists(path: str | Path) -> dict[str, Any]:
 
 
 def read_json_if_exists(path: str | Path) -> Any:
-    resolved = Path(path)
+    resolved = existing_report_path(path)
     if not resolved.exists():
         return None
     return json.loads(resolved.read_text(encoding="utf-8"))
@@ -703,12 +704,16 @@ def collect_quantization_reports(
         if student_config and student_config.get("model_version")
         else reports_dir(data_config)
     )
-    if not directory.exists():
-        return {}
-
     reports = {}
     pattern = "challenge.student.ollama.*.raw-generation.report.json"
-    for path in sorted(directory.glob(pattern)):
+    legacy = directory
+    for root in directory.parents:
+        if root.name == "reports":
+            legacy = root / "models" / directory.relative_to(root)
+            break
+    paths = {path.name: path for path in legacy.glob(pattern)}
+    paths.update({path.name: path for path in directory.glob(pattern)})
+    for path in sorted(paths.values()):
         report = read_json_if_exists(path)
         if not isinstance(report, dict):
             continue

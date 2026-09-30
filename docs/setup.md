@@ -12,7 +12,7 @@ Install only the components required by the workflows you intend to run:
 | --- | --- |
 | Python environment and project package | All project scripts |
 | Heracles submodules | Scene loading and SLDP/PDDL validation |
-| PyTorch with GPU support | LoRA/QLoRA training, Transformers evaluation, and adapter merging |
+| PyTorch with GPU support | LoRA/QLoRA training, Transformers evaluation, and fine-tuned weight merging |
 | Neo4j | Teacher trace execution and raw-generation validation |
 | llama.cpp | Hugging Face-to-GGUF conversion and GGUF quantization |
 | Ollama | Optional inference and raw-generation validation of exported GGUFs |
@@ -70,7 +70,7 @@ git -c url.https://github.com/.insteadOf=git@github.com: \
   submodule update --init --recursive
 ```
 
-Detached HEADs inside submodules are expected; they preserve the revisions
+Detached HEADs inside submodules are expected. They preserve the revisions
 recorded by their parent repositories.
 
 ## 3. Create the Python environment
@@ -135,7 +135,7 @@ For a smaller installation, choose only the required extras:
 | --- | --- |
 | `python -m pip install -e .` | Core data generation and validation dependencies |
 | `python -m pip install -e '.[train]'` | Accelerate, bitsandbytes, PEFT, and TRL |
-| `python -m pip install -e '.[export]'` | Adapter merge and export dependencies |
+| `python -m pip install -e '.[export]'` | Fine-tuned weight merging and export dependencies |
 | `python -m pip install -e '.[dev]'` | Pytest and Ruff |
 
 ## 6. Configure OpenRouter credentials
@@ -161,7 +161,7 @@ python scripts/generate_traces.py preflight \
 
 Install Neo4j Community Edition with the official
 [native Linux instructions](https://neo4j.com/docs/operations-manual/current/installation/linux/).
-The development stack currently uses Neo4j `5.25.1`; use that version or a
+The development stack currently uses Neo4j `5.25.1`. Use that version or a
 compatible Neo4j 5 release for the closest native equivalent.
 
 The commands below assume the archive layout. Set the extracted installation
@@ -182,7 +182,7 @@ server.http.advertised_address=:7469
 ```
 
 Package-managed installations may place `neo4j.conf` under `/etc/neo4j` and
-provide `neo4j` and `neo4j-admin` on `PATH`; use those locations while keeping
+provide `neo4j` and `neo4j-admin` on `PATH`. Use those locations while keeping
 the same settings. Consult Neo4j's
 [file-location reference](https://neo4j.com/docs/operations-manual/current/configuration/file-locations/)
 for the selected installation method.

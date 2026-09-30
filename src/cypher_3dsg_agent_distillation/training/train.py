@@ -907,7 +907,6 @@ def command(args: argparse.Namespace) -> None:
                 "scene_ids": [scene["scene_id"] for scene in data_config["scenes"]],
                 "version": data_config["dataset_version"],
                 "teacher_name": data_config.get("teacher_name"),
-                "teacher_run": data_config.get("teacher_run"),
                 "split_fingerprint": split_fingerprint,
                 "split_files": split_files,
             },

@@ -168,3 +168,20 @@ def test_ollama_runtime_reports_connection_failures_with_host():
 
     with pytest.raises(RuntimeError, match="Could not reach Ollama at http://ollama:11434"):
         runtime.validate()
+
+
+def test_ollama_cache_identity_uses_registered_digest():
+    opener = RecordingOpener(
+        {"models": [{"name": "student:latest", "digest": "sha256:new"}]},
+        {"version": "test-server"},
+    )
+    runtime = OllamaRawGenerationRuntime(model="student", opener=opener)
+    assert runtime.cache_identity() == {
+        "model": "student:latest", "digest": "sha256:new", "server_version": "test-server",
+    }
+
+
+def test_ollama_cache_identity_rejects_missing_registration():
+    runtime = OllamaRawGenerationRuntime(model="missing", opener=RecordingOpener({"models": []}))
+    with pytest.raises(RuntimeError, match="No registered Ollama model digest"):
+        runtime.cache_identity()

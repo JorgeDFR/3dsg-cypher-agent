@@ -80,19 +80,13 @@ def migrate_dataset(data_config_path: Path, *, apply: bool) -> dict[str, Any] | 
     active_teacher = None
     if traces_file.is_file():
         teacher_name = teacher_identity(traces_file)
-        teacher_version, teacher_created_at = artifact_timestamp(traces_file)
-        teacher_dir = traces_root / teacher_name / teacher_version
-        teacher_dir.mkdir(parents=True, exist_ok=False)
-        for name in ("teacher_traces.jsonl", "accepted.json", "rejected.json"):
-            source = traces_root / name
-            if source.exists():
-                shutil.move(str(source), teacher_dir / name)
+        _, teacher_created_at = artifact_timestamp(traces_file)
+        teacher_dir = traces_root
         atomic_write_yaml(
             {
                 "schema_version": 1,
-                "artifact_type": "teacher_run",
+                "artifact_type": "teacher_traces",
                 "teacher_name": teacher_name,
-                "version": teacher_version,
                 "created_at": teacher_created_at,
                 "updated_at": teacher_created_at,
                 "status": "complete",
@@ -109,7 +103,7 @@ def migrate_dataset(data_config_path: Path, *, apply: bool) -> dict[str, Any] | 
             },
             teacher_dir / "metadata.yaml",
         )
-        active_teacher = {"teacher_name": teacher_name, "version": teacher_version}
+        active_teacher = {"teacher_name": teacher_name}
 
     splits = {
         name: target / "splits" / f"{name}.jsonl"
@@ -142,7 +136,7 @@ def migrate_dataset(data_config_path: Path, *, apply: bool) -> dict[str, Any] | 
             "schema": config_record(schema_path, project_root=PROJECT_ROOT),
         },
         "code": git_provenance(PROJECT_ROOT),
-        "active_teacher_run": active_teacher,
+        "teacher": active_teacher,
         "split_files": split_files,
         "split_fingerprint": split_fingerprint,
         "stages": {"legacy_import": {"completed_at": created_at}},
@@ -217,11 +211,8 @@ def migrate_lora_models(
                         "split_fingerprint": dataset_metadata.get("split_fingerprint"),
                         "split_files": dataset_metadata.get("split_files"),
                         "teacher_name": (
-                            dataset_metadata.get("active_teacher_run") or {}
+                            dataset_metadata.get("teacher") or {}
                         ).get("teacher_name"),
-                        "teacher_run": (
-                            dataset_metadata.get("active_teacher_run") or {}
-                        ).get("version"),
                     }
                     if linked
                     else None
@@ -264,11 +255,11 @@ def migrate_reports_and_ollama(
             if not source.is_file():
                 continue
             if source.name == "split.report.json" or ".agent.report.json" in source.name:
-                destination = reports / "dataset" / source.name
+                continue
             elif ".baseline." in source.name:
-                destination = reports / "models" / family / "baseline" / source.name
+                destination = reports / family / "baseline" / source.name
             else:
-                destination = reports / "models" / family / model_version / source.name
+                destination = reports / family / model_version / source.name
             move(source, destination, apply=apply)
 
         export_dir = OLLAMA_ROOT / family

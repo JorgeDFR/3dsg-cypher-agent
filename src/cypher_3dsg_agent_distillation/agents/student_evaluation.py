@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
+import tempfile
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -11,6 +13,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cypher_3dsg_agent_distillation.agents.evaluation_cache import (
+    completed_evaluation,
+    evaluation_completed,
+    evaluation_identity,
+)
 from cypher_3dsg_agent_distillation.agents.raw_generation_runtimes import (
     DEFAULT_OLLAMA_CONTEXT_LENGTH,
     RAW_GENERATION_RUNTIMES,
@@ -1590,7 +1597,6 @@ def build_report(
             "scene_ids": [scene["scene_id"] for scene in data_config.get("scenes", [])],
             "version": data_config.get("dataset_version"),
             "teacher_name": data_config.get("teacher_name"),
-            "teacher_run": data_config.get("teacher_run"),
         },
         "student_config": student_config_path,
         "model_family": student_config.get("model_family"),
@@ -1636,10 +1642,16 @@ def build_report(
 
 def write_report(report: dict[str, Any], output: str | Path) -> Path:
     output_path = ensure_parent(output)
-    output_path.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    rendered = json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".report-", dir=output_path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+        temporary.replace(output_path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return output_path
 
 
@@ -1948,6 +1960,28 @@ def command(args: argparse.Namespace) -> None:
                 return
         selected_reports_dir = model_reports_dir(data_config, student_config)
 
+    output_path = report_output_path(
+        data_config=data_config,
+        split=args.split,
+        mode=args.mode,
+        output=args.output,
+        baseline=args.baseline,
+        runtime=args.runtime,
+        runtime_model=args.ollama_model,
+        reports_directory=selected_reports_dir,
+    )
+    runtime_identity = None
+    if args.runtime != TRANSFORMERS_RUNTIME:
+        runtime_identity = OllamaRawGenerationRuntime(
+            model=args.ollama_model, host=args.ollama_host, timeout=args.ollama_timeout,
+        ).cache_identity()
+    identity = evaluation_identity(
+        args, data_config, student_config, adapter_dir, runtime_identity=runtime_identity,
+    )
+    if not args.force and completed_evaluation(output_path, identity):
+        print_summary("Validation already complete; skipping", [("Report", output_path)])
+        return
+
     records = None
     extra_metadata = None
     batch_size = None
@@ -2090,19 +2124,11 @@ def command(args: argparse.Namespace) -> None:
         runtime=args.runtime,
         model_metadata=model_metadata,
     )
-    output_path = write_report(
-        report,
-        report_output_path(
-            data_config=data_config,
-            split=args.split,
-            mode=args.mode,
-            output=args.output,
-            baseline=args.baseline,
-            runtime=args.runtime,
-            runtime_model=args.ollama_model,
-            reports_directory=selected_reports_dir,
-        ),
-    )
+    report["metadata"].update({
+        "evaluation_identity": identity,
+        "evaluation_status": "complete" if evaluation_completed(report) else "incomplete",
+    })
+    write_report(report, output_path)
 
     if args.mode == EVAL_LOSS_MODE:
         if args.split == ALL_SPLITS:
@@ -2136,6 +2162,10 @@ def main() -> None:
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-run validation even when a matching completed report exists.",
+    )
     parser.add_argument(
         "--student-config",
         default="configs/student_qwen3.5_4b.yaml",

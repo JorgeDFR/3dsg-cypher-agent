@@ -17,8 +17,8 @@ docker/stack.sh main python scripts/edit_3dsg_room_labels.py \
 
 The editor presents a top-down view with:
 
-- red room bounding boxes;
-- room symbols;
+- red room bounding boxes.
+- room symbols.
 - blue object triangles.
 
 It visits rooms in symbol order, prints contained-object counts by class, and

@@ -1,6 +1,6 @@
 # Artifact Versioning
 
-Generated datasets, teacher runs, and trained adapters use explicit lineage so
+Generated datasets and fine-tuned models use explicit lineage so
 a result can be traced back to its scene and split content. Versions are
 readable UTC timestamps such as `2026-09-08-T-12-05-47-Z`.
 
@@ -10,38 +10,50 @@ readable UTC timestamps such as `2026-09-08-T-12-05-47-Z`.
 data/datasets/{dataset_id}/{dataset_version}/
 |-- scenes/{scene_id}/scene_template_values.yaml
 |-- ... dataset-level questions, seeds, and splits
-|-- traces/{teacher_name}/{teacher_run}/
+|-- traces/
 |   |-- accepted.json
 |   |-- rejected.json
 |   `-- teacher_traces.jsonl
 `-- reports/
 
 outputs/lora/{model_family}/{model_version}/
-|-- ... adapter and tokenizer artifacts
+|-- ... fine-tuned weights and tokenizer artifacts
 `-- metadata.yaml
 ```
 
 The exact generated filenames inside a dataset version depend on the configured
 question sets and completed stages. Commands resolve them from
-`configs/data.yaml`; avoid hard-coding paths in automation when a version
+`configs/data.yaml`. Avoid hard-coding paths in automation when a version
 selector is available.
 
 ## Selection rules
 
 | Artifact | Default behavior | Explicit selector |
 | --- | --- | --- |
-| Dataset | Extraction creates a new version; later commands use latest | `--dataset-version` |
-| Teacher trace run | Generation creates a new run; splitting uses the active run | `--teacher`, `--teacher-run` |
-| LoRA model | Training creates a new version; evaluation/export use latest completed | `--model-version` |
+| Dataset | Extraction creates a new version. Later commands use latest | `--dataset-version` |
+| Teacher traces | One set per dataset. Generation forks the dataset if traces or splits already exist | `--dataset-version` selects prepared inputs. `--teacher` labels the teacher |
+| LoRA model | Training creates a new version. Evaluation/export use latest completed | `--model-version` |
 
 The source 3DSG files are not inferred from their identifiers. Each item in the
 data configuration's `scenes` list explicitly pairs `scene_id` with
-`scene_path`; `dataset_id` identifies their combined artifact family.
+`scene_path`. `dataset_id` identifies their combined artifact family.
+
+Teacher generation never replaces an existing trace set. If `traces/` or
+`splits/` already contains artifacts (including a partial teacher run), it creates
+a new dataset version, copies prepared questions, seed records, scene values,
+and other input files, and generates fresh traces there. It does not copy
+splits or validation reports. The summary prints the new version. Pass that
+version to `prepare_dataset.py split` when using a pinned data configuration.
+The source dataset and models trained from it remain unchanged.
+
+Historical datasets with nested teacher versions remain readable through their
+recorded active teacher. New generation always uses the single-teacher layout.
+Historical reports are also readable from `reports/dataset` and `reports/models`.
+New reports use the flattened layout below.
 
 ## Inspect and select versions
 
-List available dataset, teacher, and LoRA identifiers and show which versions
-are currently selected:
+List available dataset and LoRA identifiers, and the selected dataset's teacher:
 
 ```bash
 docker/stack.sh main python scripts/list_artifact_versions.py \
@@ -56,11 +68,11 @@ reporting, or export commands as appropriate.
 
 A trained model records:
 
-- dataset and model version identifiers;
-- hashes of the exact training and evaluation splits;
-- source configuration records;
-- training metrics and selected checkpoint;
-- fingerprints of key adapter and tokenizer artifacts.
+- dataset and model version identifiers.
+- hashes of the exact training and evaluation splits.
+- source configuration records.
+- training metrics and selected checkpoint.
+- fingerprints of key fine-tuned weights and tokenizer artifacts.
 
 When evaluation or reporting selects different data, the command warns in an
 interactive session. Non-interactive jobs must pass
@@ -68,12 +80,13 @@ interactive session. Non-interactive jobs must pass
 
 ## Report layout
 
-Dataset and model reports remain isolated:
+Dataset reports and model-family folders share the reports root:
 
 ```text
 data/datasets/{dataset_id}/{dataset_version}/reports/
-|-- dataset/
-`-- models/{model_family}/
+|-- split.report.json
+|-- test.agent.report.json
+`-- {model_family}/
     |-- baseline/
     `-- {model_version}/
 ```

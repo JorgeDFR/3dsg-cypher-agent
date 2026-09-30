@@ -42,9 +42,9 @@ from cypher_3dsg_agent_distillation.core.config import (
     load_data_config,
     load_student_family_config,
     load_yaml,
+    prepare_teacher_dataset,
     resolve_project_path,
     teacher_name_from_config,
-    with_teacher_run,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
@@ -1529,11 +1529,9 @@ def generate_command(args: argparse.Namespace) -> None:
     effective_teacher_config = dict(teacher_config)
     if model is not None:
         effective_teacher_config["model"] = model
-    data_config = with_teacher_run(
+    data_config = prepare_teacher_dataset(
         data_config,
         teacher_name=args.teacher or teacher_name_from_config(effective_teacher_config),
-        teacher_run=args.teacher_run,
-        create_version=True,
     )
     profile_inputs = {}
     for question_set in data_config.get("question_sets") or []:
@@ -1550,9 +1548,8 @@ def generate_command(args: argparse.Namespace) -> None:
     atomic_write_yaml(
         {
             "schema_version": 1,
-            "artifact_type": "teacher_run",
+            "artifact_type": "teacher_traces",
             "teacher_name": data_config["teacher_name"],
-            "version": data_config["teacher_run"],
             "created_at": created_at,
             "updated_at": created_at,
             "status": "running",
@@ -1786,9 +1783,9 @@ def generate_command(args: argparse.Namespace) -> None:
     )
     atomic_write_yaml(teacher_metadata, data_config["teacher_metadata_path"])
     dataset_metadata = load_yaml(data_config["metadata_path"])
-    dataset_metadata["active_teacher_run"] = {
+    dataset_metadata.pop("active_teacher_run", None)
+    dataset_metadata["teacher"] = {
         "teacher_name": data_config["teacher_name"],
-        "version": data_config["teacher_run"],
     }
     dataset_metadata["updated_at"] = iso_now()
     atomic_write_yaml(dataset_metadata, data_config["metadata_path"])
@@ -1799,7 +1796,7 @@ def generate_command(args: argparse.Namespace) -> None:
         [
             ("Provider", provider),
             ("Dataset version", data_config["dataset_version"]),
-            ("Teacher run", f"{data_config['teacher_name']}/{data_config['teacher_run']}"),
+            ("Teacher", data_config["teacher_name"]),
             ("Seeds", len(seeds)),
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
@@ -1889,12 +1886,7 @@ def main() -> None:
     generate_parser.add_argument(
         "--teacher",
         default=None,
-        help="Optional path-safe teacher folder name.",
-    )
-    generate_parser.add_argument(
-        "--teacher-run",
-        default=None,
-        help="Optional new run version in YYYY-MM-DD-T-HH-MM-SS-Z format.",
+        help="Optional teacher label recorded in dataset metadata.",
     )
     generate_parser.add_argument("--teacher-model", default=None)
     generate_parser.add_argument("--traces-per-seed", type=int, default=None)
