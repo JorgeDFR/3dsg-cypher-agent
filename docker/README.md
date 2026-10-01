@@ -74,7 +74,9 @@ After training has produced a fine-tuned model:
 docker/stack.sh demo-deploy
 ```
 
-This workflow exports and registers BF16, Q8_0, and Q4_K_M variants, validates
+This workflow exports and registers the base GGUF and quantization variants
+specified in the student YAML (`ollama_export.gguf_outtype` and
+`ollama_export.quantizations`), validates
 them on the challenge split, and regenerates the report. See
 [Ollama GGUF export](../docs/ollama_export.md#register-models-in-the-project-stack).
 
@@ -82,7 +84,7 @@ them on the challenge split, and regenerates the report. See
 
 ```bash
 docker/stack.sh up
-docker/stack.sh main python scripts/evaluate_traces.py \
+docker/stack.sh main python scripts/agents/evaluate_traces.py \
   --data-config configs/data.yaml --split train
 docker/stack.sh shell
 docker/stack.sh logs main
@@ -137,7 +139,7 @@ docker/stack.sh ollama list
 | `config` | Validate and print the resolved Compose configuration |
 
 Run `docker/stack.sh help` for the terminal version of this reference and the
-supported `DEMO_*` and `DEPLOY_*` environment variables.
+supported `DEMO_*` environment variables.
 
 ## Network addresses
 

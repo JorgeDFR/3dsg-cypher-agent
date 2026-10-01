@@ -8,9 +8,6 @@ NVIDIA_TEST_IMAGE="${NVIDIA_TEST_IMAGE:-ubuntu:24.04}"
 DEMO_DATA_CONFIG="${DEMO_DATA_CONFIG:-configs/data.yaml}"
 DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teacher_synthetic.yaml}"
 DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/student_qwen3.5_4b.yaml}"
-DEPLOY_DATA_CONFIG="${DEPLOY_DATA_CONFIG:-${DEMO_DATA_CONFIG}}"
-DEPLOY_STUDENT_CONFIG="${DEPLOY_STUDENT_CONFIG:-${DEMO_STUDENT_CONFIG}}"
-DEPLOY_MODEL_NAME="${DEPLOY_MODEL_NAME:-qwen3.5-4b-finetune}"
 
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
@@ -46,8 +43,8 @@ Automated workflow:
   demo-dataset             Create a dataset, teacher traces, and grouped splits.
   demo-train               Train a new student model using the current dataset.
   demo-validate            Evaluate the student and baseline and generate HTML reports.
-  demo-deploy              Export the trained student to GGUF, register BF16,
-                           Q8_0, and Q4_K_M models in Ollama, validate them on
+  demo-deploy              Export the trained student to GGUF, register the
+                           configured variants in Ollama, validate them on
                            the challenge split, and regenerate the HTML report.
 
 Neo4j:
@@ -60,7 +57,7 @@ Inspection:
   ps                       Alias for status (kept for compatibility).
 
 Examples:
-  docker/stack.sh main python scripts/train_agent_lora.py \
+  docker/stack.sh main python scripts/training/train_agent_lora.py \
     --data-config configs/data.yaml \
     --student-config configs/student_qwen3.5_4b.yaml
   docker/stack.sh logs neo4j
@@ -70,11 +67,6 @@ Environment:
   DEMO_DATA_CONFIG=path    Demo data config. Defaults to configs/data.yaml.
   DEMO_TEACHER_CONFIG=path Demo teacher config. Defaults to the synthetic teacher.
   DEMO_STUDENT_CONFIG=path Demo student config. Defaults to Qwen 3.5 4B.
-  DEPLOY_DATA_CONFIG=path  Deploy data config. Defaults to DEMO_DATA_CONFIG.
-  DEPLOY_STUDENT_CONFIG=path
-                           Deploy student config. Defaults to DEMO_STUDENT_CONFIG.
-  DEPLOY_MODEL_NAME=name   Exported/Ollama model prefix. Defaults to
-                           qwen3.5-4b-finetune.
 EOF
 }
 
@@ -202,35 +194,24 @@ quiet_phase() {
 register_ollama_models() {
   local model_name="$1"
   local model_dir="$2"
+  shift 2
+  local variants=("$@")
+  local total=$((1 + ${#variants[@]}))
+  local current=1
+  local variant
   local started_at="${SECONDS}"
 
-  quiet_phase 1 4 "${started_at}" "Starting Ollama" \
+  quiet_phase "${current}" "${total}" "${started_at}" "Starting Ollama" \
     compose --profile ollama up -d --wait ollama || return 1
-  quiet_phase 2 4 "${started_at}" "Registering BF16 model" \
-    compose exec -T ollama ollama create "${model_name}-bf16" \
-      -f "${model_dir}/Modelfile.bf16" || return 1
-  quiet_phase 3 4 "${started_at}" "Registering Q8_0 model" \
-    compose exec -T ollama ollama create "${model_name}-q8_0" \
-      -f "${model_dir}/Modelfile.q8_0" || return 1
-  quiet_phase 4 4 "${started_at}" "Registering Q4_K_M model" \
-    compose exec -T ollama ollama create "${model_name}-q4_k_m" \
-      -f "${model_dir}/Modelfile.q4_k_m" || return 1
+  for variant in "${variants[@]}"; do
+    current=$((current + 1))
+    quiet_phase "${current}" "${total}" "${started_at}" "Registering ${variant} model" \
+      compose exec -T ollama ollama create "${model_name}-${variant,,}" \
+        -f "${model_dir}/Modelfile.${variant,,}" || return 1
+  done
 
-  compose exec -T main python -c '
-import sys
-
-from cypher_3dsg_agent_distillation.core.cli_output import print_summary
-
-name = sys.argv[1]
-print_summary(
-    "Ollama registration complete",
-    [
-        ("BF16", f"{name}-bf16"),
-        ("Q8_0", f"{name}-q8_0"),
-        ("Q4_K_M", f"{name}-q4_k_m"),
-    ],
-)
-' "${model_name}"
+  compose exec -T main python scripts/training/deploy_helpers.py registration-summary \
+    --model-name "${model_name}" --variants "${variants[@]}"
 }
 
 check_docker() {
@@ -483,21 +464,21 @@ run_demo_dataset() {
   info "Student config: ${DEMO_STUDENT_CONFIG}"
 
   demo_step 1 "${total_steps}" "Extract scene template values" \
-    python scripts/extract_3dsg_values.py \
+    python scripts/graph/extract_3dsg_values.py \
       --data-config "${DEMO_DATA_CONFIG}"
   demo_step 2 "${total_steps}" "Generate question templates" \
-    python scripts/generate_3dsg_seed_templates.py \
+    python scripts/cypher/generate_3dsg_seed_templates.py \
       --data-config "${DEMO_DATA_CONFIG}"
   demo_step 3 "${total_steps}" "Prepare seed records" \
-    python scripts/prepare_dataset.py prepare-seeds \
+    python scripts/agents/prepare_dataset.py prepare-seeds \
       --data-config "${DEMO_DATA_CONFIG}"
   demo_step 4 "${total_steps}" "Generate and validate teacher traces" \
-    python scripts/generate_traces.py generate \
+    python scripts/agents/generate_traces.py generate \
       --data-config "${DEMO_DATA_CONFIG}" \
       --teacher-config "${DEMO_TEACHER_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
   demo_step 5 "${total_steps}" "Create grouped dataset splits" \
-    python scripts/prepare_dataset.py split \
+    python scripts/agents/prepare_dataset.py split \
       --data-config "${DEMO_DATA_CONFIG}" \
       --render-view ollama_native
 
@@ -519,7 +500,7 @@ run_demo_train() {
   info "Student config: ${DEMO_STUDENT_CONFIG}"
 
   demo_step 1 "${total_steps}" "Train student model with LoRA" \
-    python scripts/train_agent_lora.py \
+    python scripts/training/train_agent_lora.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
 
@@ -542,27 +523,27 @@ run_demo_validate() {
   info "Student config: ${DEMO_STUDENT_CONFIG}"
 
   demo_step 1 "${total_steps}" "Evaluate loss on all splits" \
-    python scripts/evaluate_student.py \
+    python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split all \
       --mode eval-loss
   demo_step 2 "${total_steps}" "Validate generation on the test split" \
-    python scripts/evaluate_student.py \
+    python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split test \
       --mode raw-generation \
       --max-new-tokens 1024
   demo_step 3 "${total_steps}" "Validate generation on the challenge split" \
-    python scripts/evaluate_student.py \
+    python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split challenge \
       --mode raw-generation \
       --max-new-tokens 1024
   demo_step 4 "${total_steps}" "Establish baseline on the test split" \
-    python scripts/evaluate_student.py \
+    python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split test \
@@ -570,7 +551,7 @@ run_demo_validate() {
       --baseline \
       --max-new-tokens 1024
   demo_step 5 "${total_steps}" "Establish baseline on the challenge split" \
-    python scripts/evaluate_student.py \
+    python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split challenge \
@@ -578,7 +559,7 @@ run_demo_validate() {
       --baseline \
       --max-new-tokens 1024
   demo_step 6 "${total_steps}" "Generate HTML workflow report" \
-    python scripts/generate_workflow_report.py \
+    python scripts/reporting/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}"
 
@@ -586,46 +567,26 @@ run_demo_validate() {
 }
 
 require_trained_student() {
-  if compose exec -T main python -c '
-import sys
-from pathlib import Path
-
-import yaml
-
-config_path = Path(sys.argv[1])
-config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-model_root = Path(config["training"]["output_dir"])
-versions = []
-for candidate in model_root.iterdir() if model_root.is_dir() else []:
-    metadata_path = candidate / "metadata.yaml"
-    if not metadata_path.is_file():
-        continue
-    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}
-    if metadata.get("status") == "complete":
-        versions.append(candidate)
-if not versions:
-    raise SystemExit(f"No completed trained student version found in {model_root}")
-adapter_dir = sorted(versions, key=lambda path: path.name)[-1]
-has_weights = any(
-    (adapter_dir / filename).is_file()
-    for filename in ("adapter_model.safetensors", "adapter_model.bin")
-)
-if not (adapter_dir / "adapter_config.json").is_file() or not has_weights:
-    raise SystemExit(f"Trained student model not found in {adapter_dir}")
-print(f"[INFO] Found trained student model in {adapter_dir}.")
-' "${DEPLOY_STUDENT_CONFIG}"; then
+  if compose exec -T main python scripts/training/deploy_helpers.py check \
+    --student-config "${DEMO_STUDENT_CONFIG}"; then
     return
   fi
 
-  die "The trained student configured by '${DEPLOY_STUDENT_CONFIG}' is unavailable. Run 'docker/stack.sh demo-train' or train the configured student before running demo-deploy."
+  die "The trained student configured by '${DEMO_STUDENT_CONFIG}' is unavailable. Run 'docker/stack.sh demo-train' or train the configured student before running demo-deploy."
 }
 
 run_demo_deploy() {
-  local total_steps=7
-  local ollama_model_dir="/models/${DEPLOY_MODEL_NAME}"
+  local total_steps
+  local model_name
+  local ollama_model_dir
+  local deploy_config
+  local config_lines=()
+  local variants=()
+  local variant
+  local current_step
 
   if [[ $# -ne 0 ]]; then
-    die "The demo-deploy command takes no arguments. Configure it with the DEPLOY_* environment variables."
+    die "The demo-deploy command takes no arguments. Configure it with the DEMO_* environment variables."
   fi
 
   prepare_runtime
@@ -633,57 +594,54 @@ run_demo_deploy() {
   require_service_running neo4j
   require_trained_student
 
+  if ! deploy_config="$(compose exec -T main python scripts/training/deploy_helpers.py config \
+    --student-config "${DEMO_STUDENT_CONFIG}")"; then
+    die "Could not read deployment settings from '${DEMO_STUDENT_CONFIG}'."
+  fi
+  mapfile -t config_lines <<< "${deploy_config}"
+  model_name="${config_lines[0]}"
+  variants=("${config_lines[@]:1}")
+  [[ -n "${model_name}" && ${#variants[@]} -gt 0 ]] || die "Deployment settings contain no model or variants."
+  ollama_model_dir="/models/${model_name}"
+  total_steps=$((4 + ${#variants[@]}))
+
   heading "3DSG Cypher agent deploy / quantization pipeline"
-  info "Data config: ${DEPLOY_DATA_CONFIG}"
-  info "Student config: ${DEPLOY_STUDENT_CONFIG}"
-  info "Exported model name: ${DEPLOY_MODEL_NAME}"
+  info "Data config: ${DEMO_DATA_CONFIG}"
+  info "Student config: ${DEMO_STUDENT_CONFIG}"
+  info "Exported model name: ${model_name}"
 
   workflow_step 1 "${total_steps}" "Export merged model and GGUF quantizations" \
-    compose exec main python scripts/export_agent_ollama.py \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --model-name "${DEPLOY_MODEL_NAME}" \
+    compose exec main python scripts/training/export_agent_ollama.py \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --model-name "${model_name}" \
       --quiet \
       --stages merge convert quantize
   workflow_step 2 "${total_steps}" "Generate Ollama Modelfiles" \
-    compose exec main python scripts/export_agent_ollama.py \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --model-name "${DEPLOY_MODEL_NAME}" \
+    compose exec main python scripts/training/export_agent_ollama.py \
+      --student-config "${DEMO_STUDENT_CONFIG}" \
+      --model-name "${model_name}" \
       --quiet \
       --stages modelfile \
-      --modelfile-variants bf16 Q8_0 Q4_K_M
+      --modelfile-variants "${variants[@]}"
   workflow_step 3 "${total_steps}" "Start Ollama and register GGUF variants" \
-    register_ollama_models "${DEPLOY_MODEL_NAME}" "${ollama_model_dir}"
-  workflow_step 4 "${total_steps}" "Validate BF16 generation on the challenge split" \
-    compose exec main python scripts/evaluate_student.py \
-      --data-config "${DEPLOY_DATA_CONFIG}" \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --runtime ollama \
-      --ollama-model "${DEPLOY_MODEL_NAME}-bf16" \
-      --max-new-tokens 1024
-  workflow_step 5 "${total_steps}" "Validate Q8_0 generation on the challenge split" \
-    compose exec main python scripts/evaluate_student.py \
-      --data-config "${DEPLOY_DATA_CONFIG}" \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --runtime ollama \
-      --ollama-model "${DEPLOY_MODEL_NAME}-q8_0" \
-      --max-new-tokens 1024
-  workflow_step 6 "${total_steps}" "Validate Q4_K_M generation on the challenge split" \
-    compose exec main python scripts/evaluate_student.py \
-      --data-config "${DEPLOY_DATA_CONFIG}" \
-      --student-config "${DEPLOY_STUDENT_CONFIG}" \
-      --split challenge \
-      --mode raw-generation \
-      --runtime ollama \
-      --ollama-model "${DEPLOY_MODEL_NAME}-q4_k_m" \
-      --max-new-tokens 1024
-  workflow_step 7 "${total_steps}" "Generate HTML workflow report" \
-    compose exec main python scripts/generate_workflow_report.py \
-      --data-config "${DEPLOY_DATA_CONFIG}" \
-      --student-config "${DEPLOY_STUDENT_CONFIG}"
+    register_ollama_models "${model_name}" "${ollama_model_dir}" "${variants[@]}"
+  current_step=4
+  for variant in "${variants[@]}"; do
+    workflow_step "${current_step}" "${total_steps}" "Validate ${variant} generation on the challenge split" \
+      compose exec main python scripts/agents/evaluate_student.py \
+        --data-config "${DEMO_DATA_CONFIG}" \
+        --student-config "${DEMO_STUDENT_CONFIG}" \
+        --split challenge \
+        --mode raw-generation \
+        --runtime ollama \
+        --ollama-model "${model_name}-${variant,,}" \
+        --max-new-tokens 1024
+    current_step=$((current_step + 1))
+  done
+  workflow_step "${current_step}" "${total_steps}" "Generate HTML workflow report" \
+    compose exec main python scripts/reporting/generate_workflow_report.py \
+      --data-config "${DEMO_DATA_CONFIG}" \
+      --student-config "${DEMO_STUDENT_CONFIG}"
 
   heading "Deploy / quantization pipeline complete"
   info "The HTML report path is shown in the final summary above."
@@ -768,7 +726,7 @@ case "${command}" in
     prepare_runtime
     require_service_running main
     require_service_running neo4j
-    compose exec main python scripts/load_3dsg_neo4j.py --scene "${scene}"
+    compose exec main python scripts/graph/load_3dsg_neo4j.py --scene "${scene}"
     ;;
   config)
     prepare_runtime

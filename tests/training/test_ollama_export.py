@@ -273,6 +273,9 @@ def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
     settings = build_export_settings(student_config(tmp_path))
     export_dir = tmp_path / "agent-distilled"
     settings.merged_model_dir.mkdir(parents=True)
+    tokenizer_config = settings.merged_model_dir / "tokenizer_config.json"
+    tokenizer_config.write_text(json.dumps({"tokenizer_class": "TokenizersBackend"}))
+    (settings.merged_model_dir / "tokenizer.json").write_text("{}")
     llama_cpp_dir = tmp_path / "llama.cpp"
     llama_cpp_dir.mkdir()
     convert_script = llama_cpp_dir / "convert_hf_to_gguf.py"
@@ -280,6 +283,9 @@ def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
     calls = []
 
     def fake_run(command, check):
+        assert json.loads(tokenizer_config.read_text())["tokenizer_class"] == (
+            "PreTrainedTokenizerFast"
+        )
         calls.append((command, check))
         output_path = command[command.index("--outfile") + 1]
         ollama_export.Path(output_path).touch()
@@ -310,6 +316,56 @@ def test_convert_hf_to_gguf_invokes_llama_cpp_converter(tmp_path, monkeypatch):
             True,
         )
     ]
+
+
+def test_normalize_merged_tokenizer_preserves_tokens_and_metadata(tmp_path):
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+
+    backend = Tokenizer(models.WordLevel({"[UNK]": 0, "hello": 1, "world": 2}, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+    tokenizer.add_special_tokens({"eos_token": "<end>"})
+    tokenizer.chat_template = "{{ messages[0]['content'] }}<end>"
+    tokenizer.save_pretrained(tmp_path)
+    config_path = tmp_path / "tokenizer_config.json"
+    config = json.loads(config_path.read_text())
+    config["tokenizer_class"] = "TokenizersBackend"
+    config_path.write_text(json.dumps(config))
+    tokenizer_bytes = (tmp_path / "tokenizer.json").read_bytes()
+
+    ollama_export.normalize_merged_tokenizer_config(tmp_path)
+
+    assert json.loads(config_path.read_text()) == {
+        **config, "tokenizer_class": "PreTrainedTokenizerFast"
+    }
+    assert (tmp_path / "tokenizer.json").read_bytes() == tokenizer_bytes
+    reloaded = AutoTokenizer.from_pretrained(tmp_path, local_files_only=True)
+    assert reloaded.encode("hello world<end>") == tokenizer.encode("hello world<end>")
+    assert reloaded.eos_token_id == tokenizer.eos_token_id
+    assert reloaded.chat_template == tokenizer.chat_template
+
+
+@pytest.mark.parametrize("tokenizer_class", ["PreTrainedTokenizerFast", "Qwen2Tokenizer", None])
+def test_normalize_merged_tokenizer_leaves_other_classes_unchanged(tmp_path, tokenizer_class):
+    config_path = tmp_path / "tokenizer_config.json"
+    original = json.dumps({"tokenizer_class": tokenizer_class})
+    config_path.write_text(original)
+
+    ollama_export.normalize_merged_tokenizer_config(tmp_path)
+
+    assert config_path.read_text() == original
+
+
+def test_normalize_merged_tokenizer_requires_fast_tokenizer_data(tmp_path):
+    config_path = tmp_path / "tokenizer_config.json"
+    original = json.dumps({"tokenizer_class": "TokenizersBackend"})
+    config_path.write_text(original)
+
+    with pytest.raises(FileNotFoundError, match="fast tokenizer data"):
+        ollama_export.normalize_merged_tokenizer_config(tmp_path)
+
+    assert config_path.read_text() == original
 
 
 def test_convert_hf_to_gguf_uses_llama_cpp_venv_python_by_default(tmp_path, monkeypatch):

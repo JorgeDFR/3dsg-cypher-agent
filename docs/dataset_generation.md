@@ -115,7 +115,7 @@ next seed has a different `scene_id`. For manual inspection, load one scene by
 identifier:
 
 ```bash
-docker/stack.sh main python scripts/load_3dsg_neo4j.py \
+docker/stack.sh main python scripts/graph/load_3dsg_neo4j.py \
   --data-config configs/data.yaml \
   --scene-id spot_demo
 ```
@@ -125,7 +125,7 @@ docker/stack.sh main python scripts/load_3dsg_neo4j.py \
 Extract values that can fill the configured question templates:
 
 ```bash
-docker/stack.sh main python scripts/extract_3dsg_values.py \
+docker/stack.sh main python scripts/graph/extract_3dsg_values.py \
   --data-config configs/data.yaml
 ```
 
@@ -137,7 +137,7 @@ commands select the latest version unless `--dataset-version` is supplied.
 Render the question templates from the extracted scene values:
 
 ```bash
-docker/stack.sh main python scripts/generate_3dsg_seed_templates.py \
+docker/stack.sh main python scripts/cypher/generate_3dsg_seed_templates.py \
   --data-config configs/data.yaml
 ```
 
@@ -153,7 +153,7 @@ type are recorded in [Controlled Cypher repair supervision](cypher_repair_superv
 Regenerate that analysis after changing Cypher templates with:
 
 ```bash
-python scripts/analyze_cypher_repair_templates.py
+python scripts/cypher/analyze_cypher_repair_templates.py
 ```
 
 ### 4. Prepare seed records
@@ -162,7 +162,7 @@ Validate and normalize the generated questions into the internal records used
 for teacher generation:
 
 ```bash
-docker/stack.sh main python scripts/prepare_dataset.py prepare-seeds \
+docker/stack.sh main python scripts/agents/prepare_dataset.py prepare-seeds \
   --data-config configs/data.yaml
 ```
 
@@ -185,14 +185,14 @@ For OpenRouter, add `OPENROUTER_API_KEY` to `docker/.env` and verify that the
 configured model is available:
 
 ```bash
-docker/stack.sh main python scripts/generate_traces.py preflight \
+docker/stack.sh main python scripts/agents/generate_traces.py preflight \
   --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
 Generate and validate OpenRouter traces:
 
 ```bash
-docker/stack.sh main python scripts/generate_traces.py generate \
+docker/stack.sh main python scripts/agents/generate_traces.py generate \
   --data-config configs/data.yaml \
   --teacher-config configs/teacher_gpt_oss_120b.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
@@ -201,7 +201,7 @@ docker/stack.sh main python scripts/generate_traces.py generate \
 Generate deterministic traces without an LLM teacher:
 
 ```bash
-docker/stack.sh main python scripts/generate_traces.py generate \
+docker/stack.sh main python scripts/agents/generate_traces.py generate \
   --data-config configs/data.yaml \
   --teacher-config configs/teacher_synthetic.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
@@ -287,7 +287,7 @@ The supported rendered interfaces are:
 Create the configured grouped splits:
 
 ```bash
-docker/stack.sh main python scripts/prepare_dataset.py split \
+docker/stack.sh main python scripts/agents/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native
 ```
@@ -317,7 +317,7 @@ To prune failed repair attempts and include rejected `invalid_answer_format`
 traces that are repairable by replacing only the final answer, use:
 
 ```bash
-docker/stack.sh main python scripts/prepare_dataset.py split \
+docker/stack.sh main python scripts/agents/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native \
   --optimize-student-traces
@@ -332,7 +332,7 @@ be enabled with `optimize_student_traces: true` in the data configuration.
 Use explicit selectors when a command must not use the latest artifacts:
 
 ```bash
-docker/stack.sh main python scripts/prepare_dataset.py split \
+docker/stack.sh main python scripts/agents/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --dataset-version 2026-09-08-T-12-05-47-Z
 ```

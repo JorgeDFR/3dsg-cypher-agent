@@ -67,7 +67,7 @@ Before a long run, inspect the exact text, tokenization, and supervised spans
 for a split record:
 
 ```bash
-docker/stack.sh main python scripts/inspect_training_dataset.py \
+docker/stack.sh main python scripts/training/inspect_training_dataset.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split train \
@@ -82,7 +82,7 @@ mode, or maximum sequence length.
 Start a new timestamped model version:
 
 ```bash
-docker/stack.sh main python scripts/train_agent_lora.py \
+docker/stack.sh main python scripts/training/train_agent_lora.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
@@ -90,7 +90,7 @@ docker/stack.sh main python scripts/train_agent_lora.py \
 To bind training to an exact dataset or choose a model-version identifier:
 
 ```bash
-docker/stack.sh main python scripts/train_agent_lora.py \
+docker/stack.sh main python scripts/training/train_agent_lora.py \
   --data-config configs/data.yaml \
   --dataset-version 2026-09-08-T-12-05-47-Z \
   --student-config configs/student_qwen3.5_4b.yaml \

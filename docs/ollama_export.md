@@ -34,7 +34,7 @@ its PyTorch, llama.cpp, and optional Ollama sections.
 Export the latest completed Qwen student model through every stage:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages all
@@ -48,7 +48,7 @@ completed version.
 Export the exact base checkpoint configured by the same student profile:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-baseline \
   --stages all \
@@ -73,7 +73,7 @@ path or resolved Hub snapshot directly.
 Run selected stages when earlier outputs are already available:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages quantize modelfile \
@@ -90,6 +90,12 @@ automated `demo-deploy` workflow enables this mode.
 
 The llama.cpp Python environment follows llama.cpp's own dependency pins. It
 can therefore use an older Transformers release than the project environment.
+Before converting a merged checkpoint, the exporter rewrites the generic
+`TokenizersBackend` class name to its backward-compatible alias,
+`PreTrainedTokenizerFast`, in `tokenizer_config.json`. This avoids the
+`Tokenizer class TokenizersBackend does not exist` error in Transformers 4
+without changing `tokenizer.json` or the original training checkpoint. The
+same normalization runs when retrying only the `convert` stage.
 For newer architectures such as Qwen3.5, `convert_hf_to_gguf.py` may be unable
 to instantiate `AutoConfig`. It then reads `config.json` directly. That
 fallback is expected when GGUF conversion continues successfully.
@@ -153,7 +159,7 @@ It accepts:
 For example, point the default Modelfile at BF16:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
@@ -167,7 +173,7 @@ Generate conventionally named Modelfiles for several existing GGUFs in one
 operation:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
@@ -180,29 +186,35 @@ This writes `Modelfile.bf16`, `Modelfile.q8_0`, and
 
 ## Register models in the project stack
 
-The automated deployment workflow exports BF16, Q8_0, and Q4_K_M, generates
+The automated deployment workflow exports the configured base GGUF and quantizations, generates
 their Modelfiles as one phase, starts Ollama and registers all variants as one
 phase, validates the challenge split, and updates the HTML report:
+
+`demo-deploy` uses `ollama_export.gguf_outtype` and `ollama_export.quantizations`
+from the selected student config for Modelfile generation, registration, and
+validation. For example, a BF16 export with only Q4_K_M configured registers and
+validates exactly those two variants. The step count adjusts to the variant list.
 
 ```bash
 docker/stack.sh demo-deploy
 ```
 
-Override its inputs with `DEPLOY_DATA_CONFIG`, `DEPLOY_STUDENT_CONFIG`, and
-`DEPLOY_MODEL_NAME`. Validation loads each scene represented by the selected
+Override its inputs with `DEMO_DATA_CONFIG` and `DEMO_STUDENT_CONFIG`. The
+exported/Ollama model prefix comes from `ollama_export.model_name` in the selected
+student config. Validation loads each scene represented by the selected
 split when needed.
 
 For manual comparisons, create a separate Modelfile for each GGUF:
 
 ```bash
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
   --modelfile-gguf bf16 \
   --modelfile-path outputs/ollama/qwen3.5-4b-finetune/Modelfile.bf16
 
-docker/stack.sh main python scripts/export_agent_ollama.py \
+docker/stack.sh main python scripts/training/export_agent_ollama.py \
   --student-config configs/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \

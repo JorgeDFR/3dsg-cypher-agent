@@ -9,7 +9,7 @@ targets it.
 Interactively add or update room classifications in a Spark DSG scene:
 
 ```bash
-docker/stack.sh main python scripts/edit_3dsg_room_labels.py \
+docker/stack.sh main python scripts/graph/edit_3dsg_room_labels.py \
   data/scenes/uhumans2_office.json \
   --output data/scenes/uhumans2_office.updated.json \
   --figure-output data/scenes/uhumans2_office_rooms.png

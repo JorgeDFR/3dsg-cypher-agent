@@ -87,7 +87,7 @@ correct scene into Neo4j as it moves between scene-specific seeds. A scene can
 also be loaded manually for inspection:
 
 ```bash
-docker/stack.sh main python scripts/load_3dsg_neo4j.py \
+docker/stack.sh main python scripts/graph/load_3dsg_neo4j.py \
   --data-config configs/data.yaml \
   --scene-id uhumans2_office
 ```
@@ -126,7 +126,7 @@ the student model and baseline and generate the HTML report. Each command can ru
 independently. Matching completed validations are skipped automatically. Changing
 the student model does not invalidate the baseline on the same dataset.
 
-After a student model has been trained, export and validate BF16, Q8_0, and Q4_K_M
+After a student model has been trained, export and validate its configured
 GGUF variants:
 
 ```bash

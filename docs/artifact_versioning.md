@@ -56,7 +56,7 @@ New reports use the flattened layout below.
 List available dataset and LoRA identifiers, and the selected dataset's teacher:
 
 ```bash
-docker/stack.sh main python scripts/list_artifact_versions.py \
+docker/stack.sh main python scripts/core/list_artifact_versions.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
@@ -116,11 +116,11 @@ For a checkout that still uses the former flat directories, preview the
 one-time migration:
 
 ```bash
-docker/stack.sh main python scripts/migrate_versioned_artifacts.py
+docker/stack.sh main python scripts/core/migrate_versioned_artifacts.py
 ```
 
 Apply it only after reviewing the proposed changes:
 
 ```bash
-docker/stack.sh main python scripts/migrate_versioned_artifacts.py --apply
+docker/stack.sh main python scripts/core/migrate_versioned_artifacts.py --apply
 ```

@@ -1112,3 +1112,39 @@ def test_scene_template_sample_renders_comma_separated_dictionaries():
         "{class: chair, point: {x: 1, y: 2, z: 3}}, "
         "{class: table, point: {x: 4, y: 5, z: 6}}"
     )
+
+
+def test_artifacts_deduplicate_paths_and_disambiguate_report_names(tmp_path):
+    scene = str(tmp_path / "scene.json")
+    data = {"artifacts": {
+        "scenes": {"office": {"scene": {"path": scene, "exists": True}}},
+        "scene": {"path": str(tmp_path / "subdir/../scene.json"), "exists": True},
+        "reports": [
+            {"path": str(tmp_path / "student/report.json"), "exists": True},
+            {"path": str(tmp_path / "baseline/report.json"), "exists": True},
+            {"path": str(tmp_path / "student/report.json"), "exists": True},
+        ],
+    }}
+
+    rows = workflow_report_module.artifact_rows(data)
+
+    assert len(rows) == 3
+    assert rows[0]["artifact"] == "scene:office:scene"
+    assert len({row["artifact"] for row in rows}) == 3
+    assert "student" in rows[1]["artifact"]
+    assert "baseline" in rows[2]["artifact"]
+
+
+def test_artifact_paths_are_plain_escaped_text_at_any_length():
+    long_path = "reports/" + "long-directory/" * 15 + "<report>.json"
+    data = {"artifacts": {"reports": [
+        {"path": long_path, "exists": True},
+        {"path": "short.json", "exists": False},
+    ]}}
+
+    html = workflow_report_module.render_artifacts(data)
+
+    assert "<pre>" not in html
+    assert "&lt;report&gt;.json" in html
+    assert "short.json" in html
+    assert "<report>" not in html

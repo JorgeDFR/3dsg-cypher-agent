@@ -1,9 +1,12 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-import _bootstrap  # noqa: F401
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _bootstrap  # noqa: E402, F401
 
 from cypher_3dsg_agent_distillation.core.config import (
     GENERATED_DATASETS_ROOT,

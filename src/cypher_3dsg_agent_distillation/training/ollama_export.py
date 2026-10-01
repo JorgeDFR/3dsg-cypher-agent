@@ -572,6 +572,23 @@ def remove_merged_model_dir(
         shutil.rmtree(path)
 
 
+def normalize_merged_tokenizer_config(model_dir: Path) -> None:
+    """Keep Transformers 5 exports readable by Transformers 4 converters."""
+    config_path = model_dir / "tokenizer_config.json"
+    if not config_path.is_file():
+        return
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config.get("tokenizer_class") != "TokenizersBackend":
+        return
+    # Both names describe the generic Rust tokenizer backend. The complete
+    # vocabulary, added tokens, and tokenization pipeline remain in tokenizer.json.
+    require_existing_file(model_dir / "tokenizer.json", "fast tokenizer data")
+    config["tokenizer_class"] = "PreTrainedTokenizerFast"
+    config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
 def convert_hf_to_gguf(
     settings: OllamaExportSettings,
     *,
@@ -594,6 +611,8 @@ def convert_hf_to_gguf(
             else "merged Hugging Face model directory"
         )
         require_existing_dir(source_dir, description)
+        if not settings.base_only:
+            normalize_merged_tokenizer_config(source_dir)
     script = resolve_convert_script(
         llama_cpp_dir=llama_cpp_dir,
         convert_script=convert_script,

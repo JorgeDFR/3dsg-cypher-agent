@@ -1112,6 +1112,8 @@ def render_cell(value: Any, key: str | None = None) -> str:
         )
     text = field_text(value, key)
     escaped = escape(text)
+    if key in {"path", "artifact"}:
+        return escaped
     if key in PRE_TABLE_KEYS or "\n" in text or len(text) > 120:
         return f"<pre>{escaped}</pre>"
     return escaped
@@ -2812,12 +2814,15 @@ def render_deploy_quantization_tab(data: dict[str, Any]) -> str:
     )
 
 
-def render_artifacts(data: dict[str, Any]) -> str:
+def artifact_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """List each file once, retaining the first (most specific) artifact label."""
     artifacts = data["artifacts"]
     rows = []
     for key, value in artifacts.items():
         if key == "reports":
-            rows.extend({"artifact": "report", **info} for info in value)
+            rows.extend(
+                {"artifact": f"report:{Path(info['path']).name}", **info} for info in value
+            )
         elif key == "splits":
             rows.extend({"artifact": f"split:{split}", **info} for split, info in value.items())
         elif key == "scenes":
@@ -2828,6 +2833,24 @@ def render_artifacts(data: dict[str, Any]) -> str:
                 )
         else:
             rows.append({"artifact": key, **value})
+    unique_rows = []
+    seen_paths = set()
+    for row in rows:
+        path = row.get("path")
+        if path:
+            canonical_path = (PROJECT_ROOT / path).resolve()
+            if canonical_path in seen_paths:
+                continue
+            seen_paths.add(canonical_path)
+        unique_rows.append(row)
+    names = Counter(row["artifact"] for row in unique_rows)
+    for row in unique_rows:
+        if names[row["artifact"]] > 1:
+            row["artifact"] = f"{row['artifact']}:{row['path']}"
+    return unique_rows
+
+
+def render_artifacts(data: dict[str, Any]) -> str:
     return render_table(
         [
             ("artifact", "artifact"),
@@ -2836,7 +2859,7 @@ def render_artifacts(data: dict[str, Any]) -> str:
             ("bytes", "bytes"),
             ("modified_at", "modified_at"),
         ],
-        rows,
+        artifact_rows(data),
     )
 
 

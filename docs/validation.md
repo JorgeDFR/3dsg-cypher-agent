@@ -35,7 +35,7 @@ upstream contents change under the same identifier.
 Evaluate stored traces from one split:
 
 ```bash
-docker/stack.sh main python scripts/evaluate_traces.py \
+docker/stack.sh main python scripts/agents/evaluate_traces.py \
   --data-config configs/data.yaml \
   --split train
 ```
@@ -50,7 +50,7 @@ matching, and PDDL grounding and goal validity where applicable.
 Compute held-out loss and perplexity for the fine-tuned model:
 
 ```bash
-docker/stack.sh main python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split all \
@@ -66,7 +66,7 @@ Eval-loss uses Transformers only. Its token labels default to
 Evaluate the fine-tuned model end to end:
 
 ```bash
-docker/stack.sh main python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split test \
@@ -77,7 +77,7 @@ docker/stack.sh main python scripts/evaluate_student.py \
 Evaluate the configured base model with the same split and generation settings:
 
 ```bash
-docker/stack.sh main python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split test \
@@ -108,7 +108,7 @@ the desired GGUF. Then start the optional service and evaluate it:
 docker/stack.sh ollama-up
 docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
 
-docker/stack.sh main python scripts/evaluate_student.py \
+docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml \
   --split challenge \

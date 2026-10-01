@@ -14,7 +14,7 @@ Use the latest dataset and latest completed model selected by the default
 configuration:
 
 ```bash
-docker/stack.sh main python scripts/generate_workflow_report.py \
+docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --data-config configs/data.yaml \
   --student-config configs/student_qwen3.5_4b.yaml
 ```
@@ -35,7 +35,7 @@ docker/stack.sh demo-deploy
 Use version selectors to reproduce a particular report:
 
 ```bash
-docker/stack.sh main python scripts/generate_workflow_report.py \
+docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --data-config configs/data.yaml \
   --dataset-version 2026-09-08-T-12-05-47-Z \
   --student-config configs/student_qwen3.5_4b.yaml \
@@ -95,6 +95,9 @@ Although the output is a single static file, embedded JavaScript supports:
 
 The report contains its styling and interaction code inline. It does not need a
 running project service after generation.
+
+The Artifacts tab lists each file once, identifies reports by filename (and path
+when filenames repeat), and displays paths as plain text.
 
 ## When to regenerate
 

@@ -153,7 +153,7 @@ sessions. Do not add credentials to tracked configuration files.
 Verify the configured teacher and account before generating traces:
 
 ```bash
-python scripts/generate_traces.py preflight \
+python scripts/agents/generate_traces.py preflight \
   --teacher-config configs/teacher_gpt_oss_120b.yaml
 ```
 
@@ -228,7 +228,7 @@ export ADT4_HERACLES_PORT=7683
 Load the default scene to verify the connection:
 
 ```bash
-python scripts/load_3dsg_neo4j.py \
+python scripts/graph/load_3dsg_neo4j.py \
   --scene data/scenes/uhumans2_office.json \
   --uri "$NEO4J_URI" \
   --username "$NEO4J_USERNAME" \
@@ -310,8 +310,8 @@ Check the package, command entry points, and development dependencies:
 
 ```bash
 python -c "import cypher_3dsg_agent_distillation"
-python scripts/train_agent_lora.py --help
-python scripts/export_agent_ollama.py --help
+python scripts/training/train_agent_lora.py --help
+python scripts/training/export_agent_ollama.py --help
 pytest
 ruff check .
 ```

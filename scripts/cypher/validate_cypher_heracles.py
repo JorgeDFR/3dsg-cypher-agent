@@ -1,9 +1,13 @@
+# ruff: noqa: E402
 import argparse
 import shutil
 import subprocess
+import sys
 import time
+from pathlib import Path
 
-import _bootstrap  # noqa: F401
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _bootstrap  # noqa: E402, F401
 from neo4j import GraphDatabase
 
 from cypher_3dsg_agent_distillation.core.config import load_yaml
