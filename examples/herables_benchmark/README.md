@@ -132,5 +132,5 @@ outputs/heracles_benchmark/example_dsg/model_sweep/report.html
 Run these from the repository root, prefixed with
 `examples/herables_benchmark/` as shown in earlier examples.
 
-The Ollama cache survives `down`. Neo4j and Ollama publish no host ports, so the
+Neo4j and Ollama publish no host ports, so the
 benchmark stack does not collide with the normal development stack.

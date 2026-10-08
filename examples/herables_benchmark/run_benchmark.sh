@@ -48,7 +48,7 @@ Commands:
   models                    Create enabled project models in benchmark Ollama.
   ollama COMMAND [ARGS...]  Run the Ollama CLI in the benchmark container.
   status                    Show benchmark service status.
-  down                      Stop the stack; the model cache is retained.
+  down                      Stop the stack
   config                    Validate and print the resolved Compose configuration.
 
 Options:
@@ -199,7 +199,7 @@ provision_models() {
 cleanup() {
   if ((CLEANED_UP == 0 && SERVICES_STARTED == 1 && KEEP_STACK == 0)); then
     CLEANED_UP=1
-    log "Stopping benchmark services; the Ollama cache is retained."
+    log "Stopping benchmark services."
     "${COMPOSE[@]}" down --remove-orphans || true
   fi
 }

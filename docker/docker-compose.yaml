@@ -60,9 +60,6 @@ services:
       start_period: 5s
     networks: [main_net]
     ports: [7683:7683, 7469:7469]
-    volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
     environment:
       NEO4J_server_bolt_listen__address: :7683
       NEO4J_server_bolt_advertised__address: :7683
@@ -82,7 +79,6 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - ollama-cache:/root/.ollama
       - ../outputs/ollama:/models:ro
     healthcheck:
       test: [CMD, ollama, list]
@@ -100,9 +96,3 @@ networks:
 volumes:
   huggingface-cache:
     name: 3dsg-cypher-agent-huggingface-cache
-  neo4j-data:
-    name: 3dsg-cypher-agent-neo4j-data
-  neo4j-logs:
-    name: 3dsg-cypher-agent-neo4j-logs
-  ollama-cache:
-    name: 3dsg-cypher-agent-ollama-cache

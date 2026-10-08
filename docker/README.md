@@ -12,7 +12,7 @@ validation, and GGUF export.
 | `ollama` | Optional inference service for project-split GGUF validation | No |
 
 The Ollama service is behind a Compose profile. Heracles Benchmark uses a
-separate stack, model cache, scene, questions, and metrics pipeline under
+separate stack, scene, questions, and metrics pipeline under
 `examples/herables_benchmark/`.
 
 ## Requirements
@@ -158,12 +158,7 @@ The main image provides CUDA-enabled PyTorch, installs project dependencies in
 `/home/user/workspace/llama.cpp`.
 
 The repository is bind-mounted into `main`, so generated outputs remain on the
-host. Compose preserves these named volumes across `down`:
-
-- `3dsg-cypher-agent-huggingface-cache`
-- `3dsg-cypher-agent-neo4j-data`
-- `3dsg-cypher-agent-neo4j-logs`
-- `3dsg-cypher-agent-ollama-cache` when Ollama is used
+host. Compose preserves the named volume `3dsg-cypher-agent-huggingface-cache` across `down`.
 
 ## Direct Compose inspection
 

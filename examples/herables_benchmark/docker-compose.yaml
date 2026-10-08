@@ -61,7 +61,6 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - ollama-cache:/root/.ollama
       - ../../outputs/ollama:/models:ro
     healthcheck:
       test: [CMD, ollama, list]
@@ -108,7 +107,3 @@ networks:
   benchmark_net:
     name: 3dsg-heracles-benchmark-net
     driver: bridge
-
-volumes:
-  ollama-cache:
-    name: 3dsg-heracles-benchmark-ollama-cache
