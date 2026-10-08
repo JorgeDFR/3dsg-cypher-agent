@@ -53,6 +53,39 @@ to use tool feedback without training it to reproduce the intentional error.
 The training split does not apply scene-specific ordering. The standard SFT
 sampler shuffles the prepared traces in every training epoch.
 
+### Loss implementation
+
+`training.loss_type` defaults to `chunked_nll` (including when explicitly set to
+`null`). TRL projects supervised tokens and computes cross-entropy in chunks,
+avoiding the full sequence-by-vocabulary logits tensor during training and
+trainer evaluation. This is independent of `loss_mode`, which selects the
+supervised tokens. The resolved loss type is recorded in `metadata.yaml` under
+`effective_training_arguments`.
+
+The training compatibility bridge reads `logits_scaling` from the model config
+(including nested `text_config`) and combines its reciprocal with TRL's existing
+`logit_scale` multiplier. This preserves divisive scaling such as Granite's
+division by 10 without model-name checks. TRL's softcapping remains in place.
+The temporary config adjustment is restored after trainer construction; native
+inference, standalone evaluation, and saved configs retain their original scaling.
+The bridge runs a tiny deterministic CPU calculation to check TRL's actual
+scaling behavior, without relying on source-code formatting. It skips the
+correction if TRL already applies the divisor, and fails with an actionable
+error for unsupported behavior rather than risking applying the divisor twice.
+
+For each new architecture or dependency upgrade, verify loss and gradient
+agreement with native loss on identical examples and masks. Config-based scaling
+does not cover every possible custom output transformation. Use explicit `nll`
+for architectures whose native behavior is not supported by the chunked path;
+it can require substantially more GPU memory. `dft` remains an explicit alternative
+objective whose training loss is not directly comparable to report NLL.
+
+Earlier Granite runs using TRL's `chunked_nll` omitted Granite's division of
+logits by `logits_scaling`, while report evaluation applied it. Their training
+losses are therefore not comparable to the native evaluation losses. This
+scaling correction fixes future runs; train a new adapter to use the corrected objective.
+Existing adapters and reports are not modified.
+
 `training.warmup_steps` accepts an integer number of optimizer steps or a float
 in `[0, 1)`. A value of `0.05` warms up for 5% of the total optimizer steps, so
 changes to the split size, batch size, gradient accumulation, or epoch count

@@ -29,6 +29,7 @@ from cypher_3dsg_agent_distillation.core.versioning import (
     serializable_arguments,
     split_fingerprints,
 )
+from cypher_3dsg_agent_distillation.training.chunked_loss import chunked_loss_scaling
 
 DEFAULT_LORA_TARGETS = [
     "q_proj",
@@ -783,6 +784,15 @@ def sft_config_kwargs(
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
     kwargs = training_arguments_kwargs(training_config, has_eval_dataset)
+    # Keep the memory-efficient path explicit rather than inheriting TRL defaults.
+    loss_type = training_config.get("loss_type")
+    if loss_type is None:
+        loss_type = "chunked_nll"
+    if loss_type not in ("nll", "chunked_nll", "dft"):
+        raise ValueError(
+            "training.loss_type must be one of: nll, chunked_nll, dft."
+        )
+    kwargs["loss_type"] = loss_type
     kwargs["max_length"] = int(training_config.get("max_length", 4096))
     dataset_kwargs = dict(training_config.get("dataset_kwargs") or {})
     dataset_kwargs["skip_prepare_dataset"] = True
@@ -990,18 +1000,19 @@ def command(args: argparse.Namespace) -> None:
     if stopping_callback is not None:
         callbacks.append(stopping_callback)
 
-    trainer = SFTTrainer(
-        **sft_trainer_kwargs(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            training_args=training_args,
-            peft_config=peft_config,
-            data_collator=data_collator,
-            callbacks=callbacks,
+    with chunked_loss_scaling(model, training_args.loss_type):
+        trainer = SFTTrainer(
+            **sft_trainer_kwargs(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                training_args=training_args,
+                peft_config=peft_config,
+                data_collator=data_collator,
+                callbacks=callbacks,
+            )
         )
-    )
     try:
         from transformers import PrinterCallback
 

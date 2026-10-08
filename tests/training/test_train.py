@@ -362,6 +362,33 @@ def test_sft_config_kwargs_uses_current_sft_config_fields():
     assert "max_seq_length" not in kwargs
 
 
+@pytest.mark.parametrize("loss_config", [{}, {"loss_type": None}])
+@pytest.mark.parametrize("has_eval_dataset", [True, False])
+def test_sft_config_kwargs_defaults_to_chunked_loss(loss_config, has_eval_dataset):
+    kwargs = sft_config_kwargs(
+        {"output_dir": "out", **loss_config}, has_eval_dataset=has_eval_dataset
+    )
+
+    assert kwargs["loss_type"] == "chunked_nll"
+
+
+@pytest.mark.parametrize("loss_type", ["nll", "chunked_nll", "dft"])
+def test_sft_config_kwargs_preserves_explicit_loss_choice(loss_type):
+    kwargs = sft_config_kwargs(
+        {"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True
+    )
+
+    assert kwargs["loss_type"] == loss_type
+
+
+@pytest.mark.parametrize("loss_type", ["", "auto", "unknown", False])
+def test_sft_config_kwargs_rejects_invalid_loss_type(loss_type):
+    with pytest.raises(ValueError, match=r"training\.loss_type"):
+        sft_config_kwargs(
+            {"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True
+        )
+
+
 def test_sft_config_kwargs_skips_trl_preparation_for_pretokenized_labels():
     kwargs = sft_config_kwargs(
         {"output_dir": "out", "max_length": 2048, "loss_mode": ASSISTANT_ONLY_LOSS_MODE},
