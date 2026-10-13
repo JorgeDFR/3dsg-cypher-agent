@@ -17,9 +17,7 @@ import spark_dsg
 ROOM_LABELSPACE_KEY = "_l4p0"
 OBJECT_LABELSPACE_KEYS = ("_l2p0", "_l3p1", "mesh")
 
-# A controlled vocabulary of common room and indoor-region names. Every entry is a
-# single lowercase token so downstream Cypher and PDDL generation never has to infer
-# how whitespace or punctuation should be normalized.
+# Canonical room and region types. Spaces are part of the semantic class name.
 ROOM_LABELS = (
     "alcove",
     "anteroom",
@@ -31,11 +29,13 @@ ROOM_LABELS = (
     "bar",
     "basement",
     "bathroom",
+    "beach",
     "bedroom",
-    "billiards",
+    "billiard room",
     "boardroom",
-    "boilerroom",
-    "breakroom",
+    "boiler room",
+    "break room",
+    "bridge",
     "cafeteria",
     "carport",
     "cellar",
@@ -44,69 +44,82 @@ ROOM_LABELS = (
     "cleanroom",
     "cloakroom",
     "closet",
-    "computerroom",
-    "conference",
-    "conferenceroom",
+    "computer room",
+    "conference room",
     "conservatory",
-    "controlroom",
+    "control room",
     "corridor",
     "courtroom",
     "courtyard",
     "darkroom",
     "deck",
     "den",
-    "diningroom",
+    "dining room",
     "dormitory",
+    "driveway",
     "elevator",
     "entryway",
-    "familyroom",
+    "family room",
+    "forest",
     "foyer",
     "gallery",
-    "gameroom",
+    "game room",
     "garage",
+    "garden",
     "greenhouse",
-    "gym",
     "gymnasium",
     "hallway",
     "kitchen",
-    "lab",
     "laboratory",
-    "laundry",
-    "laundryroom",
+    "laundry room",
+    "lawn",
     "library",
-    "livingroom",
+    "living room",
+    "loading dock",
     "lobby",
-    "lockerroom",
+    "locker room",
     "lounge",
-    "machineroom",
+    "machine room",
     "mailroom",
-    "meetingroom",
     "mezzanine",
     "mudroom",
     "nursery",
     "office",
-    "operatingroom",
+    "operating room",
+    "orchard",
     "pantry",
+    "park",
+    "parking lot",
     "parlor",
+    "patio",
+    "picnic area",
+    "playground",
     "playroom",
+    "plaza",
+    "pool area",
     "porch",
     "reception",
-    "restroom",
-    "serverroom",
+    "road",
+    "rooftop",
+    "seating area",
+    "server room",
     "showroom",
+    "sidewalk",
+    "sports field",
     "stairwell",
-    "storage",
+    "storage room",
     "studio",
     "study",
     "sunroom",
     "terrace",
     "theater",
-    "toilet",
-    "utility",
+    "trail",
+    "utility room",
     "vault",
+    "vegetation",
     "vestibule",
-    "waitingroom",
-    "washroom",
+    "waiting room",
+    "walkway",
     "workshop",
 )
 
@@ -226,12 +239,17 @@ def format_label_choices(labels: tuple[str, ...] = ROOM_LABELS, columns: int = 3
     return "\n".join(rows)
 
 
+def canonical_room_label(value: str, labels: tuple[str, ...] = ROOM_LABELS) -> str | None:
+    normalized = " ".join(value.lower().split())
+    return normalized if normalized in labels else None
+
+
 def parse_label_choice(value: str, labels: tuple[str, ...] = ROOM_LABELS) -> str | None:
-    normalized = value.strip().lower()
+    normalized = value.strip()
     if normalized.isdigit():
         index = int(normalized) - 1
         return labels[index] if 0 <= index < len(labels) else None
-    return normalized if normalized in labels else None
+    return canonical_room_label(normalized, labels)
 
 
 def format_object_counts(counts: Counter[str]) -> list[str]:
@@ -361,7 +379,7 @@ def prompt_for_room_labels(
         raise ValueError("The scene does not contain any rooms/regions.")
     room_labelspace = labelspace_mapping(graph, (ROOM_LABELSPACE_KEY,))
     choices = format_label_choices()
-    output_fn("Allowed single-word room labels:")
+    output_fn("Allowed room / outdoor region labels:")
     output_fn(choices)
     output_fn("Enter a label name or number. Enter '?' to show the list again; 'q' aborts.\n")
 
@@ -379,7 +397,7 @@ def prompt_for_room_labels(
             output_fn(line)
 
         while True:
-            default = current if current in ROOM_LABELS else None
+            default = canonical_room_label(current) if current else None
             default_hint = f" [Enter keeps '{default}']" if default else ""
             try:
                 response = input_fn(f"Label for {symbol}{default_hint}: ").strip()
@@ -418,7 +436,7 @@ def updated_labelspace_entries(
                 label_id = int(entry[0])
             except (TypeError, ValueError):
                 continue
-            label = str(entry[1]).strip().lower()
+            label = " ".join(str(entry[1]).lower().split())
             if not label or label_id in used_ids:
                 continue
             entries.append([label_id, label])

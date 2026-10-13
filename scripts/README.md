@@ -7,7 +7,7 @@ Scripts are grouped like `src/cypher_3dsg_agent_distillation`:
 | `agents/` | Prepare datasets, generate teacher traces, evaluate students and traces |
 | `core/` | List artifact versions and migrate versioned artifacts |
 | `cypher/` | Generate question templates, analyze repair templates, validate Cypher |
-| `graph/` | Extract scene values, edit room labels, load scenes into Neo4j |
+| `graph/` | Extract scene values, edit room labels, repair object-to-place edges, load scenes into Neo4j |
 | `reporting/` | Generate workflow reports and summarize validation |
 | `training/` | Train, inspect datasets, export to Ollama, and read deployment settings |
 
