@@ -17,21 +17,22 @@ include:
 
 | Profile | Base model | Fine-tuning method |
 | --- | --- | --- |
-| `configs/student_qwen3.5_4b.yaml` | `Qwen/Qwen3.5-4B` | LoRA |
-| `configs/student_granite4.1_3b.yaml` | `ibm-granite/granite-4.1-3b` | QLoRA |
+| `configs/students/student_qwen3.5_4b.yaml` | `Qwen/Qwen3.5-4B` | LoRA |
+| `configs/students/student_granite4.1_3b.yaml` | `ibm-granite/granite-4.1-3b` | QLoRA |
 
 `model.load_in_4bit: true` enables 4-bit loading for QLoRA. `false` keeps the
 base model at the configured `dtype` for LoRA.
 
 ## Configuration map
 
-Each `configs/student_*.yaml` file has four main sections:
+Each `configs/students/student_*.yaml` file has five main sections:
 
 | Section | Controls |
 | --- | --- |
 | `model` | Base model, tokenizer, dtype, remote code, and 4-bit loading |
 | `lora` | Rank, alpha, dropout, and target modules |
 | `training` | Output root, loss mode, sequence length, batches, optimizer schedule, checkpoints, and precision |
+| `inference` | Default thinking mode for student generation |
 | `ollama_export` | GGUF output type, quantizations, and Modelfile defaults |
 
 ### Loss modes
@@ -44,6 +45,11 @@ Each `configs/student_*.yaml` file has four main sections:
 `assistant-only` is the default. The tokenizer receives the split's native
 `run_cypher_query` JSON schema once through its chat template. The schema is not
 duplicated in each stored trace message.
+
+Set `training.include_reasoning: true` or pass `--include-reasoning` to supervise
+reasoning before tool calls and final answers. Use `--no-include-reasoning` for
+the paired baseline on the same split files. See [reasoning experiments](reasoning_traces.md)
+for sentence selection, matched retained UIDs, teacher pilots, and inference controls.
 
 Controlled-repair traces identify the initial mutated Cypher call and syntax
 error as context-only messages. Their token spans are masked in both loss modes.
@@ -102,7 +108,7 @@ for a split record:
 ```bash
 docker/stack.sh main python scripts/training/inspect_training_dataset.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --split train \
   --index 0
 ```
@@ -117,7 +123,7 @@ Start a new timestamped model version:
 ```bash
 docker/stack.sh main python scripts/training/train_agent_lora.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
+  --student-config configs/students/student_qwen3.5_4b.yaml
 ```
 
 To bind training to an exact dataset or choose a model-version identifier:
@@ -126,7 +132,7 @@ To bind training to an exact dataset or choose a model-version identifier:
 docker/stack.sh main python scripts/training/train_agent_lora.py \
   --data-config configs/data.yaml \
   --dataset-version 2026-09-08-T-12-05-47-Z \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-version 2026-09-08-T-13-00-00-Z
 ```
 
@@ -155,8 +161,8 @@ Database-backed stages load every configured scene when needed. Override inputs 
 | Variable | Default |
 | --- | --- |
 | `DEMO_DATA_CONFIG` | `configs/data.yaml` |
-| `DEMO_TEACHER_CONFIG` | `configs/teacher_synthetic.yaml` |
-| `DEMO_STUDENT_CONFIG` | `configs/student_qwen3.5_4b.yaml` |
+| `DEMO_TEACHER_CONFIG` | `configs/teachers/teacher_synthetic.yaml` |
+| `DEMO_STUDENT_CONFIG` | `configs/students/student_qwen3.5_4b.yaml` |
 
 ## Next steps
 

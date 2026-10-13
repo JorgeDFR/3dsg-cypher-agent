@@ -44,7 +44,7 @@ def main() -> None:
         description="List dataset and LoRA versions, including each dataset's teacher."
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
-    parser.add_argument("--student-config", default="configs/student_qwen3.5_4b.yaml")
+    parser.add_argument("--student-config", default="configs/students/student_qwen3.5_4b.yaml")
     parser.add_argument("--dataset-version", default=None)
     args = parser.parse_args()
 

@@ -208,6 +208,16 @@ def render_profile_messages(
     messages = []
     if prompt.system.strip():
         messages.append({"role": "system", "content": prompt.system.strip()})
+    if profile.reasoning_policy == "brief_intent":
+        guidance = (
+            "Provide brief reasoning before each tool call and before the final answer. "
+            "Mention only relevant schema choices, command semantics, error corrections, "
+            "and answer format. Keep reasoning separate from the answer tags and tool arguments."
+        )
+        if messages:
+            messages[0]["content"] += "\n" + guidance
+        else:
+            messages.append({"role": "system", "content": guidance})
     messages.extend(
         [
             {"role": "user", "content": section}

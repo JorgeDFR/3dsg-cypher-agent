@@ -150,12 +150,18 @@ export OPENROUTER_API_KEY=your-key
 Add the variable to a private shell environment file if it must persist across
 sessions. Do not add credentials to tracked configuration files.
 
-Verify the configured teacher and account before generating traces:
+Verify the configured teacher's availability before generating traces:
 
 ```bash
 python scripts/agents/generate_traces.py preflight \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml
+  --teacher-config configs/teachers/teacher_deepseek_v4_1_flash.yaml
 ```
+
+The preflight checks catalog declarations without generating tokens. To verify
+readable reasoning and answer correctness, run `generate_traces.py check` with one
+dataset conversation and live Neo4j. See
+[teacher capability checks](reasoning_traces.md#cheap-teacher-capability-checks)
+for request/budget limits, formatted metrics, and generated-answer inspection.
 
 ## 7. Install and configure Neo4j
 

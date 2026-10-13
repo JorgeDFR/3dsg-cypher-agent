@@ -317,8 +317,6 @@ def expected_output_blocks(record: dict[str, Any]) -> dict[str, Any]:
 def optimized_from_record(record: dict[str, Any], split: str) -> dict[str, Any] | None:
     metadata = record.get("metadata") or {}
     kinds = []
-    if metadata.get("student_optimized"):
-        kinds.append("pruned_failed_tool_attempts")
     if metadata.get("final_answer_repaired"):
         kinds.append("repaired_invalid_answer_format")
     if not kinds:
@@ -329,9 +327,7 @@ def optimized_from_record(record: dict[str, Any], split: str) -> dict[str, Any] 
         "task_type": task_type(record),
         "question": record.get("question"),
         "optimization_kinds": kinds,
-        "raw_tool_call_count": metadata.get("raw_tool_call_count")
-        or metadata.get("tool_call_count"),
-        "dropped_tool_call_count": metadata.get("dropped_tool_call_count"),
+        "tool_call_count": metadata.get("tool_call_count"),
         "source_trace_uid": metadata.get("source_trace_uid"),
         "source_rejection_reason": metadata.get("source_rejection_reason"),
     }
@@ -477,16 +473,10 @@ def split_question_detail(
     uid = str(record.get("uid") or "")
     info = optimized_lookup.get((uid, split)) or optimized_from_record(record, split) or {}
     kinds = optimization_kinds_from_info(info)
-    initial_tool_calls = (
-        info.get("raw_tool_call_count")
-        or metadata.get("raw_tool_call_count")
+    tool_calls = (
+        info.get("tool_call_count")
         or metadata.get("tool_call_count")
         or count_tool_calls(record)
-    )
-    dropped_tool_calls = (
-        info.get("dropped_tool_call_count")
-        or metadata.get("dropped_tool_call_count")
-        or 0
     )
     return {
         "title": "Split Question Details",
@@ -495,8 +485,7 @@ def split_question_detail(
         }
         | {
             "optimization_type": kinds or ["none"],
-            "initial_tool_calls": initial_tool_calls,
-            "tool_calls_dropped": dropped_tool_calls,
+            "tool_calls": tool_calls,
         },
         "blocks": {
             "question": record.get("question"),
@@ -3503,7 +3492,7 @@ def main() -> None:
     parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
         help="Optional student config used to show training settings and trainer state.",
     )
     parser.add_argument("--model-version", default=None)

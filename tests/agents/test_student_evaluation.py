@@ -696,6 +696,8 @@ def test_generation_debug_report_captures_exact_prompt_and_completion_only():
         "raw_completion",
         "structured_tool_calls",
         "provider_metadata",
+        "reasoning",
+        "reasoning_status",
     }
 
 

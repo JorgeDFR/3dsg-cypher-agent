@@ -1067,7 +1067,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
     )
     parser.add_argument(
         "--model-version",

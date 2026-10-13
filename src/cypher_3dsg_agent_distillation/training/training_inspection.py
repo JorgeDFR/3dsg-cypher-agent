@@ -8,7 +8,6 @@ from cypher_3dsg_agent_distillation.core.config import load_data_config, load_ya
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.training.train import (
     ASSISTANT_ONLY_LOSS_MODE,
-    FULL_LOSS_MODE,
     IGNORE_INDEX,
     SUPPORTED_LOSS_MODES,
     active_label_count,
@@ -16,7 +15,7 @@ from cypher_3dsg_agent_distillation.training.train import (
     load_tokenizer,
     normalize_chat_messages,
     normalize_loss_mode,
-    to_chat_text,
+    rendered_record_text,
 )
 
 
@@ -101,19 +100,17 @@ def inspect_record(
     loss_mode: str,
     max_length: int,
     max_chars: int,
+    include_reasoning: bool = False,
 ) -> dict[str, Any]:
     loss_mode = normalize_loss_mode(loss_mode)
     messages = normalize_chat_messages(record.get("messages", []))
-    rendered_text = (
-        str(record["text"])
-        if loss_mode == FULL_LOSS_MODE and record.get("text")
-        else to_chat_text(tokenizer, messages)
-    )
+    rendered_text = rendered_record_text(record, tokenizer, include_reasoning=include_reasoning)
     example = build_training_example(
         record,
         tokenizer,
         loss_mode=loss_mode,
         max_length=max_length,
+        include_reasoning=include_reasoning,
     )
     supervised_tokens = active_label_count(example["labels"])
     return {
@@ -122,6 +119,7 @@ def inspect_record(
         "task_type": record.get("task_type") or record.get("query_type"),
         "render_view": record.get("render_view"),
         "loss_mode": loss_mode,
+        "include_reasoning": include_reasoning,
         "max_length": max_length,
         "total_tokens": len(example["input_ids"]),
         "supervised_tokens": supervised_tokens,
@@ -192,6 +190,9 @@ def command(args: argparse.Namespace) -> None:
         loss_mode=loss_mode,
         max_length=max_length,
         max_chars=args.max_chars,
+        include_reasoning=(getattr(args, "include_reasoning", None)
+                           if getattr(args, "include_reasoning", None) is not None
+                           else bool(student_config["training"].get("include_reasoning", False))),
     )
     if args.format == "json":
         print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -207,7 +208,7 @@ def main() -> None:
     parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
     )
     parser.add_argument(
         "--split",
@@ -227,6 +228,7 @@ def main() -> None:
         default=ASSISTANT_ONLY_LOSS_MODE,
     )
     parser.add_argument("--max-length", type=int, default=None)
+    parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--max-chars", type=int, default=8000)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args()

@@ -5,3 +5,11 @@ max_tokens: 2048
 timeout: 120
 traces_per_seed: 1
 max_tool_calls: 3
+reasoning:
+  enabled: true
+routing:
+  require_parameters: true
+  max_price:
+    prompt: 0.15
+    completion: 0.60
+#max_cost_usd: 1.0

@@ -10,6 +10,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+from cypher_3dsg_agent_distillation.agents.reasoning import (
+    reasoning_text,
+    split_generated_reasoning,
+    student_messages,
+    training_template,
+)
 from cypher_3dsg_agent_distillation.agents.student_model import (
     load_student_model_and_tokenizer,
     model_input_device,
@@ -36,7 +42,6 @@ GENERATION_CONFIG_REPORT_KEYS = (
     "pad_token_id",
 )
 
-THINK_END_RE = re.compile(r"</think>", flags=re.IGNORECASE)
 LEADING_ASSISTANT_TURN_RE = re.compile(
     r"^\s*<\|im_start\|>assistant\s*",
     flags=re.IGNORECASE,
@@ -57,9 +62,7 @@ def jsonable(value: Any) -> Any:
 
 def clean_generated_text(text: str) -> str:
     cleaned = LEADING_ASSISTANT_TURN_RE.sub("", text).strip()
-    think_matches = list(THINK_END_RE.finditer(cleaned))
-    if think_matches:
-        cleaned = cleaned[think_matches[-1].end() :].lstrip()
+    cleaned, _reasoning, _status = split_generated_reasoning(cleaned)
     terminator = CHAT_TERMINATOR_RE.search(cleaned)
     if terminator:
         cleaned = cleaned[: terminator.start()]
@@ -81,6 +84,8 @@ class GenerationResult:
     token_budget: int | None
     tool_calls: tuple[dict[str, Any], ...] = ()
     provider_metadata: dict[str, Any] = field(default_factory=dict)
+    reasoning: str = ""
+    reasoning_status: str = "absent"
 
 
 class RawGenerationRuntime(Protocol):
@@ -117,23 +122,33 @@ def render_messages_for_generation(
         normalize_chat_messages,
     )
 
-    messages = normalize_chat_messages(messages)
+    messages = student_messages(
+        normalize_chat_messages(messages), tokenizer,
+        include_reasoning=bool(enable_thinking),
+    )
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
         kwargs = {"tokenize": False, "add_generation_prompt": True}
         if tools is not None:
             kwargs["tools"] = tools
         if enable_thinking is not None:
             kwargs["enable_thinking"] = enable_thinking
+        template = training_template(tokenizer, include_reasoning=bool(enable_thinking))
+        if template is not None:
+            kwargs["chat_template"] = template
         try:
-            return tokenizer.apply_chat_template(messages, **kwargs)
+            prompt = tokenizer.apply_chat_template(messages, **kwargs)
         except TypeError:
             if "enable_thinking" not in kwargs:
                 raise
             kwargs.pop("enable_thinking")
-            return tokenizer.apply_chat_template(messages, **kwargs)
+            prompt = tokenizer.apply_chat_template(messages, **kwargs)
+        if enable_thinking and "reasoning_content" not in str(tokenizer.chat_template):
+            prompt += "<think>\n"
+        return prompt
 
     prompt = "\n\n".join(message_to_plain_text(message) for message in messages)
-    return f"{prompt}\n\nassistant:" if prompt else "assistant:"
+    rendered = f"{prompt}\n\nassistant:" if prompt else "assistant:"
+    return rendered + "\n<think>\n" if enable_thinking else rendered
 
 
 def generation_length_kwargs(max_new_tokens: int | None) -> dict[str, Any]:
@@ -251,14 +266,19 @@ class TransformersRawGenerationRuntime:
         if progress is not None and progress_task_id is not None:
             progress.update(progress_task_id, completed=generated_tokens)
         raw_text = self.tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
+        action, reasoning, reasoning_status = split_generated_reasoning(
+            raw_text, thinking_started=prompt.rstrip().endswith("<think>"),
+        )
         result = GenerationResult(
-            text=clean_generated_text(raw_text),
+            text=clean_generated_text(action),
             raw_text=raw_text,
             prompt=prompt,
             prompt_tokens=int(input_length),
             generated_tokens=generated_tokens,
             max_new_tokens=max_new_tokens,
             token_budget=token_budget,
+            reasoning=reasoning,
+            reasoning_status=reasoning_status,
         )
         del generated_ids, generated, encoded
         return result
@@ -293,7 +313,9 @@ def ollama_host(value: str | None = None) -> str:
     return (value or os.environ.get("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST).rstrip("/")
 
 
-def ollama_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def ollama_messages(
+    messages: list[dict[str, Any]], *, include_reasoning: bool = False,
+) -> list[dict[str, Any]]:
     from cypher_3dsg_agent_distillation.agents.openrouter_teacher import (
         normalize_tool_call_arguments,
     )
@@ -314,6 +336,10 @@ def ollama_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             payload["tool_name"] = str(message["tool_name"])
         if message.get("tool_call_id"):
             payload["tool_call_id"] = str(message["tool_call_id"])
+        if include_reasoning and message.get("role") == "assistant":
+            thinking, _kind = reasoning_text(message)
+            if thinking:
+                payload["thinking"] = thinking
         outbound.append(payload)
     return outbound
 
@@ -420,7 +446,7 @@ class OllamaRawGenerationRuntime:
             options["num_predict"] = max_new_tokens
         if self.context_length is not None:
             options["num_ctx"] = self.context_length
-        outbound_messages = ollama_messages(messages)
+        outbound_messages = ollama_messages(messages, include_reasoning=enable_thinking)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": outbound_messages,
@@ -446,6 +472,10 @@ class OllamaRawGenerationRuntime:
         if not isinstance(message, dict):
             raise RuntimeError("Ollama chat response did not contain a message object.")
         content = str(message.get("content") or "")
+        action, inline_reasoning, reasoning_status = split_generated_reasoning(content)
+        reasoning = str(message.get("thinking") or inline_reasoning)
+        if message.get("thinking"):
+            reasoning_status = "complete" if action or message.get("tool_calls") else "incomplete"
         raw_tool_calls = message.get("tool_calls") or []
         if not isinstance(raw_tool_calls, list):
             raise RuntimeError("Ollama chat response contained invalid tool_calls.")
@@ -456,11 +486,13 @@ class OllamaRawGenerationRuntime:
         if progress is not None and progress_task_id is not None:
             progress.update(progress_task_id, completed=generated_tokens)
         raw_text = content.strip()
+        if message.get("thinking"):
+            raw_text = f"<think>\n{reasoning}\n</think>\n\n{raw_text}"
         if tool_calls:
             structured_text = json.dumps({"tool_calls": tool_calls}, ensure_ascii=False)
             raw_text = f"{raw_text}\n{structured_text}".strip()
         return GenerationResult(
-            text=clean_generated_text(content),
+            text=clean_generated_text(action),
             raw_text=raw_text,
             prompt=json.dumps(
                 {"messages": outbound_messages, "tools": tools or []},
@@ -471,6 +503,8 @@ class OllamaRawGenerationRuntime:
             max_new_tokens=max_new_tokens,
             token_budget=max_new_tokens,
             tool_calls=tool_calls,
+            reasoning=reasoning,
+            reasoning_status=reasoning_status,
             provider_metadata={
                 key: response.get(key)
                 for key in (

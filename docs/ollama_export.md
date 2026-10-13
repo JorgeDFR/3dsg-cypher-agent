@@ -35,7 +35,7 @@ Export the latest completed Qwen student model through every stage:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages all
 ```
@@ -49,7 +49,7 @@ Export the exact base checkpoint configured by the same student profile:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-baseline \
   --stages all \
   --base-only
@@ -74,7 +74,7 @@ Run selected stages when earlier outputs are already available:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages quantize modelfile \
   --quantizations Q4_K_M Q8_0
@@ -132,7 +132,7 @@ replacement and lineage rules in
 
 ## Student export configuration
 
-The `ollama_export` section of each `configs/student_*.yaml` profile controls:
+The `ollama_export` section of each `configs/students/student_*.yaml` profile controls:
 
 | Key | Purpose |
 | --- | --- |
@@ -160,7 +160,7 @@ For example, point the default Modelfile at BF16:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
   --modelfile-gguf bf16
@@ -174,7 +174,7 @@ operation:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
   --modelfile-variants bf16 Q8_0 Q4_K_M \
@@ -208,14 +208,14 @@ For manual comparisons, create a separate Modelfile for each GGUF:
 
 ```bash
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
   --modelfile-gguf bf16 \
   --modelfile-path outputs/ollama/qwen3.5-4b-finetune/Modelfile.bf16
 
 docker/stack.sh main python scripts/training/export_agent_ollama.py \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-name qwen3.5-4b-finetune \
   --stages modelfile \
   --modelfile-gguf Q4_K_M \

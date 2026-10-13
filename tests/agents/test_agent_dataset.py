@@ -10,9 +10,6 @@ from cypher_3dsg_agent_distillation.agents.agent_dataset import (
     cap_by_task_type,
     consolidate_cross_task_cypher,
     grouped_split_records,
-    optimize_student_trace,
-    optimize_student_traces,
-    optimize_student_traces_with_counts,
     read_student_trace_records,
     read_student_trace_records_with_counts,
     repair_rejected_invalid_answer_trace,
@@ -67,9 +64,7 @@ def test_scene_aware_split_option_reports_not_implemented(monkeypatch, capsys):
         )
     )
 
-    assert capsys.readouterr().out.strip() == (
-        "Scene-aware splitting is not implemented yet."
-    )
+    assert capsys.readouterr().out.strip() == ("Scene-aware splitting is not implemented yet.")
 
 
 def rejected_invalid_answer_trace(*, two_tool_calls: bool = False, **overrides):
@@ -332,15 +327,12 @@ def test_grouped_split_balances_pddl_types_that_share_cypher_queries():
         "pddl_visit_object_symbol": 2,
         "pddl_end_at_object_symbol": 2,
     }
-    assert_no_split_leakage(
-        {"train": train, "eval": eval_records, "test": test}
-    )
+    assert_no_split_leakage({"train": train, "eval": eval_records, "test": test})
 
 
 def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test():
     records = [
-        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n")
-        for index in range(4)
+        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n") for index in range(4)
     ]
 
     with pytest.warns(UserWarning, match="low-count task remains represented"):
@@ -357,8 +349,7 @@ def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test()
 
 def test_grouped_split_can_suppress_leakage_warnings(recwarn):
     records = [
-        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n")
-        for index in range(4)
+        make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n") for index in range(4)
     ]
 
     train, eval_records, test, _challenge = grouped_split_records(
@@ -393,173 +384,20 @@ def test_grouped_split_breaks_minimum_groups_to_reach_exact_per_type_counts():
     assert [len(train), len(eval_records), len(test)] == [40, 5, 5]
 
 
-def test_optimize_student_trace_leaves_one_tool_trace_unchanged():
-    record = make_record("one", "count", "MATCH (n) RETURN count(n) AS count")
-
-    optimized = optimize_student_trace(record)
-
-    assert optimized is record
-
-
-def test_optimize_student_trace_preserves_controlled_repair_context():
-    record = AgentTraceRecord.model_validate(
-        answerable_trace(
-            metadata={
-                "controlled_repair": True,
-                "tool_call_count": 2,
-                "successful_tool_call_index": 2,
-            }
-        )
-    )
-
-    assert optimize_student_trace(record) is record
-
-
-def test_optimize_student_trace_prunes_failed_tool_attempts():
-    record = AgentTraceRecord.model_validate(
-        answerable_trace(
-            uid="multi",
-            messages=[
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "question"},
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "function": {
-                                "name": "run_cypher_query",
-                                "arguments": {"cypher_string": "MATCH (o:Object) DELETE o"},
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "tool_name": "run_cypher_query",
-                    "content": '{"ok": false}',
-                },
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_2",
-                            "function": {
-                                "name": "run_cypher_query",
-                                "arguments": {
-                                    "cypher_string": (
-                                        "MATCH (o:Object) RETURN count(o) AS count"
-                                    )
-                                },
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_2",
-                    "tool_name": "run_cypher_query",
-                    "content": '{"ok": true, "rows": [{"count": 3}]}',
-                },
-                {"role": "assistant", "content": "<answer>3</answer>"},
-            ],
-            metadata={
-                "tool_call_count": 2,
-                "successful_tool_call_index": 2,
-            },
-            gold_cypher="MATCH (o:Object) RETURN count(o) AS count",
-        )
-    )
-
-    optimized = optimize_student_trace(record)
-
-    assert optimized is not record
-    assert len(optimized.messages) == 5
-    optimized_cypher = optimized.tool_calls[0].function.arguments["cypher_string"]
-    assert optimized_cypher.startswith("MATCH (o:Object)")
-    assert optimized.metadata["student_optimized"]
-    assert optimized.metadata["raw_tool_call_count"] == 2
-    assert optimized.metadata["dropped_tool_call_count"] == 1
-    assert optimized.split_group == record.split_group
-
-
-def test_optimize_student_traces_with_counts_reports_pruned_attempts():
-    record = AgentTraceRecord.model_validate(
-        answerable_trace(
-            uid="multi",
-            messages=[
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "question"},
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "function": {
-                                "name": "run_cypher_query",
-                                "arguments": {"cypher_string": "MATCH broken"},
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "tool_name": "run_cypher_query",
-                    "content": '{"ok": false}',
-                },
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call_2",
-                            "function": {
-                                "name": "run_cypher_query",
-                                "arguments": {
-                                    "cypher_string": (
-                                        "MATCH (o:Object) RETURN count(o) AS count"
-                                    )
-                                },
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_2",
-                    "tool_name": "run_cypher_query",
-                    "content": '{"ok": true, "rows": [{"count": 3}]}',
-                },
-                {"role": "assistant", "content": "<answer>3</answer>"},
-            ],
-            metadata={
-                "tool_call_count": 2,
-                "successful_tool_call_index": 2,
-            },
-            gold_cypher="MATCH (o:Object) RETURN count(o) AS count",
-        )
-    )
-
-    optimized, counts = optimize_student_traces_with_counts([record])
-
-    assert optimized[0].metadata["student_optimized"]
-    assert counts["pruned_failed_tool_attempts"] == 1
-    assert counts["dropped_tool_calls"] == 1
-
-
-def test_optimize_student_trace_keeps_incomplete_trace_unpruned():
-    record = AgentTraceRecord.model_validate(
-        answerable_trace(
-            metadata={
-                "tool_call_count": 2,
-                "successful_tool_call_index": 2,
-                "incomplete_conversation": True,
-            },
-        )
-    )
-
-    assert optimize_student_trace(record) is record
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reasoning", "This malformed answer is the right format."),
+        ("reasoning_content", "Use this answer."),
+        ("reasoning_details", [{"type": "reasoning.encrypted", "data": "opaque"}]),
+        ("content", "<think>Use this answer.</think><answer>{O1}</answer>"),
+        ("content", "<think>Unfinished reasoning"),
+    ],
+)
+def test_answer_replacement_does_not_salvage_potentially_inconsistent_reasoning(field, value):
+    rejected = rejected_invalid_answer_trace()
+    rejected["messages"][-1][field] = value
+    assert repair_rejected_invalid_answer_trace(rejected) is None
 
 
 def test_repair_rejected_invalid_answer_trace_replaces_only_final_answer():
@@ -579,12 +417,16 @@ def test_repair_rejected_invalid_answer_trace_replaces_only_final_answer():
 
 
 def test_repair_rejected_invalid_answer_trace_requires_verified_cypher_solution():
-    assert repair_rejected_invalid_answer_trace(
-        rejected_invalid_answer_trace(reason="solution_mismatch")
-    ) is None
-    assert repair_rejected_invalid_answer_trace(
-        rejected_invalid_answer_trace(cypher_solution="O2")
-    ) is None
+    assert (
+        repair_rejected_invalid_answer_trace(
+            rejected_invalid_answer_trace(reason="solution_mismatch")
+        )
+        is None
+    )
+    assert (
+        repair_rejected_invalid_answer_trace(rejected_invalid_answer_trace(cypher_solution="O2"))
+        is None
+    )
 
 
 def test_student_trace_reader_can_include_repaired_invalid_answer_rejections(tmp_path):
@@ -605,7 +447,6 @@ def test_student_trace_reader_can_include_repaired_invalid_answer_rejections(tmp
         config,
         include_repaired_rejected=True,
     )
-    optimized = optimize_student_traces(with_repaired)
 
     assert [record.uid for record in accepted_only] == ["accepted"]
     assert source_counts["accepted_teacher_traces"] == 1
@@ -616,11 +457,11 @@ def test_student_trace_reader_can_include_repaired_invalid_answer_rejections(tmp
         "accepted",
         "rejected_teacher_repaired",
     }
-    repaired = next(record for record in optimized if record.uid == "rejected_teacher_repaired")
-    assert len(repaired.messages) == 4
-    assert repaired.tool_calls[0].function.arguments["cypher_string"].startswith("MATCH (o:Object)")
+    repaired = next(record for record in with_repaired if record.uid == "rejected_teacher_repaired")
+    assert len(repaired.messages) == 6
+    assert repaired.tool_calls[0].function.arguments["cypher_string"] == "MATCH broken"
+    assert repaired.tool_calls[1].function.arguments["cypher_string"].startswith("MATCH (o:Object)")
     assert repaired.final_answer_text == "<answer>O1</answer>"
-    assert repaired.metadata["student_optimized"]
 
 
 def test_split_report_lines_include_split_sizes_and_optimization_counts():
@@ -638,12 +479,6 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
                 "repaired_invalid_answer_format": 1,
             }
         ),
-        optimization_counts=Counter(
-            {
-                "pruned_failed_tool_attempts": 2,
-                "dropped_tool_calls": 3,
-            }
-        ),
         cap_dropped_counts=Counter({"count": 1}),
         split_records={
             "train": train,
@@ -657,14 +492,13 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
             "test": "test.jsonl",
             "challenge": "challenge.jsonl",
         },
-        optimize_enabled=True,
+        repair_answers=True,
     )
     text = "\n".join(lines)
 
     assert "accepted teacher traces loaded: 2" in text
     assert "rejected traces scanned: 3 (invalid_answer_format=2)" in text
     assert "final answer repairs from invalid_answer_format rejects: 1" in text
-    assert "pruned failed tool attempts: 2 traces, 3 tool calls dropped" in text
     assert "dropped by max_per_task_type: count=1" in text
     assert "train: 1 traces -> train.jsonl" in text
     assert "test: 0 traces -> test.jsonl" in text
@@ -678,9 +512,8 @@ def test_split_report_payload_lists_optimized_questions():
             uid="optimized",
             task_type="object_count",
             metadata={
-                "student_optimized": True,
-                "raw_tool_call_count": 2,
-                "dropped_tool_call_count": 1,
+                "final_answer_repaired": True,
+                "tool_call_count": 2,
                 "source_trace_uid": "teacher-one",
             },
         )
@@ -696,7 +529,6 @@ def test_split_report_payload_lists_optimized_questions():
         },
         render_view="ollama_native",
         source_counts=Counter({"accepted_teacher_traces": 1}),
-        optimization_counts=Counter({"pruned_failed_tool_attempts": 1}),
         cap_dropped_counts=Counter(),
         split_records={
             "train": [record],
@@ -710,10 +542,10 @@ def test_split_report_payload_lists_optimized_questions():
             "test": "test.jsonl",
             "challenge": "challenge.jsonl",
         },
-        optimize_enabled=True,
+        repair_answers=True,
     )
 
-    assert report["metadata"]["optimize_student_traces"] is True
+    assert report["metadata"]["repair_invalid_final_answers"] is True
     assert report["splits"]["train"]["optimized_questions"] == 1
     assert report["splits"]["train"]["scene_counts"] == {"scene": 1}
     assert report["splits"]["train"]["scene_runs"] == 1
@@ -721,20 +553,18 @@ def test_split_report_payload_lists_optimized_questions():
         {
             "uid": "optimized",
             "scene_id": "scene",
-                "split": "train",
-                "task_type": "object_count",
-                "task_family": "cypher_qa",
-                "output_type": "SLDP",
-                "question": "How many chairs?",
+            "split": "train",
+            "task_type": "object_count",
+            "task_family": "cypher_qa",
+            "output_type": "SLDP",
+            "question": "How many chairs?",
             "split_group": record.split_group,
             "gold_cypher": "MATCH (o:Object) RETURN count(o) AS count",
             "expected_solution": 3,
             "final_answer": None,
-            "optimization_kinds": ["pruned_failed_tool_attempts"],
-            "student_optimized": True,
-            "final_answer_repaired": False,
-            "raw_tool_call_count": 2,
-            "dropped_tool_call_count": 1,
+            "optimization_kinds": ["repaired_invalid_answer_format"],
+            "final_answer_repaired": True,
+            "tool_call_count": 2,
             "successful_tool_call_index": None,
             "seed_uid": None,
             "source_trace_uid": "teacher-one",

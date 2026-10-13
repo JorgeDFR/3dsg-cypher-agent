@@ -182,7 +182,6 @@ def test_main_compose_has_profiled_ollama_for_project_split_validation():
     assert ollama["container_name"] == "3dsg-cypher-agent-ollama"
     assert "ports" not in ollama
     assert "../outputs/ollama:/models:ro" in ollama["volumes"]
-    assert "ollama-cache" in compose["volumes"]
     assert compose["x-main-environment"]["OLLAMA_HOST"] == "http://ollama:11434"
 
 

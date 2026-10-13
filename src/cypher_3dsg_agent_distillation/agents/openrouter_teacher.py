@@ -5,9 +5,16 @@ import json
 import math
 import os
 import re
+import time
+import warnings
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from openrouter import OpenRouter
 from openrouter import errors as openrouter_errors
@@ -35,6 +42,22 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
     load_experiment_profiles_from_config,
     render_profile_messages,
 )
+from cypher_3dsg_agent_distillation.agents.reasoning import (
+    normalize_reasoning,
+    trace_reasoning_coverage,
+    without_controlled_repair,
+    without_reasoning,
+)
+from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
+    add_synthetic_reasoning,
+    sentence_cap,
+)
+from cypher_3dsg_agent_distillation.agents.teacher_pilot import (
+    TeacherRunJournal,
+    attempt_payload,
+    pilot_report,
+    select_pilot_seeds,
+)
 from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
@@ -57,6 +80,7 @@ from cypher_3dsg_agent_distillation.core.versioning import (
     file_fingerprint,
     git_provenance,
     iso_now,
+    mapping_fingerprint,
     serializable_arguments,
 )
 from cypher_3dsg_agent_distillation.cypher.evaluation import (
@@ -94,6 +118,10 @@ class TraceDecision:
     payload: dict[str, Any]
 
 
+class TeacherBudgetExceeded(RuntimeError):
+    """Stop before another request would exceed the reserved API budget."""
+
+
 class OpenRouterTeacherClient:
     def __init__(
         self,
@@ -104,6 +132,11 @@ class OpenRouterTeacherClient:
         temperature: float = 0.2,
         max_tokens: int = 2048,
         sdk_client: Any | None = None,
+        reasoning: dict[str, Any] | None = None,
+        provider: dict[str, Any] | None = None,
+        max_cost_usd: float | None = None,
+        on_response: Callable[[dict[str, Any]], None] | None = None,
+        request_sender: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         self.model = model
@@ -112,6 +145,31 @@ class OpenRouterTeacherClient:
         self.max_tokens = max_tokens
         self._sdk_client = sdk_client
         self._owns_sdk_client = sdk_client is None
+        self.reasoning = dict(reasoning or {})
+        if "exclude" in self.reasoning:
+            raise ValueError("reasoning.exclude was removed; use reasoning.enabled instead.")
+        if not isinstance(self.reasoning.get("enabled", False), bool):
+            raise ValueError("reasoning.enabled must be a boolean.")
+        if (
+            self.reasoning.get("effort") is not None
+            and self.reasoning.get("max_tokens") is not None
+        ):
+            raise ValueError("Set reasoning.effort or reasoning.max_tokens, not both.")
+        self.include_reasoning = self.reasoning.get("enabled", False)
+        self.provider = provider
+        self.max_cost_usd = max_cost_usd
+        self.on_response = on_response
+        self.request_sender = request_sender
+        self.requests: list[dict[str, Any]] = []
+        self.model_info: dict[str, Any] = {}
+        self.last_response: dict[str, Any] = {}
+        self.journal = None
+        self.attempt_id = ""
+        self.request_index = 0
+        if max_cost_usd is not None and (not math.isfinite(max_cost_usd) or max_cost_usd <= 0):
+            raise ValueError("max_cost_usd must be finite and greater than zero.")
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be greater than zero.")
 
     @property
     def timeout_ms(self) -> int:
@@ -143,20 +201,99 @@ class OpenRouterTeacherClient:
 
     def preflight(self) -> None:
         try:
-            response = self._sdk().models.list(
-                q=self.model,
-                limit=1000,
-                timeout_ms=self.timeout_ms,
-            )
+            if self._sdk_client is not None and not self._owns_sdk_client:
+                response = self._sdk().models.list(
+                    q=self.model, limit=1000, timeout_ms=self.timeout_ms,
+                )
+                entries = [object_to_plain_dict(model) for model in response.result.data]
+            else:
+                # New catalog fields (notably mandatory reasoning) may be absent from
+                # the installed SDK schema, so discovery also retains the raw JSON.
+                with urlopen("https://openrouter.ai/api/v1/models?q=" + quote(self.model),
+                             timeout=self.timeout) as response:
+                    entries = json.load(response)["data"]
         except openrouter_errors.OpenRouterError as exc:
             raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+        except (HTTPError, URLError) as exc:
+            raise RuntimeError(f"OpenRouter model discovery failed: {exc}") from exc
 
-        models = {model.id for model in response.result.data}
+        models = {model["id"] for model in entries}
         if self.model not in models:
             raise RuntimeError(
                 f"OpenRouter model `{self.model}` is unavailable. "
                 f"Check https://openrouter.ai/models or choose a fallback."
             )
+        self.model_info = next(model for model in entries if model["id"] == self.model)
+        supported = set(self.model_info.get("supported_parameters") or [])
+        if self.reasoning and self.reasoning.get("enabled"):
+            if not {"reasoning", "include_reasoning"} & supported:
+                raise RuntimeError(f"Model {self.model} does not advertise reasoning output.")
+            if "tools" not in supported:
+                raise RuntimeError(f"Model {self.model} does not advertise tool calling.")
+        options = self.model_info.get("reasoning") or {}
+        if options.get("mandatory") and self.reasoning.get("effort") == "none":
+            raise ValueError(f"Model {self.model} does not allow reasoning.effort: none.")
+        efforts = options.get("supported_efforts")
+        if efforts and self.reasoning and self.reasoning.get("effort") not in (None, *efforts):
+            raise ValueError(f"Model {self.model} supports reasoning efforts {efforts}.")
+
+    def api_reasoning(self) -> dict[str, Any]:
+        """The public enabled switch controls inclusion, not mandatory internal thinking."""
+        parameters = {
+            key: value for key, value in self.reasoning.items()
+            if key != "enabled" and value is not None
+        }
+        parameters["exclude"] = not self.include_reasoning
+        if self.include_reasoning:
+            parameters["enabled"] = True
+        return parameters
+
+    def reserve_request_budget(self, request: dict[str, Any]) -> None:
+        if self.max_cost_usd is None:
+            return
+        if any(item.get("cost_usd") is None for item in self.requests):
+            raise TeacherBudgetExceeded("Cannot continue: a previous request has unknown cost.")
+        limits = (self.provider or {}).get("max_price") or {}
+        if "prompt" not in limits or "completion" not in limits:
+            raise ValueError("A spend limit requires provider.max_price.prompt and completion "
+                             "in USD per million tokens.")
+        if any(not math.isfinite(float(limits[key])) or float(limits[key]) < 0
+               for key in ("prompt", "completion")):
+            raise ValueError("Provider price ceilings must be finite nonnegative values.")
+        # Byte length conservatively bounds tokens for these text-only teacher inputs.
+        prompt_bytes = len(json.dumps(request, ensure_ascii=False).encode("utf-8"))
+        reserved = (prompt_bytes * float(limits["prompt"])
+                    + self.max_tokens * float(limits["completion"])) / 1_000_000
+        spent = sum(float(item["cost_usd"]) for item in self.requests)
+        if spent + reserved > self.max_cost_usd:
+            raise TeacherBudgetExceeded(
+                f"Spent ${spent:.6f}; the next request reserves ${reserved:.6f}, "
+                f"exceeding the ${self.max_cost_usd:.6f} limit."
+            )
+
+    def send_chat_request(self, request: dict[str, Any]) -> Any:
+        if self.request_sender is not None:
+            return self.request_sender(request)
+        if self._sdk_client is not None and not self._owns_sdk_client:
+            return self._sdk_client.chat.send(**request, timeout_ms=self.timeout_ms)
+        # The installed SDK's reasoning schema drops enabled/exclude/max_tokens, and
+        # typed responses can drop provider extensions. Send exact JSON for generation;
+        # retain the SDK for model discovery and compatibility with injected clients.
+        wire = Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(request, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.require_api_key()}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(wire, timeout=self.timeout) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            raise RuntimeError(f"OpenRouter HTTP {exc.code}: "
+                               f"{exc.read().decode('utf-8', errors='replace')[:1000]}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"OpenRouter request failed: {exc.reason}") from exc
 
     def chat(
         self,
@@ -165,22 +302,61 @@ class OpenRouterTeacherClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        request = {
+            "model": self.model, "messages": sdk_outbound_messages(messages),
+            "tools": tools, "tool_choice": tool_choice, "parallel_tool_calls": False,
+            "temperature": self.temperature, "max_tokens": self.max_tokens, "stream": False,
+        }
+        request["reasoning"] = self.api_reasoning()
+        if self.provider is not None:
+            request["provider"] = self.provider
+        if self.model_info and "parallel_tool_calls" not in (
+            self.model_info.get("supported_parameters") or []
+        ):
+            # Some of the shortlist's endpoints only support sequential tools and
+            # do not expose this parameter. The interaction loop still enforces one call.
+            request.pop("parallel_tool_calls", None)
+        self.request_index += 1
+        cached = (self.journal.cached_request(self.attempt_id, self.request_index, request)
+                  if self.journal is not None else None)
+        if cached is not None:
+            return cached
+        self.reserve_request_budget(request)
+        if self.request_sender is None and self._owns_sdk_client:
+            self.require_api_key()
+        if self.journal is not None:
+            self.journal.start_request(self.attempt_id, self.request_index, request)
+        started = time.monotonic()
         try:
-            response = self._sdk().chat.send(
-                model=self.model,
-                messages=sdk_outbound_messages(messages),
-                tools=tools,
-                tool_choice=tool_choice,
-                parallel_tool_calls=False,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=False,
-                timeout_ms=self.timeout_ms,
-            )
+            response = self.send_chat_request(request)
         except openrouter_errors.OpenRouterError as exc:
             raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
-        return normalize_assistant_message(sdk_message_to_dict(response.choices[0].message))
+        raw = object_to_plain_dict(response)
+        self.last_response = raw
+        usage = raw.get("usage") or {}
+        choices = raw.get("choices") or []
+        entry = {
+            "generation_id": raw.get("id"), "model": raw.get("model", self.model),
+            "provider": raw.get("provider"), "usage": usage,
+            "cost_usd": usage.get("cost"), "latency_seconds": time.monotonic() - started,
+            "finish_reason": choices[0].get("finish_reason") if choices else None,
+            "native_finish_reason": choices[0].get("native_finish_reason") if choices else None,
+            "attempt_id": self.attempt_id, "request_index": self.request_index,
+        }
+        self.requests.append(entry)
+        if choices:
+            assistant = normalize_assistant_message(sdk_message_to_dict(choices[0]["message"]))
+        else:
+            entry["finish_reason"] = "error"
+            assistant = {"role": "assistant", "content": ""}
+        # Internal metadata is stripped from outbound messages, never replayed to the API.
+        assistant["generation_metadata"] = entry
+        if self.journal is not None:
+            self.journal.finish_request(entry, request, assistant)
+        if self.on_response is not None:
+            self.on_response(entry)
+        return assistant
 
 
 def object_to_plain_dict(value: Any) -> Any:
@@ -221,7 +397,9 @@ def normalize_tool_call_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
-    normalized = {key: value for key, value in message.items() if value is not None}
+    normalized = normalize_reasoning(
+        {key: value for key, value in message.items() if value is not None},
+    )
     normalized["role"] = "assistant"
     if normalized.get("tool_calls"):
         tool_calls = []
@@ -240,6 +418,15 @@ def sdk_outbound_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     outbound = []
     for message in messages:
         payload = {key: value for key, value in message.items() if value is not None}
+        for key in ("reasoning_kind", "reasoning_selection", "generation_metadata"):
+            payload.pop(key, None)
+        # Canonical text is useful for students; original provider blocks take precedence
+        # during API replay to avoid duplicating summarized or signed reasoning.
+        if payload.get("reasoning_details"):
+            payload.pop("reasoning", None)
+            payload.pop("reasoning_content", None)
+        elif payload.get("reasoning"):
+            payload.pop("reasoning_content", None)
         if payload.get("role") == "assistant" and payload.get("tool_calls"):
             tool_calls = []
             for tool_call in payload["tool_calls"]:
@@ -417,7 +604,7 @@ def validation_with_solution_checks(
 def build_candidate_trace(
     seed: dict[str, Any],
     candidate: dict[str, Any],
-    teacher_model: str,
+    teacher_model: str | None,
 ) -> AgentTraceRecord:
     cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     real_solution = seed_real_solution(seed)
@@ -459,7 +646,7 @@ def build_interaction_trace(
     seed: dict[str, Any],
     *,
     messages: list[dict[str, Any]],
-    teacher_model: str,
+    teacher_model: str | None,
     cypher: str,
     validation: dict[str, Any],
     max_tool_calls: int,
@@ -482,6 +669,8 @@ def build_interaction_trace(
         "successful_tool_call_index": successful_tool_call_index,
         "cypher_solution": cypher_solution,
         "repair_attempted": tool_call_count > 1,
+        "teacher_provider": "openrouter" if teacher_model else "synthetic",
+        "reasoning_coverage": trace_reasoning_coverage(messages),
     }
     if metadata.get("controlled_repair"):
         repair_cypher = str(metadata.get("repair_cypher") or "").strip()
@@ -496,6 +685,10 @@ def build_interaction_trace(
                 metadata["repair_context_message_count"] = index + 2
                 metadata["non_trainable_message_indices"] = [index, index + 1]
                 break
+    excluded = set(metadata.get("non_trainable_message_indices") or [])
+    metadata["reasoning_coverage"] = trace_reasoning_coverage([
+        message for index, message in enumerate(messages) if index not in excluded
+    ])
     if static_only:
         metadata["static_only"] = True
         metadata["incomplete_conversation"] = True
@@ -757,36 +950,47 @@ def run_teacher_interaction(
     max_tool_calls: int,
     static_only: bool,
 ) -> TraceDecision:
+    """Keep provider replay intact internally; apply inclusion when saving the trace."""
+    decision = _run_teacher_interaction(
+        without_controlled_repair(seed), profile=profile, tool_interface=tool_interface,
+        client=client, teacher_model=teacher_model, validator=validator, policy=policy,
+        max_tool_calls=max_tool_calls, static_only=static_only,
+    )
+    if getattr(client, "include_reasoning", True):
+        return decision
+    payload = dict(decision.payload)
+    payload["messages"] = [without_reasoning(message) for message in payload.get("messages", [])]
+    record = decision.record
+    if record is not None:
+        saved = record.model_dump(by_alias=True, exclude_none=True)
+        saved["messages"] = [without_reasoning(message) for message in saved["messages"]]
+        saved["metadata"]["reasoning_coverage"] = trace_reasoning_coverage(saved["messages"])
+        record = AgentTraceRecord.model_validate(saved)
+    return TraceDecision(decision.accepted, record, decision.reason, payload)
+
+
+def _run_teacher_interaction(
+    seed: dict[str, Any],
+    *,
+    profile: ExperimentProfile,
+    tool_interface: ToolInterface,
+    client: OpenRouterTeacherClient,
+    teacher_model: str,
+    validator: Neo4jValidator | None,
+    policy: dict[str, Any] | None,
+    max_tool_calls: int,
+    static_only: bool,
+) -> TraceDecision:
     if max_tool_calls < 1:
         raise ValueError("max_tool_calls must be >= 1.")
-
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
-
-    try:
-        repair_context_message_count = append_controlled_repair_context(
-            messages,
-            seed,
-            validator=validator,
-        )
-    except ValueError as exc:
-        return rejected(
-            "invalid_controlled_repair",
-            messages=messages,
-            extra={"error": str(exc)},
-        )
-    if repair_context_message_count is not None and max_tool_calls < 2:
-        return rejected(
-            "invalid_controlled_repair",
-            messages=messages,
-            extra={"error": "Controlled repair supervision requires max_tool_calls >= 2."},
-        )
 
     task_family = str(seed.get("task_family") or profile.task_family)
     output_type = str(seed.get("output_type") or profile.output_type)
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     real_solution = seed_real_solution(seed)
     expected_refusal = is_safe_refusal(seed_cypher)
-    tool_call_count = 1 if repair_context_message_count is not None else 0
+    tool_call_count = 0
     successful_tool_call_index: int | None = None
     final_successful_cypher: str | None = None
     final_validation: dict[str, Any] | None = None
@@ -800,6 +1004,9 @@ def run_teacher_interaction(
             tool_choice="auto",
         )
         messages.append(assistant)
+        finish_reason = (assistant.get("generation_metadata") or {}).get("finish_reason")
+        if finish_reason in {"length", "content_filter", "error"}:
+            return rejected(f"generation_{finish_reason}", messages=messages)
         tool_calls = assistant.get("tool_calls") or []
         final_answer = assistant.get("content")
 
@@ -1118,6 +1325,15 @@ def configured_teacher_provider(config: dict[str, Any]) -> TeacherProvider:
             f"Unsupported teacher provider `{provider or '<missing>'}`. "
             f"Expected one of {SUPPORTED_TEACHER_PROVIDERS}."
         )
+    if "exclude" in (config.get("reasoning") or {}):
+        raise ValueError("reasoning.exclude was removed; use reasoning.enabled instead.")
+    if provider != "synthetic" and config.get("inject_controlled_repair"):
+        warnings.warn(
+            "inject_controlled_repair is only valid for provider: synthetic; "
+            "ignoring it for this teacher.",
+            UserWarning,
+            stacklevel=2,
+        )
     return "synthetic" if provider == "synthetic" else "openrouter"
 
 
@@ -1129,8 +1345,15 @@ def run_synthetic_teacher_interaction(
     validator: Neo4jValidator,
     policy: dict[str, Any] | None,
     max_tool_calls: int = 2,
+    reasoning: dict[str, Any] | None = None,
+    inject_controlled_repair: bool = True,
 ) -> TraceDecision:
     """Construct a validated trace from gold Cypher, gold solution, and Neo4j rows."""
+    reasoning = reasoning or {}
+    sentence_cap(reasoning, "tool")
+    sentence_cap(reasoning, "final")
+    if not inject_controlled_repair:
+        seed = without_controlled_repair(seed)
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
     cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     if not cypher:
@@ -1144,6 +1367,8 @@ def run_synthetic_teacher_interaction(
         messages.append(
             {"role": "assistant", "content": f"<answer>{WRITE_REFUSAL_ANSWER}</answer>"}
         )
+        if reasoning.get("enabled"):
+            add_synthetic_reasoning(messages[-1], seed, reasoning, stage="final")
         record = build_interaction_trace(
             seed,
             messages=messages,
@@ -1215,6 +1440,11 @@ def run_synthetic_teacher_interaction(
         }
     )
     validation = validator.validate(cypher, execute=True)
+    add_synthetic_reasoning(
+        messages[-1], seed, reasoning, stage="tool",
+        repair_template=(seed.get("metadata") or {}).get("repair_template")
+        if repair_context_message_count is not None else None,
+    )
     validation = {**validation, "static_valid": True}
     if not validation.get("executable"):
         messages.append(
@@ -1314,6 +1544,9 @@ def run_synthetic_teacher_interaction(
         )
 
     messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
+    add_synthetic_reasoning(
+        messages[-1], seed, reasoning, stage="final", rows=validation.get("rows", []),
+    )
     checked_validation = validation_with_solution_checks(
         validation,
         cypher_solution_match=cypher_solution_match,
@@ -1391,6 +1624,7 @@ def trace_token_length_report(
     tokenizer: Any,
     *,
     max_length: int,
+    include_reasoning: bool = False,
 ) -> dict[str, Any]:
     """Measure traces exactly as they are rendered and tokenized for training."""
     from cypher_3dsg_agent_distillation.training.train import (
@@ -1404,7 +1638,7 @@ def trace_token_length_report(
     traces = []
     lengths = []
     for record in records:
-        text = rendered_record_text(record, tokenizer)
+        text = rendered_record_text(record, tokenizer, include_reasoning=include_reasoning)
         token_length = len(tokenize_rendered_text(tokenizer, text))
         lengths.append(token_length)
         traces.append(
@@ -1419,6 +1653,7 @@ def trace_token_length_report(
     return {
         "trace_count": len(traces),
         "max_length": max_length,
+        "include_reasoning": include_reasoning,
         "overlength_count": overlength_count,
         "overlength_rate": overlength_count / len(traces) if traces else 0.0,
         "percentile_method": "nearest_rank",
@@ -1498,6 +1733,11 @@ def generate_command(args: argparse.Namespace) -> None:
     configure_model_library_output()
     suppress_neo4j_notification_logs()
     teacher_config = load_yaml(args.teacher_config)
+    provider = configured_teacher_provider(teacher_config)
+    if provider != "synthetic":
+        teacher_config.pop("inject_controlled_repair", None)
+    if provider == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise RuntimeError("OPENROUTER_API_KEY is required for teacher generation.")
     student_config = load_student_family_config(args.student_config)
     from cypher_3dsg_agent_distillation.training.train import load_tokenizer
 
@@ -1505,7 +1745,6 @@ def generate_command(args: argparse.Namespace) -> None:
     if training_max_length <= 0:
         raise ValueError("training.max_length must be greater than zero.")
     tokenizer = load_tokenizer(student_config)
-    provider = configured_teacher_provider(teacher_config)
     data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     profiles = load_experiment_profiles_from_config(data_config)
     if not profiles:
@@ -1529,15 +1768,53 @@ def generate_command(args: argparse.Namespace) -> None:
     effective_teacher_config = dict(teacher_config)
     if model is not None:
         effective_teacher_config["model"] = model
-    data_config = prepare_teacher_dataset(
-        data_config,
-        teacher_name=args.teacher or teacher_name_from_config(effective_teacher_config),
-    )
+    teacher_name = args.teacher or teacher_name_from_config(effective_teacher_config)
+    resume = bool(getattr(args, "resume", False))
+    pilot = bool(getattr(args, "pilot", False))
+    if resume:
+        if not args.dataset_version:
+            raise ValueError("--resume requires an explicit --dataset-version.")
+        previous = load_yaml(data_config["teacher_metadata_path"])
+        if previous.get("teacher_name") != teacher_name:
+            raise ValueError("The resumed dataset belongs to a different teacher.")
+        data_config["teacher_name"] = teacher_name
+    else:
+        data_config = prepare_teacher_dataset(data_config, teacher_name=teacher_name)
+    population = read_jsonl(data_config["seed_records_jsonl_path"])
+    # Old prepared datasets can also acquire goal semantics without regeneration.
+    # This enrichment is private teacher metadata and is never part of its prompt.
+    templates_by_type = {}
+    for question_set in data_config.get("question_sets") or []:
+        for template in load_yaml(question_set["question_templates_path"]).get("templates", []):
+            templates_by_type[(question_set["name"], template["query_type"])] = template
+    for seed in population:
+        metadata = seed.setdefault("metadata", {})
+        if "reasoning_context" not in metadata:
+            template = templates_by_type.get((metadata.get("question_set"), seed["query_type"]))
+            if template is not None:
+                from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
+                    semantic_context,
+                )
+                metadata["reasoning_context"] = semantic_context({}, template, seed["cypher"])
+    seeds = select_pilot_seeds(
+        population, per_task_type=getattr(args, "pilot_per_task_type", 2),
+        random_seed=getattr(args, "sample_seed", 42),
+        extra_per_tag=getattr(args, "pilot_extra_per_tag", 2),
+    ) if pilot else population
+    seed_manifest = {
+        "pilot": pilot, "sample_seed": getattr(args, "sample_seed", 42),
+        "seed_uids": [seed["uid"] for seed in seeds],
+        "population_fingerprint": file_fingerprint(data_config["seed_records_jsonl_path"]),
+    }
+    traces_dir = Path(data_config["teacher_traces_jsonl_path"]).parent
     profile_inputs = {}
     for question_set in data_config.get("question_sets") or []:
         profile_path = question_set["experiment_profile_path"]
         profile_inputs[f"profile:{question_set['name']}"] = config_record(
             profile_path, project_root=PROJECT_ROOT
+        )
+        profile_inputs[f"templates:{question_set['name']}"] = config_record(
+            question_set["question_templates_path"], project_root=PROJECT_ROOT,
         )
         for key, value in load_yaml(profile_path).items():
             if key.endswith("_path") and value:
@@ -1545,6 +1822,17 @@ def generate_command(args: argparse.Namespace) -> None:
                     resolve_project_path(value), project_root=PROJECT_ROOT
                 )
     created_at = iso_now()
+    identity = mapping_fingerprint({
+        "teacher": effective_teacher_config, "student": student_config["model"],
+        "training_max_length": training_max_length,
+        "manifest": seed_manifest, "profiles": profile_inputs,
+        "traces_per_seed": traces_per_seed, "static_only": args.static_only,
+        "max_tool_calls": args.max_tool_calls,
+    })
+    if resume and previous.get("run_identity") != identity:
+        raise ValueError("Resume configuration or inputs differ from the saved run.")
+    journal = TeacherRunJournal(traces_dir)
+    atomic_write_yaml(seed_manifest, traces_dir / "seed_manifest.yaml")
     atomic_write_yaml(
         {
             "schema_version": 1,
@@ -1553,6 +1841,8 @@ def generate_command(args: argparse.Namespace) -> None:
             "created_at": created_at,
             "updated_at": created_at,
             "status": "running",
+            "run_identity": identity,
+            "pilot": pilot,
             "dataset": {
                 "dataset_id": data_config["dataset_id"],
                 "scene_ids": [scene["scene_id"] for scene in data_config["scenes"]],
@@ -1571,6 +1861,7 @@ def generate_command(args: argparse.Namespace) -> None:
             "effective": {
                 "provider": provider,
                 "model": model,
+                "teacher_config": effective_teacher_config,
                 "arguments": serializable_arguments(args),
             },
             "input_seed_records": file_fingerprint(
@@ -1587,14 +1878,27 @@ def generate_command(args: argparse.Namespace) -> None:
             timeout=int(teacher_config.get("timeout", 120)),
             temperature=float(teacher_config.get("temperature", 0.2)),
             max_tokens=int(teacher_config.get("max_tokens", 2048)),
+            reasoning=teacher_config.get("reasoning"),
+            provider=teacher_config.get("routing"),
+            max_cost_usd=(getattr(args, "max_cost_usd", None)
+                          if getattr(args, "max_cost_usd", None) is not None
+                          else teacher_config.get("max_cost_usd")),
         )
         if provider == "openrouter"
         else nullcontext(None)
     )
     with client_context as client:
+        if client is not None:
+            client.journal = journal
+            client.requests = list(journal.requests)
+            if resume:
+                client.model_info = previous.get("model_catalog_snapshot") or {}
         if args.preflight and provider == "openrouter":
             assert client is not None
             client.preflight()
+            metadata = load_yaml(data_config["teacher_metadata_path"])
+            metadata["model_catalog_snapshot"] = client.model_info
+            atomic_write_yaml(metadata, data_config["teacher_metadata_path"])
 
         schema_config = load_yaml(data_config["schema_path"])
         policy = schema_policy(schema_config)
@@ -1609,8 +1913,8 @@ def generate_command(args: argparse.Namespace) -> None:
             )
 
         scene_database_reloads = 0
+        stop_reason = None
         try:
-            seeds = read_jsonl(data_config["seed_records_jsonl_path"])
             seeds = group_records_by_scene(
                 seeds,
                 seed=0,
@@ -1618,9 +1922,15 @@ def generate_command(args: argparse.Namespace) -> None:
             )
             scenes_by_id = {str(scene["scene_id"]): scene for scene in data_config["scenes"]}
             current_scene_id: str | None = None
-            teacher_records: list[dict[str, Any]] = []
-            accepted_debug_records: list[dict[str, Any]] = []
-            rejected_debug_records: list[dict[str, Any]] = []
+            teacher_records: list[dict[str, Any]] = [
+                item["record"] for item in journal.attempts if item["accepted"]
+            ]
+            accepted_debug_records: list[dict[str, Any]] = [
+                item["debug_record"] for item in journal.attempts if item["accepted"]
+            ]
+            rejected_debug_records: list[dict[str, Any]] = [
+                item["debug_record"] for item in journal.attempts if not item["accepted"]
+            ]
             total_attempts = len(seeds) * traces_per_seed
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
@@ -1634,6 +1944,12 @@ def generate_command(args: argparse.Namespace) -> None:
                     total=total_attempts,
                 )
                 for seed_index, seed in enumerate(seeds, start=1):
+                    if stop_reason:
+                        break
+                    if all(f"{seed['uid']}:{index}" in journal.completed
+                           for index in range(traces_per_seed)):
+                        progress.update(task_id, advance=traces_per_seed)
+                        continue
                     seed_scene_id = str(seed.get("scene_id") or "")
                     if seed_scene_id not in scenes_by_id:
                         raise ValueError(
@@ -1652,8 +1968,14 @@ def generate_command(args: argparse.Namespace) -> None:
                         current_scene_id = seed_scene_id
                         scene_database_reloads += 1
                     profile = experiment_profile_for_seed(seed, profiles)
+                    if provider == "openrouter":
+                        seed = without_controlled_repair(seed)
                     max_tool_calls = configured_max_tool_calls(args, teacher_config, profile)
-                    for _ in range(traces_per_seed):
+                    for trace_index in range(traces_per_seed):
+                        attempt_id = f"{seed['uid']}:{trace_index}"
+                        if attempt_id in journal.completed:
+                            progress.update(task_id, advance=1)
+                            continue
                         progress.update(
                             task_id,
                             description=progress_description(
@@ -1666,17 +1988,18 @@ def generate_command(args: argparse.Namespace) -> None:
                         if provider == "openrouter":
                             assert client is not None
                             assert model is not None
-                            decision = run_teacher_interaction(
-                                seed,
-                                profile=profile,
-                                tool_interface="openrouter",
-                                client=client,
-                                teacher_model=model,
-                                validator=validator,
-                                policy=policy,
-                                max_tool_calls=max_tool_calls,
-                                static_only=args.static_only,
-                            )
+                            client.attempt_id = attempt_id
+                            client.request_index = 0
+                            try:
+                                decision = run_teacher_interaction(
+                                    seed, profile=profile, tool_interface="openrouter",
+                                    client=client, teacher_model=model, validator=validator,
+                                    policy=policy, max_tool_calls=max_tool_calls,
+                                    static_only=args.static_only,
+                                )
+                            except TeacherBudgetExceeded as exc:
+                                stop_reason = str(exc)
+                                break
                         else:
                             if validator is None:
                                 raise RuntimeError("Synthetic teacher requires Neo4j validation.")
@@ -1687,7 +2010,12 @@ def generate_command(args: argparse.Namespace) -> None:
                                 validator=validator,
                                 policy=policy,
                                 max_tool_calls=max_tool_calls,
+                                reasoning=teacher_config.get("reasoning"),
+                                inject_controlled_repair=bool(teacher_config.get(
+                                    "inject_controlled_repair", True,
+                                )),
                             )
+                        record_json = None
                         if decision.accepted and decision.record is not None:
                             record_json = decision.record.model_dump(
                                 by_alias=True,
@@ -1699,6 +2027,14 @@ def generate_command(args: argparse.Namespace) -> None:
                             )
                         else:
                             rejected_debug_records.append(debug_trace_record(seed, decision))
+                        item = attempt_payload(
+                            seed, decision, attempt_id=attempt_id, tokenizer=tokenizer,
+                            max_length=training_max_length,
+                        )
+                        item["debug_record"] = debug_trace_record(
+                            seed, decision, record_json=record_json,
+                        )
+                        journal.finish_attempt(item)
                         progress.update(
                             task_id,
                             advance=1,
@@ -1712,6 +2048,19 @@ def generate_command(args: argparse.Namespace) -> None:
         finally:
             if validator is not None:
                 validator.close()
+            report = pilot_report(
+                population, journal.attempts, journal.requests, traces_per_seed=traces_per_seed,
+            )
+            report["pending_request"] = journal.pending_path.exists()
+            if report["pending_request"]:
+                report["billing"]["total_cost_usd"] = None
+                report["billing"]["cost_per_accepted_trace_usd"] = None
+                report["billing"]["cost_per_usable_reasoning_trace_usd"] = None
+                report["projection"]["full_dataset_cost_usd"] = None
+            atomic_write_yaml(report, traces_dir / "pilot_report.yaml")
+            (traces_dir / "matched_retained_uids.json").write_text(
+                json.dumps(report["matched_retained_uids"], indent=2) + "\n", encoding="utf-8",
+            )
 
     teacher_traces_path = data_config.get("teacher_traces_jsonl_path")
     ensure_parent(teacher_traces_path).write_text(
@@ -1730,6 +2079,9 @@ def generate_command(args: argparse.Namespace) -> None:
         teacher_records,
         tokenizer,
         max_length=training_max_length,
+        include_reasoning=bool((student_config.get("training") or {}).get(
+            "include_reasoning", False,
+        )),
     )
     token_report.update(
         {
@@ -1752,15 +2104,22 @@ def generate_command(args: argparse.Namespace) -> None:
     teacher_metadata.update(
         {
             "updated_at": iso_now(),
-            "status": "complete",
+            "status": (
+                "budget_limited" if stop_reason else "pilot_complete" if pilot else "complete"
+            ),
+            "stop_reason": stop_reason,
             "counts": {
                 "seeds": len(seeds),
-                "attempts": total_attempts,
+                "attempts": len(journal.attempts),
+                "planned_attempts": total_attempts,
                 "accepted": len(teacher_records),
                 "rejected": len(rejected_debug_records),
                 "scene_database_reloads": scene_database_reloads,
             },
             "outputs": {
+                "pilot_report": file_fingerprint(traces_dir / "pilot_report.yaml"),
+                "request_journal": file_fingerprint(journal.requests_path),
+                "attempt_journal": file_fingerprint(journal.attempts_path),
                 "teacher_traces": file_fingerprint(
                     data_config["teacher_traces_jsonl_path"], relative_to=PROJECT_ROOT
                 ),
@@ -1789,7 +2148,7 @@ def generate_command(args: argparse.Namespace) -> None:
     }
     dataset_metadata["updated_at"] = iso_now()
     atomic_write_yaml(dataset_metadata, data_config["metadata_path"])
-    acceptance_rate = len(teacher_records) / total_attempts if total_attempts else 0.0
+    acceptance_rate = len(teacher_records) / len(journal.attempts) if journal.attempts else 0.0
     token_percentiles = token_report["percentiles"]
     print_summary(
         "Teacher traces generated",
@@ -1836,6 +2195,9 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Accepted debug", data_config["accepted_traces_path"]),
             ("Rejected debug", data_config["rejected_traces_path"]),
             ("Token length report", token_length_report_path),
+            ("Cost and coverage report", traces_dir / "pilot_report.yaml"),
+            ("Status", teacher_metadata["status"]),
+            ("Known API cost USD", report["billing"]["known_cost_usd"]),
         ],
     )
 
@@ -1850,23 +2212,33 @@ def preflight_command(args: argparse.Namespace) -> None:
         )
         return
     with OpenRouterTeacherClient(
-        model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL)
+        model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL),
+        reasoning=config.get("reasoning"), provider=config.get("routing"),
+        timeout=int(config.get("timeout", 120)),
     ) as client:
         client.preflight()
         print_summary(
             "Teacher preflight complete",
-            [("Provider", provider), ("Model", client.model), ("Available", True)],
+            [
+                ("Provider", provider), ("Model", client.model), ("Available", True),
+                ("Supported parameters", client.model_info.get("supported_parameters")),
+                ("Reasoning defaults", client.model_info.get("reasoning")),
+                ("Catalog pricing USD/token", client.model_info.get("pricing")),
+            ],
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate profile-based teacher agent traces.")
     subparsers = parser.add_subparsers(required=True)
+    from cypher_3dsg_agent_distillation.agents.teacher_check import add_check_parser
+
+    add_check_parser(subparsers)
 
     preflight_parser = subparsers.add_parser("preflight")
     preflight_parser.add_argument(
         "--teacher-config",
-        default="configs/teacher_gpt_oss_120b.yaml",
+        default="configs/teachers/teacher_deepseek_v4_1_flash.yaml",
     )
     preflight_parser.add_argument("--teacher-model", default=None)
     preflight_parser.set_defaults(func=preflight_command)
@@ -1874,12 +2246,12 @@ def main() -> None:
     generate_parser = subparsers.add_parser("generate")
     generate_parser.add_argument(
         "--teacher-config",
-        default="configs/teacher_gpt_oss_120b.yaml",
+        default="configs/teachers/teacher_deepseek_v4_1_flash.yaml",
     )
     generate_parser.add_argument("--data-config", default="configs/data.yaml")
     generate_parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
         help="Student tokenizer and training.max_length used for the token-length report.",
     )
     generate_parser.add_argument("--dataset-version", default=None)
@@ -1891,6 +2263,18 @@ def main() -> None:
     generate_parser.add_argument("--teacher-model", default=None)
     generate_parser.add_argument("--traces-per-seed", type=int, default=None)
     generate_parser.add_argument("--preflight", action="store_true")
+    generate_parser.add_argument(
+        "--pilot", action="store_true",
+        help="Sample every task type and scene for cost/coverage testing.",
+    )
+    generate_parser.add_argument("--pilot-per-task-type", type=int, default=2)
+    generate_parser.add_argument("--pilot-extra-per-tag", type=int, default=2)
+    generate_parser.add_argument("--sample-seed", type=int, default=42)
+    generate_parser.add_argument("--max-cost-usd", type=float, default=None)
+    generate_parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume an explicit dataset version using saved API responses.",
+    )
     generate_parser.add_argument("--max-tool-calls", type=int, default=None)
     generate_parser.add_argument(
         "--static-only",

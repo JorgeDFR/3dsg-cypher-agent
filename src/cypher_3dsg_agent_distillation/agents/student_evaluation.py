@@ -224,6 +224,7 @@ def generation_report_fields(result: GenerationResult) -> dict[str, int | None]:
         "generated_tokens": result.generated_tokens,
         "max_new_tokens": result.max_new_tokens,
         "token_budget": result.token_budget,
+        "reasoning_chars": len(result.reasoning),
     }
 
 
@@ -243,6 +244,8 @@ def generation_debug_report(
         "raw_completion": generation.raw_text if generation is not None else None,
         "structured_tool_calls": (list(generation.tool_calls) if generation is not None else []),
         "provider_metadata": (generation.provider_metadata if generation is not None else {}),
+        "reasoning": generation.reasoning if generation is not None else None,
+        "reasoning_status": generation.reasoning_status if generation is not None else None,
     }
 
 
@@ -559,6 +562,7 @@ def append_end_to_end_retry_feedback(
     tool_call: dict[str, Any] | None,
     feedback: str,
     max_query_chars: int,
+    reasoning: str = "",
 ) -> None:
     from cypher_3dsg_agent_distillation.agents.openrouter_teacher import (
         build_tool_result_message,
@@ -570,6 +574,7 @@ def append_end_to_end_retry_feedback(
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [tool_call],
+                **({"reasoning": reasoning} if reasoning else {}),
             }
         )
         tool_call_id = tool_call.get("id") or tool_call.get("tool_call_id")
@@ -582,6 +587,7 @@ def append_end_to_end_retry_feedback(
         {
             "role": "assistant",
             "content": bounded_text(generated_text, max_query_chars),
+            **({"reasoning": reasoning} if reasoning else {}),
         }
     )
     messages.append({"role": "user", "content": feedback})
@@ -791,6 +797,7 @@ def evaluate_end_to_end_record(
                 tool_call=retry_tool_call,
                 feedback=tool_content,
                 max_query_chars=max_query_chars,
+                reasoning=generation.reasoning,
             )
             del generation, validation, tool_content
             continue
@@ -819,6 +826,7 @@ def evaluate_end_to_end_record(
             tool_call=retry_tool_call,
             feedback=feedback,
             max_query_chars=max_query_chars,
+            reasoning=generation.reasoning,
         )
         del generation, validation, feedback
 
@@ -1960,6 +1968,10 @@ def command(args: argparse.Namespace) -> None:
                 return
         selected_reports_dir = model_reports_dir(data_config, student_config)
 
+    if args.enable_thinking is None:
+        args.enable_thinking = bool((student_config.get("inference") or {}).get(
+            "enable_thinking", False,
+        ))
     output_path = report_output_path(
         data_config=data_config,
         split=args.split,
@@ -2168,7 +2180,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
     )
     parser.add_argument(
         "--model-version",
@@ -2301,7 +2313,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--enable-thinking",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
             "Allow tokenizer chat-template thinking mode for raw-generation. By "
             "default, thinking is disabled when the tokenizer supports it."

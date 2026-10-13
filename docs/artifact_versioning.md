@@ -58,7 +58,7 @@ List available dataset and LoRA identifiers, and the selected dataset's teacher:
 ```bash
 docker/stack.sh main python scripts/core/list_artifact_versions.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
+  --student-config configs/students/student_qwen3.5_4b.yaml
 ```
 
 Pass the printed identifiers to generation, splitting, training, evaluation,

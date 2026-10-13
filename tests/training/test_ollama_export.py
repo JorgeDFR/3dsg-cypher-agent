@@ -41,8 +41,8 @@ def student_config(tmp_path):
 
 def test_student_profiles_own_model_specific_export_settings():
     data = load_yaml("configs/data.yaml")
-    qwen = load_yaml("configs/student_qwen3.5_4b.yaml")
-    granite = load_yaml("configs/student_granite4.1_3b.yaml")
+    qwen = load_yaml("configs/students/student_qwen3.5_4b.yaml")
+    granite = load_yaml("configs/students/student_granite4.1_3b.yaml")
 
     assert "ollama_export" not in data
     assert qwen["ollama_export"]["model_name"] == "qwen3.5-4b-finetune"

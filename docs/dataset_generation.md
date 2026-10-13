@@ -28,7 +28,7 @@ For the directory and selection rules of generated artifacts, see
 | `question_sets` | One or more experiment profile and question-template pairs |
 | `max_per_task_type` | Optional cap on generated records per task type |
 | `split` | Train, evaluation, test, and challenge selection settings |
-| `optimize_student_traces` | Whether split rendering prunes incidental failed turns and repairs eligible final answers |
+| `repair_invalid_final_answers` | Salvage eligible format-only rejects that contain no reasoning |
 
 Multiple task families can share one dataset version:
 
@@ -178,15 +178,16 @@ not select a scene-specific, hard-coded labelspace file.
 
 | Teacher | Configuration | Behavior | API key |
 | --- | --- | --- | --- |
-| OpenRouter | `configs/teacher_gpt_oss_120b.yaml` | Generates live tool-using interactions with `openai/gpt-oss-120b` | Required |
-| Synthetic | `configs/teacher_synthetic.yaml` | Uses gold Cypher, real Neo4j rows, and the gold final answer | Not required |
+| OpenRouter | `configs/teachers/teacher_deepseek_v4_1_flash.yaml` | Generates live interactions with DeepSeek V4.1 Flash and reasoning | Required |
+| OpenRouter alternatives | `configs/teachers/teacher_glm_5_3_flash.yaml`, `configs/teachers/teacher_mimo_v2_6_flash.yaml` | Cost/intelligence pilot candidates | Required |
+| Synthetic | `configs/teachers/teacher_synthetic.yaml` | Uses gold Cypher, real Neo4j rows, and the gold final answer | Not required |
 
 For OpenRouter, add `OPENROUTER_API_KEY` to `docker/.env` and verify that the
 configured model is available:
 
 ```bash
 docker/stack.sh main python scripts/agents/generate_traces.py preflight \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml
+  --teacher-config configs/teachers/teacher_deepseek_v4_1_flash.yaml
 ```
 
 Generate and validate OpenRouter traces:
@@ -194,8 +195,8 @@ Generate and validate OpenRouter traces:
 ```bash
 docker/stack.sh main python scripts/agents/generate_traces.py generate \
   --data-config configs/data.yaml \
-  --teacher-config configs/teacher_gpt_oss_120b.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
+  --teacher-config configs/teachers/teacher_deepseek_v4_1_flash.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml
 ```
 
 Generate deterministic traces without an LLM teacher:
@@ -203,8 +204,8 @@ Generate deterministic traces without an LLM teacher:
 ```bash
 docker/stack.sh main python scripts/agents/generate_traces.py generate \
   --data-config configs/data.yaml \
-  --teacher-config configs/teacher_synthetic.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
+  --teacher-config configs/teachers/teacher_synthetic.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml
 ```
 
 Each dataset version contains one `traces/` directory and one `splits/`
@@ -236,10 +237,11 @@ messages. Each interaction is checked through these gates:
 5. Verify that PDDL queries satisfy their grounding contract and that the final
    goal is valid for the configured robot domain.
 
-For a controlled-repair seed, trace generation first executes the mutated gold
+For a controlled-repair seed, synthetic trace generation first executes the mutated gold
 Cypher and requires Neo4j to return a syntax error. That failed assistant tool
-call and its real database error are added before the teacher or synthetic
-corrected call. The resulting conversation is:
+call and its real database error are added before the synthetic corrected call.
+Real teachers skip this injection by default and retain their natural corrections.
+The synthetic conversation is:
 
 1. Base prompt and question.
 2. Mutated Cypher tool call and Neo4j syntax-error response.
@@ -313,19 +315,21 @@ future implementation and currently exits with
 `Scene-aware splitting is not implemented yet.` The default is `false`, so all
 configured scenes may contribute to every split.
 
-To prune failed repair attempts and include rejected `invalid_answer_format`
-traces that are repairable by replacing only the final answer, use:
+To include rejected `invalid_answer_format` traces that are repairable by
+replacing only the final answer and do not contain reasoning, use:
 
 ```bash
 docker/stack.sh main python scripts/agents/prepare_dataset.py split \
   --data-config configs/data.yaml \
   --render-view ollama_native \
-  --optimize-student-traces
+  --repair-invalid-final-answers
 ```
 
-This optimization changes only split/render output. The raw teacher traces are
-preserved. Intentional controlled-repair prefixes are never pruned. It can also
-be enabled with `optimize_student_traces: true` in the data configuration.
+This optimization changes only split/render output and preserves every tool attempt.
+It skips traces containing readable reasoning or opaque reasoning blocks, so a
+replacement answer cannot contradict an existing rationale. See
+[reasoning experiments](reasoning_traces.md) for teacher checks, the pilot, and
+reasoning configuration.
 
 ## Select reproducible inputs
 

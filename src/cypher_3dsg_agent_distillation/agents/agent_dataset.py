@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from cypher_3dsg_agent_distillation.agents.agent_records import (
-    DEFAULT_AGENT_TOOL,
     DEFAULT_TEACHER_MODEL,
     AgentTraceRecord,
     normalize_cypher,
@@ -23,6 +22,7 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
     load_experiment_profiles_from_config,
     profile_seed_defaults,
 )
+from cypher_3dsg_agent_distillation.agents.reasoning import has_reasoning
 from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
@@ -190,6 +190,13 @@ def repair_rejected_invalid_answer_trace(
     if not valid_cypher_format or not cypher_matches_real:
         return None
 
+    if any(
+        has_reasoning(message) for message in messages if message.get("role") == "assistant"
+    ):
+        # Replacing the answer cannot certify that its rationale still agrees with it.
+        # Keep such examples rejected; coverage reports must not count them as teacher accepts.
+        return None
+
     repaired_messages = repaired_messages_with_final_answer(messages, str(cypher_solution))
     if repaired_messages is None:
         return None
@@ -308,89 +315,6 @@ def read_student_trace_records(
         include_repaired_rejected=include_repaired_rejected,
     )
     return records
-
-
-def optimize_student_trace(record: AgentTraceRecord) -> AgentTraceRecord:
-    if record.metadata.get("controlled_repair"):
-        return record
-    raw_tool_call_count = int(record.metadata.get("tool_call_count") or len(record.tool_calls))
-    if raw_tool_call_count <= 1 or record.metadata.get("incomplete_conversation"):
-        return record
-
-    successful_index = record.metadata.get("successful_tool_call_index")
-    if not isinstance(successful_index, int) or successful_index < 1:
-        return record
-
-    messages = [message.model_dump(by_alias=True, exclude_none=True) for message in record.messages]
-    prefix = [message for message in messages if message.get("role") in {"system", "user"}]
-    assistant_index = None
-    call_count = 0
-    for index, message in enumerate(messages):
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            call_count += 1
-            if call_count == successful_index:
-                assistant_index = index
-                break
-    if assistant_index is None:
-        return record
-
-    assistant_message = messages[assistant_index]
-    tool_call = assistant_message["tool_calls"][0]
-    tool_call_id = tool_call.get("id") or tool_call.get("tool_call_id")
-    tool_result = None
-    for message in messages[assistant_index + 1 :]:
-        if message.get("role") != "tool":
-            continue
-        if tool_call_id and message.get("tool_call_id") != tool_call_id:
-            continue
-        tool_result = message
-        break
-    if tool_result is None:
-        return record
-
-    final_answer = None
-    for message in reversed(messages):
-        if (
-            message.get("role") == "assistant"
-            and message.get("content")
-            and not message.get("tool_calls")
-        ):
-            final_answer = message
-            break
-    if final_answer is None:
-        return record
-
-    payload = record.model_dump(by_alias=True, exclude_none=True)
-    payload["messages"] = prefix + [assistant_message, tool_result, final_answer]
-    payload["metadata"] = {
-        **record.metadata,
-        "student_optimized": True,
-        "raw_tool_call_count": raw_tool_call_count,
-        "dropped_tool_call_count": raw_tool_call_count - 1,
-    }
-    payload["tools"] = [DEFAULT_AGENT_TOOL]
-    return AgentTraceRecord.model_validate(payload)
-
-
-def optimize_student_traces(records: list[AgentTraceRecord]) -> list[AgentTraceRecord]:
-    optimized, _counts = optimize_student_traces_with_counts(records)
-    return optimized
-
-
-def optimize_student_traces_with_counts(
-    records: list[AgentTraceRecord],
-) -> tuple[list[AgentTraceRecord], Counter[str]]:
-    optimized = []
-    counts: Counter[str] = Counter()
-    for record in records:
-        optimized_record = optimize_student_trace(record)
-        optimized.append(optimized_record)
-        if optimized_record is not record and optimized_record.metadata.get("student_optimized"):
-            counts["pruned_failed_tool_attempts"] += 1
-            counts["dropped_tool_calls"] += int(
-                optimized_record.metadata.get("dropped_tool_call_count") or 0
-            )
-    return optimized, counts
 
 
 SplitResult = tuple[
@@ -973,8 +897,6 @@ def counter_to_sorted_dict(counter: Counter[str]) -> dict[str, int]:
 
 def optimization_kinds(record: AgentTraceRecord) -> list[str]:
     kinds = []
-    if record.metadata.get("student_optimized"):
-        kinds.append("pruned_failed_tool_attempts")
     if record.metadata.get("final_answer_repaired"):
         kinds.append("repaired_invalid_answer_format")
     return kinds
@@ -995,11 +917,8 @@ def optimized_question_payload(record: AgentTraceRecord, split_name: str) -> dic
         "expected_solution": record.expected_solution,
         "final_answer": record.final_answer,
         "optimization_kinds": optimization_kinds(record),
-        "student_optimized": bool(metadata.get("student_optimized")),
         "final_answer_repaired": bool(metadata.get("final_answer_repaired")),
-        "raw_tool_call_count": metadata.get("raw_tool_call_count")
-        or metadata.get("tool_call_count"),
-        "dropped_tool_call_count": int(metadata.get("dropped_tool_call_count") or 0),
+        "tool_call_count": metadata.get("tool_call_count"),
         "successful_tool_call_index": metadata.get("successful_tool_call_index"),
         "seed_uid": metadata.get("seed_uid"),
         "source_trace_uid": metadata.get("source_trace_uid"),
@@ -1041,11 +960,10 @@ def split_report_payload(
     data_config: dict[str, Any],
     render_view: str,
     source_counts: Counter[str],
-    optimization_counts: Counter[str],
     cap_dropped_counts: Counter[str],
     split_records: dict[str, list[AgentTraceRecord]],
     split_paths: dict[str, str],
-    optimize_enabled: bool,
+    repair_answers: bool,
 ) -> dict[str, Any]:
     optimized_questions = []
     for split_name in ("train", "eval", "test", "challenge"):
@@ -1061,7 +979,7 @@ def split_report_payload(
             "dataset_version": data_config.get("dataset_version"),
             "teacher_name": data_config.get("teacher_name"),
             "render_view": render_view,
-            "optimize_student_traces": optimize_enabled,
+            "repair_invalid_final_answers": repair_answers,
             "max_per_task_type": data_config.get("max_per_task_type"),
             "split_config": data_config.get("split", {}),
         },
@@ -1071,7 +989,6 @@ def split_report_payload(
             "splits": split_paths,
         },
         "source_counts": counter_to_sorted_dict(source_counts),
-        "optimization_counts": counter_to_sorted_dict(optimization_counts),
         "cap_dropped_counts": counter_to_sorted_dict(cap_dropped_counts),
         "splits": split_records_payload(split_records),
         "optimized_questions": optimized_questions,
@@ -1090,17 +1007,16 @@ def write_split_report(report: dict[str, Any], output: str | Path) -> Path:
 def split_report_lines(
     *,
     source_counts: Counter[str],
-    optimization_counts: Counter[str],
     cap_dropped_counts: Counter[str],
     split_records: dict[str, list[AgentTraceRecord]],
     split_paths: dict[str, str],
-    optimize_enabled: bool,
+    repair_answers: bool,
 ) -> list[str]:
     lines = [
         "Dataset split summary:",
         f"  accepted teacher traces loaded: {source_counts['accepted_teacher_traces']}",
     ]
-    if optimize_enabled:
+    if repair_answers:
         lines.extend(
             [
                 (
@@ -1113,11 +1029,6 @@ def split_report_lines(
                 (
                     "    final answer repairs from invalid_answer_format rejects: "
                     f"{source_counts['repaired_invalid_answer_format']}"
-                ),
-                (
-                    "    pruned failed tool attempts: "
-                    f"{optimization_counts['pruned_failed_tool_attempts']} traces, "
-                    f"{optimization_counts['dropped_tool_calls']} tool calls dropped"
                 ),
             ]
         )
@@ -1150,16 +1061,13 @@ def split_command(args: argparse.Namespace) -> None:
         raise ValueError("Teacher traces are not complete. Generate traces before splitting.")
     prospective_report = split_report_output_path(config, args.report_output)
     require_new_outputs([*config["splits"].values(), prospective_report], force=args.force)
-    optimize_enabled = args.optimize_student_traces or bool(
-        config.get("optimize_student_traces", False)
+    repair_answers = bool(getattr(args, "repair_invalid_final_answers", False)) or bool(
+        config.get("repair_invalid_final_answers", False)
     )
     records, source_counts = read_student_trace_records_with_counts(
         config,
-        include_repaired_rejected=optimize_enabled,
+        include_repaired_rejected=repair_answers,
     )
-    optimization_counts: Counter[str] = Counter()
-    if optimize_enabled:
-        records, optimization_counts = optimize_student_traces_with_counts(records)
     records_before_cap = records
     records = cap_by_task_type(records, config.get("max_per_task_type"))
     cap_dropped_counts = record_task_type_counts(records_before_cap) - record_task_type_counts(
@@ -1191,11 +1099,10 @@ def split_command(args: argparse.Namespace) -> None:
             data_config=config,
             render_view=args.render_view,
             source_counts=source_counts,
-            optimization_counts=optimization_counts,
             cap_dropped_counts=cap_dropped_counts,
             split_records=split_records,
             split_paths=paths,
-            optimize_enabled=optimize_enabled,
+            repair_answers=repair_answers,
         ),
         split_report_output_path(config, args.report_output),
     )
@@ -1225,8 +1132,8 @@ def split_command(args: argparse.Namespace) -> None:
         ("Accepted traces", source_counts["accepted_teacher_traces"]),
         ("Dataset version", config["dataset_version"]),
         ("Teacher", config["teacher_name"]),
-        ("Rejected traces scanned", source_counts["rejected_total"] if optimize_enabled else 0),
-        ("Optimization", "enabled" if optimize_enabled else "disabled"),
+        ("Rejected traces scanned", source_counts["rejected_total"] if repair_answers else 0),
+        ("Optimization", "enabled" if repair_answers else "disabled"),
         ("Render view", args.render_view),
         (
             "Split traces",
@@ -1236,12 +1143,10 @@ def split_command(args: argparse.Namespace) -> None:
             ),
         ),
     ]
-    if optimize_enabled:
+    if repair_answers:
         summary_rows.extend(
             [
                 ("Final-answer repairs", source_counts["repaired_invalid_answer_format"]),
-                ("Pruned failed attempts", optimization_counts["pruned_failed_tool_attempts"]),
-                ("Dropped tool calls", optimization_counts["dropped_tool_calls"]),
             ]
         )
     if cap_dropped_counts:
@@ -1317,7 +1222,8 @@ def main() -> None:
         choices=[view.value for view in RenderView],
         default=RenderView.OLLAMA_NATIVE.value,
     )
-    split_parser.add_argument("--optimize-student-traces", action="store_true")
+    split_parser.add_argument("--repair-invalid-final-answers", action="store_true",
+                              help="Salvage format-only rejects without reasoning.")
     split_parser.add_argument(
         "--split-by-scene",
         action="store_true",

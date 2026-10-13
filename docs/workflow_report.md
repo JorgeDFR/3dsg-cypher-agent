@@ -16,7 +16,7 @@ configuration:
 ```bash
 docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml
+  --student-config configs/students/student_qwen3.5_4b.yaml
 ```
 
 The command prints the generated path, file size, and a `file://` hint. When
@@ -38,7 +38,7 @@ Use version selectors to reproduce a particular report:
 docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --data-config configs/data.yaml \
   --dataset-version 2026-09-08-T-12-05-47-Z \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --model-version 2026-09-08-T-13-00-00-Z
 ```
 

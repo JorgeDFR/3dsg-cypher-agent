@@ -42,6 +42,25 @@ def test_default_ollama_context_length_covers_long_challenge_conversations():
     assert DEFAULT_OLLAMA_CONTEXT_LENGTH == 16_384
 
 
+def test_ollama_thinking_is_retained_separately_and_replayed_when_enabled():
+    runtime = OllamaRawGenerationRuntime(
+        model="student", opener=RecordingOpener({
+            "message": {"role": "assistant", "thinking": "Count Object nodes.",
+                        "content": "<answer>3</answer>"},
+            "eval_count": 30,
+        }),
+    )
+    result = runtime.generate([{"role": "user", "content": "question"}],
+                              max_new_tokens=128, enable_thinking=True, tools=None)
+    assert result.text == "<answer>3</answer>"
+    assert result.reasoning == "Count Object nodes."
+    assert result.reasoning_status == "complete"
+    assert "Count Object nodes." in result.raw_text
+    history = [{"role": "assistant", "content": "", "reasoning": result.reasoning}]
+    assert ollama_messages(history, include_reasoning=True)[0]["thinking"] == result.reasoning
+    assert "thinking" not in ollama_messages(history)[0]
+
+
 def test_ollama_messages_preserve_native_tool_history():
     messages = ollama_messages(
         [

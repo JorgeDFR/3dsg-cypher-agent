@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from cypher_3dsg_agent_distillation.agents.experiment_profiles import load_experiment_profile
+from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import semantic_context
 from cypher_3dsg_agent_distillation.core.cli_output import captured_warnings, print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
@@ -901,6 +902,7 @@ def generate_records(
                     "question_set": question_set,
                     "task_family": task_family,
                     "output_type": output_type,
+                    "reasoning_context": deepcopy(semantic_context(variables, template, cypher)),
                 }
                 candidates.append(
                     QuestionCandidate(

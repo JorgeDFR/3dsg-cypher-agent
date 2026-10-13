@@ -52,7 +52,7 @@ Compute held-out loss and perplexity for the fine-tuned model:
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --split all \
   --mode eval-loss
 ```
@@ -68,7 +68,7 @@ Evaluate the fine-tuned model end to end:
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --split test \
   --mode raw-generation \
   --max-new-tokens 1024
@@ -79,7 +79,7 @@ Evaluate the configured base model with the same split and generation settings:
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --split test \
   --mode raw-generation \
   --baseline \
@@ -110,7 +110,7 @@ docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
 
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
-  --student-config configs/student_qwen3.5_4b.yaml \
+  --student-config configs/students/student_qwen3.5_4b.yaml \
   --split challenge \
   --mode raw-generation \
   --runtime ollama \

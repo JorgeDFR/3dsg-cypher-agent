@@ -245,8 +245,65 @@ def test_teacher_provider_requires_supported_explicit_type():
         raise AssertionError("Expected unsupported provider error")
 
 
+def test_real_teacher_ignores_enabled_controlled_repair_with_warning():
+    with pytest.warns(UserWarning, match="only valid for provider: synthetic"):
+        assert configured_teacher_provider({
+            "provider": "openrouter", "inject_controlled_repair": True,
+        }) == "openrouter"
+
+
+@pytest.mark.parametrize("include", [False, True])
+def test_teacher_inclusion_switch_preserves_replay_and_filters_saved_reasoning(include):
+    blocks = [{"type": "reasoning.text", "text": "Count Object nodes.", "signature": "signed"}]
+    calls = []
+
+    def send(request):
+        calls.append(deepcopy(request))
+        assistant = tool_assistant() if len(calls) == 1 else final_assistant()
+        assistant["reasoning_details"] = deepcopy(blocks)
+        if len(calls) == 2:
+            assistant["content"] = "<think>Return a number.</think><answer>3</answer>"
+        return {"choices": [{"message": assistant, "finish_reason": "stop"}], "usage": {}}
+
+    client = OpenRouterTeacherClient(request_sender=send, reasoning={"enabled": include})
+    seed = seed_record(metadata={"controlled_repair": True, "repair_cypher": "MATC broken",
+                                 "repair_template": "syntax"})
+    decision = run_teacher_interaction(
+        seed,
+        profile=load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml"),
+        client=client, teacher_model="teacher", validator=FakeValidator(), policy=None,
+        max_tool_calls=2, static_only=False,
+    )
+    assert decision.accepted
+    assert len(calls) == 2
+    # A provider that returns signed blocks despite exclude still receives exact replay.
+    replay = next(message for message in calls[1]["messages"] if message.get("tool_calls"))
+    assert replay["reasoning_details"] == blocks
+    assert calls[0]["reasoning"]["exclude"] is (not include)
+    assert ("enabled" in calls[0]["reasoning"]) is include
+    saved = decision.record.model_dump(exclude_none=True)
+    saved_call = next(message for message in saved["messages"] if message.get("tool_calls"))
+    assert ("reasoning_details" in saved_call) is include
+    assert ("reasoning" in saved["messages"][-1]) is include
+    assert saved["messages"][-1]["content"] == "<answer>3</answer>"
+    assert decision.record.metadata["reasoning_coverage"]["both_stages"] is include
+    assert "controlled_repair" not in decision.record.metadata
+    payload_call = next(
+        message for message in decision.payload["messages"] if message.get("tool_calls")
+    )
+    assert ("reasoning_details" in payload_call) is include
+
+
+def test_reasoning_effort_is_optional_and_exclude_is_no_longer_a_config_option():
+    assert OpenRouterTeacherClient(reasoning={"enabled": True}).api_reasoning() == {
+        "enabled": True, "exclude": False,
+    }
+    with pytest.raises(ValueError, match="reasoning.exclude was removed"):
+        OpenRouterTeacherClient(reasoning={"enabled": True, "exclude": False})
+
+
 def test_synthetic_teacher_config_does_not_define_a_model():
-    config = load_yaml("configs/teacher_synthetic.yaml")
+    config = load_yaml("configs/teachers/teacher_synthetic.yaml")
 
     assert configured_teacher_provider(config) == "synthetic"
     assert "model" not in config
@@ -359,19 +416,9 @@ def test_controlled_repair_requires_a_database_syntax_error():
     assert decision.reason == "invalid_controlled_repair"
 
 
-def test_openrouter_teacher_receives_controlled_repair_context():
+def test_openrouter_teacher_ignores_controlled_repair_context_by_default():
     invalid_cypher = "MATC (o:Object) RETURN count(o) AS count"
-    validator = FakeValidator(
-        [
-            {
-                "syntax_error": True,
-                "executable": False,
-                "rows": [],
-                "error": "Neo.ClientError.Statement.SyntaxError: Invalid input 'MATC'",
-            },
-            {"executable": True, "rows": [{"count": 3}], "error": None},
-        ]
-    )
+    validator = FakeValidator()
     decision, client = run_interaction(
         seed_record(
             metadata={
@@ -386,11 +433,11 @@ def test_openrouter_teacher_receives_controlled_repair_context():
 
     assert decision.accepted
     first_call_messages = client.calls[0]["messages"]
-    assert first_call_messages[-2]["tool_calls"][0]["function"]["arguments"] == {
-        "cypher_string": invalid_cypher
-    }
-    assert "Statement.SyntaxError" in first_call_messages[-1]["content"]
-    assert decision.record.metadata["tool_call_count"] == 2
+    assert all(message["role"] != "assistant" for message in first_call_messages)
+    assert validator.cyphers == [seed_record()["cypher"]]
+    assert decision.record.metadata["tool_call_count"] == 1
+    assert "controlled_repair" not in decision.record.metadata
+    assert decision.record.metadata["controlled_repair_skipped"] is True
 
 
 def test_synthetic_teacher_accepts_empty_qa_answer_for_invalid_input():

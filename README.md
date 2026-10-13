@@ -67,8 +67,8 @@ task-specific behavior shared across generation, training, and validation.
 | Path | Purpose |
 | --- | --- |
 | `configs/data.yaml` | Scene, question sets, split proportions, and challenge task types |
-| `configs/teacher_*.yaml` | Teacher provider, model, sampling, and tool-call limits |
-| `configs/student_*.yaml` | Base model, LoRA/QLoRA, training, and export settings |
+| `configs/teachers/teacher_*.yaml` | Teacher provider, model, sampling, and tool-call limits |
+| `configs/students/student_*.yaml` | Base model, LoRA/QLoRA, training, and export settings |
 | `configs/experiment_profiles/` | Task-specific prompts and output contracts |
 | `configs/prompts/` | Shared agent instructions and domain descriptions |
 | `configs/question_templates/` | QA and PDDL question templates |

@@ -302,6 +302,6 @@ def command(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Migrate legacy dataset and LoRA directories.")
     parser.add_argument("--data-config", default="configs/data.yaml")
-    parser.add_argument("--student-config", default="configs/student_qwen3.5_4b.yaml")
+    parser.add_argument("--student-config", default="configs/students/student_qwen3.5_4b.yaml")
     parser.add_argument("--apply", action="store_true")
     command(parser.parse_args())

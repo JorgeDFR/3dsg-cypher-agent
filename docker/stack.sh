@@ -6,8 +6,8 @@ COMPOSE_FILE="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yaml}"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
 NVIDIA_TEST_IMAGE="${NVIDIA_TEST_IMAGE:-ubuntu:24.04}"
 DEMO_DATA_CONFIG="${DEMO_DATA_CONFIG:-configs/data.yaml}"
-DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teacher_synthetic.yaml}"
-DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/student_qwen3.5_4b.yaml}"
+DEMO_TEACHER_CONFIG="${DEMO_TEACHER_CONFIG:-configs/teachers/teacher_synthetic.yaml}"
+DEMO_STUDENT_CONFIG="${DEMO_STUDENT_CONFIG:-configs/students/student_qwen3.5_4b.yaml}"
 
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
@@ -59,7 +59,7 @@ Inspection:
 Examples:
   docker/stack.sh main python scripts/training/train_agent_lora.py \
     --data-config configs/data.yaml \
-    --student-config configs/student_qwen3.5_4b.yaml
+    --student-config configs/students/student_qwen3.5_4b.yaml
   docker/stack.sh logs neo4j
 
 Environment:

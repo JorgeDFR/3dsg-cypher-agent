@@ -54,6 +54,9 @@ class AgentMessage(BaseModel):
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str | None = None
+    reasoning: str | None = None
+    reasoning_kind: Literal["text", "summary", "synthetic"] | None = None
+    reasoning_details: list[dict[str, Any]] | None = None
     tool_calls: list[ToolCall] | None = None
     tool_name: str | None = None
 

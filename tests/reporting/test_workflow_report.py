@@ -106,10 +106,8 @@ def write_minimal_artifacts(config):
         "tags": [],
         "task_type": "object_class_count",
         "metadata": {
-            "student_optimized": True,
             "final_answer_repaired": True,
-            "raw_tool_call_count": 2,
-            "dropped_tool_call_count": 1,
+            "tool_call_count": 2,
             "seed_uid": "q1",
         },
     }
@@ -203,7 +201,7 @@ def write_minimal_artifacts(config):
                         "split": "train",
                         "task_type": "object_class_count",
                         "question": "How many chairs?",
-                        "optimization_kinds": ["pruned_failed_tool_attempts"],
+                        "optimization_kinds": ["repaired_invalid_answer_format"],
                     }
                 ]
             },
@@ -561,8 +559,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "applyColumnFilters" in html
     assert "Optimized" in html
     assert "Optimization Type" in html
-    assert "Initial Tool Calls" in html
-    assert "Tool Calls Dropped" in html
+    assert "Initial Tool Calls" not in html
+    assert "Tool Calls Dropped" not in html
     assert '<th data-sort-index="3">Task Type</th>' in html
     assert "100.00%" in html
     assert '<span class="status-pill status-good">True</span>' in html

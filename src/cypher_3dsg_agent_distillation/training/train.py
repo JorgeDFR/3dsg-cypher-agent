@@ -14,6 +14,7 @@ from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     load_data_config,
     load_student_config,
+    resolve_project_path,
 )
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
@@ -306,7 +307,9 @@ def normalize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
 def message_to_plain_text(message: dict[str, Any]) -> str:
     role = message.get("role", "unknown")
     if message.get("tool_calls"):
-        return f"{role}: {json.dumps(message['tool_calls'], ensure_ascii=False, sort_keys=True)}"
+        content = message.get("content") or ""
+        calls = json.dumps(message['tool_calls'], ensure_ascii=False, sort_keys=True)
+        return f"{role}: {content + chr(10) if content else ''}{calls}"
     return f"{role}: {message.get('content', '')}"
 
 
@@ -337,8 +340,16 @@ def to_chat_text(
     messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None = None,
+    include_reasoning: bool = False,
 ) -> str:
-    messages = normalize_chat_messages(messages)
+    from cypher_3dsg_agent_distillation.agents.reasoning import (
+        student_messages,
+        training_template,
+    )
+
+    messages = student_messages(
+        normalize_chat_messages(messages), tokenizer, include_reasoning=include_reasoning,
+    )
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
         kwargs = {
             "tokenize": False,
@@ -346,6 +357,9 @@ def to_chat_text(
         }
         if tools:
             kwargs["tools"] = tools
+        template = training_template(tokenizer, include_reasoning=include_reasoning)
+        if template is not None:
+            kwargs["chat_template"] = template
         return tokenizer.apply_chat_template(messages, **kwargs)
     return "\n\n".join(message_to_plain_text(message) for message in messages)
 
@@ -370,14 +384,17 @@ def message_token_span(
     message_index: int,
     *,
     tools: list[dict[str, Any]] | None = None,
+    include_reasoning: bool = False,
 ) -> tuple[int, int]:
     before_ids = tokenize_rendered_text(
         tokenizer,
-        to_chat_text(tokenizer, messages[:message_index], tools=tools),
+        to_chat_text(tokenizer, messages[:message_index], tools=tools,
+                     include_reasoning=include_reasoning),
     )
     after_ids = tokenize_rendered_text(
         tokenizer,
-        to_chat_text(tokenizer, messages[: message_index + 1], tools=tools),
+        to_chat_text(tokenizer, messages[: message_index + 1], tools=tools,
+                     include_reasoning=include_reasoning),
     )
     start = common_prefix_length(input_ids, before_ids)
     end = common_prefix_length(input_ids, after_ids)
@@ -397,6 +414,7 @@ def assistant_token_spans(
     *,
     tools: list[dict[str, Any]] | None = None,
     excluded_message_indices: set[int] | None = None,
+    include_reasoning: bool = False,
 ) -> list[tuple[int, int]]:
     excluded_message_indices = excluded_message_indices or set()
     return [
@@ -406,6 +424,7 @@ def assistant_token_spans(
             input_ids,
             index,
             tools=tools,
+            include_reasoning=include_reasoning,
         )
         for index, message in enumerate(messages)
         if message.get("role") == "assistant" and index not in excluded_message_indices
@@ -420,6 +439,7 @@ def labels_for_loss_mode(
     loss_mode: str,
     tools: list[dict[str, Any]] | None = None,
     non_trainable_message_indices: Sequence[int] = (),
+    include_reasoning: bool = False,
 ) -> list[int]:
     loss_mode = normalize_loss_mode(loss_mode)
     excluded_indices = {int(index) for index in non_trainable_message_indices}
@@ -432,6 +452,7 @@ def labels_for_loss_mode(
                 input_ids,
                 index,
                 tools=tools,
+                include_reasoning=include_reasoning,
             )
             labels[start:end] = [IGNORE_INDEX] * (end - start)
         return labels
@@ -443,6 +464,7 @@ def labels_for_loss_mode(
         input_ids,
         tools=tools,
         excluded_message_indices=excluded_indices,
+        include_reasoning=include_reasoning,
     ):
         labels[start:end] = input_ids[start:end]
     return labels
@@ -520,13 +542,14 @@ def build_training_example(
     *,
     loss_mode: str,
     max_length: int | None,
+    include_reasoning: bool = False,
 ) -> dict[str, Any]:
     loss_mode = normalize_loss_mode(loss_mode)
     messages = normalize_chat_messages(record.get("messages", []))
     tools = training_tool_schemas(record)
     if loss_mode == FULL_LOSS_MODE and record.get("text"):
         text = (
-            to_chat_text(tokenizer, messages, tools=tools)
+            to_chat_text(tokenizer, messages, tools=tools, include_reasoning=include_reasoning)
             if messages
             else str(record["text"])
         )
@@ -535,7 +558,7 @@ def build_training_example(
             raise ValueError(
                 "Assistant-only training requires records with structured `messages`."
             )
-        text = to_chat_text(tokenizer, messages, tools=tools)
+        text = to_chat_text(tokenizer, messages, tools=tools, include_reasoning=include_reasoning)
     input_ids = tokenize_rendered_text(tokenizer, text)
     validate_training_length(
         uid=str(record.get("uid", "")),
@@ -550,6 +573,7 @@ def build_training_example(
             messages=messages,
             input_ids=input_ids,
             loss_mode=loss_mode,
+            include_reasoning=include_reasoning,
             tools=tools,
             non_trainable_message_indices=(
                 (record.get("metadata") or {}).get("non_trainable_message_indices") or []
@@ -565,26 +589,31 @@ def build_training_example(
     return example
 
 
-def rendered_record_text(record: dict[str, Any], tokenizer) -> str:
+def rendered_record_text(
+    record: dict[str, Any], tokenizer, *, include_reasoning: bool = False,
+) -> str:
     return (
         to_chat_text(
             tokenizer,
             record["messages"],
             tools=training_tool_schemas(record),
+            include_reasoning=include_reasoning,
         )
         if record.get("messages")
         else str(record.get("text") or "")
     )
 
 
-def build_dataset(path: str, tokenizer, *, max_length: int | None = None):
+def build_dataset(
+    path: str, tokenizer, *, max_length: int | None = None, include_reasoning: bool = False,
+):
     from datasets import Dataset
 
     records = read_jsonl(path)
     examples = []
     rejected_count = 0
     for record in records:
-        text = rendered_record_text(record, tokenizer)
+        text = rendered_record_text(record, tokenizer, include_reasoning=include_reasoning)
         try:
             if max_length is not None:
                 validate_training_length(
@@ -617,12 +646,16 @@ def build_training_dataset(
     *,
     loss_mode: str,
     max_length: int | None,
+    include_reasoning: bool = False,
+    retained_uids: set[str] | None = None,
 ):
     from datasets import Dataset
 
     records = read_jsonl(path)
     examples = []
     rejected_count = 0
+    if retained_uids is not None:
+        records = [record for record in records if str(record.get("uid")) in retained_uids]
     for record in records:
         try:
             example = build_training_example(
@@ -630,6 +663,7 @@ def build_training_dataset(
                 tokenizer,
                 loss_mode=loss_mode,
                 max_length=max_length,
+                include_reasoning=include_reasoning,
             )
         except OverlengthTrainingTraceError:
             rejected_count += 1
@@ -716,6 +750,16 @@ def normalize_loss_mode(value: str | None) -> str:
 
 def loss_mode_from_training_config(training_config: dict[str, Any]) -> str:
     return normalize_loss_mode(training_config.get("loss_mode", DEFAULT_LOSS_MODE))
+
+
+def retained_uids_from_training_config(training_config: dict[str, Any]) -> set[str] | None:
+    path = training_config.get("retained_uids_path")
+    if not path:
+        return None
+    values = json.loads(resolve_project_path(path).read_text(encoding="utf-8"))
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("training.retained_uids_path must contain a JSON array of trace UIDs.")
+    return set(values)
 
 
 def training_arguments_kwargs(
@@ -899,6 +943,8 @@ def command(args: argparse.Namespace) -> None:
         model_version=args.model_version,
         create_version=True,
     )
+    if getattr(args, "include_reasoning", None) is not None:
+        config["training"]["include_reasoning"] = args.include_reasoning
     split_files, split_fingerprint = split_fingerprints(
         data_config["splits"], project_root=PROJECT_ROOT
     )
@@ -964,6 +1010,8 @@ def command(args: argparse.Namespace) -> None:
     )
 
     max_length = int(training_config.get("max_length", 4096))
+    include_reasoning = bool(training_config.get("include_reasoning", False))
+    retained_uids = retained_uids_from_training_config(training_config)
     loss_mode = loss_mode_from_training_config(training_config)
     with phase_progress("Preparing training datasets", 2) as (progress, task_id):
         train_dataset = build_training_dataset(
@@ -971,6 +1019,8 @@ def command(args: argparse.Namespace) -> None:
             tokenizer,
             loss_mode=loss_mode,
             max_length=max_length,
+            include_reasoning=include_reasoning,
+            retained_uids=retained_uids,
         )
         progress.update(task_id, advance=1, description="Preparing evaluation dataset")
         eval_dataset = build_training_dataset(
@@ -978,6 +1028,8 @@ def command(args: argparse.Namespace) -> None:
             tokenizer,
             loss_mode=loss_mode,
             max_length=max_length,
+            include_reasoning=include_reasoning,
+            retained_uids=retained_uids,
         )
         data_collator = CausalLmDataCollator(tokenizer)
         progress.update(task_id, advance=1)
@@ -1090,10 +1142,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--student-config",
-        default="configs/student_qwen3.5_4b.yaml",
+        default="configs/students/student_qwen3.5_4b.yaml",
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
+    parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override training.include_reasoning for a matched ablation.")
     parser.add_argument(
         "--model-version",
         default=None,

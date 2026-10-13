@@ -32,8 +32,13 @@ def render_custom_message(message: AgentMessage) -> dict[str, Any]:
     if message.role == "assistant" and message.tool_calls:
         tool_call = message.tool_calls[0]
         return {
+            **{key: value for key, value in message.model_dump(exclude_none=True).items()
+               if key not in {"tool_calls", "tool_name", "content"}},
             "role": "assistant",
-            "content": custom_tool_call(tool_call.function.name, tool_call.function.arguments),
+            "content": "\n".join(filter(None, [
+                message.content,
+                custom_tool_call(tool_call.function.name, tool_call.function.arguments),
+            ])),
         }
     if message.role == "tool":
         return {"role": "user", "content": f"Output of tool call: {message.content or ''}"}

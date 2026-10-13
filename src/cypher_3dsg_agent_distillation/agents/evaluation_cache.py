@@ -42,6 +42,10 @@ def evaluation_identity(
         "allow_dataset_mismatch", "adapter_dir", "username", "uri", "database",
         "ollama_host", "ollama_timeout", "ollama_keep_alive",
     })
+    if arguments.get("enable_thinking") is None:
+        arguments["enable_thinking"] = bool((student_config.get("inference") or {}).get(
+            "enable_thinking", False,
+        ))
     model = student_config["model"]
     identity = {
         "schema_version": 1,
@@ -67,6 +71,9 @@ def evaluation_identity(
         identity["loss_defaults"] = {
             "max_length": args.max_length or training.get("max_length", 4096),
             "loss_mode": args.loss_mode or training.get("loss_mode", "assistant-only"),
+            "include_reasoning": training.get("include_reasoning", False),
+            "retained_uids": file_fingerprint(training["retained_uids_path"])
+            if training.get("retained_uids_path") else None,
         }
     return mapping_fingerprint(identity)
 

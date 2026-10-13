@@ -119,6 +119,8 @@ def evaluate_eval_loss(
     progress_task_id=None,
     show_progress: bool = False,
 ) -> dict[str, Any]:
+    from cypher_3dsg_agent_distillation.training.train import retained_uids_from_training_config
+
     model, tokenizer = load_student_model_and_tokenizer(
         student_config=student_config,
         adapter_dir=adapter_dir,
@@ -136,6 +138,10 @@ def evaluate_eval_loss(
         progress=progress,
         progress_task_id=progress_task_id,
         show_progress=show_progress,
+        include_reasoning=bool((student_config.get("training") or {}).get(
+            "include_reasoning", False,
+        )),
+        retained_uids=retained_uids_from_training_config(student_config.get("training") or {}),
     )
 
 
@@ -151,6 +157,8 @@ def evaluate_eval_loss_with_loaded_model(
     progress=None,
     progress_task_id=None,
     show_progress: bool = False,
+    include_reasoning: bool = False,
+    retained_uids: set[str] | None = None,
 ) -> dict[str, Any]:
     (
         torch,
@@ -170,6 +178,8 @@ def evaluate_eval_loss_with_loaded_model(
         tokenizer,
         loss_mode=loss_mode,
         max_length=max_length,
+        **({"include_reasoning": True} if include_reasoning else {}),
+        **({"retained_uids": retained_uids} if retained_uids is not None else {}),
     )
     collator = CausalLmDataCollator(tokenizer)
     loader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
@@ -239,6 +249,8 @@ def evaluate_eval_loss_splits(
     progress_task_id=None,
     show_progress: bool = False,
 ) -> dict[str, dict[str, Any]]:
+    from cypher_3dsg_agent_distillation.training.train import retained_uids_from_training_config
+
     model, tokenizer = load_student_model_and_tokenizer(
         student_config=student_config,
         adapter_dir=adapter_dir,
@@ -257,6 +269,10 @@ def evaluate_eval_loss_splits(
             progress=progress,
             progress_task_id=progress_task_id,
             show_progress=show_progress,
+            include_reasoning=bool((student_config.get("training") or {}).get(
+                "include_reasoning", False,
+            )),
+            retained_uids=retained_uids_from_training_config(student_config.get("training") or {}),
         )
         for split in splits
     }
