@@ -1,0 +1,884 @@
+version: 1
+templates:
+  pddl_visit_object_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  pddl_end_at_object_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  pddl_inspect_object_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  pddl_hold_object_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_visit_object_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_end_at_object_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_inspect_nearest_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: object}
+        direction: ASC
+    - {kind: limit, value: 1}
+  pddl_end_at_nearest_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: object}
+        direction: ASC
+    - {kind: limit, value: 1}
+  pddl_visit_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: [Place]
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_end_at_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: [Place]
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_visit_mesh_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: [MeshPlace]
+      properties:
+        nodeSymbol: {kind: binding, name: mesh_place}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_end_at_mesh_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: [MeshPlace]
+      properties:
+        nodeSymbol: {kind: binding, name: mesh_place}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_visit_room_symbol:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+  pddl_end_in_room_symbol:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+  pddl_visit_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_end_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_visit_room_containing_object:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_end_in_room_containing_object:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_move_object_to_place:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_inspect_object_and_end_at_place:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: p
+      layers: [Place]
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_visit_object_and_end_at_object:
+    operations:
+    - kind: match
+      role: waypoint
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: waypoint_object}
+      optional: false
+    - kind: match
+      role: destination
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: destination_object}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: waypoint}
+        operator: <>
+        right: {kind: ref, name: destination}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: waypoint.nodeSymbol}
+        alias: waypoint
+      - expression: {kind: ref, name: destination.nodeSymbol}
+        alias: destination
+  pddl_not_holding_object_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  pddl_not_holding_object_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_visit_object_without_holding:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  pddl_inspect_object_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_object_not_in_place:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  pddl_visit_place_and_end_in_room:
+    operations:
+    - kind: match
+      role: p
+      layers: [Place]
+      properties:
+        nodeSymbol: {kind: binding, name: place}
+      optional: false
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+  pddl_visit_all_objects_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_inspect_all_objects_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_visit_any_class_and_end_at_any_class:
+    operations:
+    - kind: match
+      role: first
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: first_class}
+      optional: false
+    - kind: match
+      role: second
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: second_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first.nodeSymbol}
+        alias: first
+      - expression: {kind: ref, name: second.nodeSymbol}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  pddl_visit_all_class_and_end_in_room_class:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_visit_any_class_without_holding_any_class:
+    operations:
+    - kind: match
+      role: first
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: first_class}
+      optional: false
+    - kind: match
+      role: second
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: second_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first.nodeSymbol}
+        alias: first
+      - expression: {kind: ref, name: second.nodeSymbol}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  pddl_atomic_alternative:
+    operations:
+    - kind: match
+      role: first
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: first_class}
+      optional: true
+    - kind: match
+      role: second
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: second_class}
+      optional: true
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first.nodeSymbol}
+        alias: first
+      - expression: {kind: ref, name: second.nodeSymbol}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  pddl_compound_alternative:
+    operations:
+    - kind: match
+      role: first
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: first_class}
+      optional: true
+    - kind: match
+      role: second
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: second_class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first.nodeSymbol}
+        alias: first
+      - expression: {kind: ref, name: second.nodeSymbol}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  pddl_end_in_room_containing_object_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  pddl_visit_object_class_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_end_at_object_class_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  pddl_inspect_closest_between_classes:
+    operations:
+    - kind: match
+      role: reference
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: reference_class}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: target_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: reference}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: reference}
+        alias: null
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: reference.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+      - expression: {kind: ref, name: reference.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  pddl_ordered_places:
+    operations:
+    - kind: match
+      role: first
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: first}
+      optional: false
+    - kind: match
+      role: second
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: second}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: logical
+          operator: or
+          arguments:
+          - {kind: label, role: first, layer: Place}
+          - {kind: label, role: first, layer: MeshPlace}
+        - kind: logical
+          operator: or
+          arguments:
+          - {kind: label, role: second, layer: Place}
+          - {kind: label, role: second, layer: MeshPlace}
+        - kind: compare
+          left: {kind: ref, name: first}
+          operator: <>
+          right: {kind: ref, name: second}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first.nodeSymbol}
+        alias: first
+      - expression: {kind: ref, name: second.nodeSymbol}
+        alias: second

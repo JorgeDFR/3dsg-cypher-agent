@@ -1218,16 +1218,19 @@ def render_message_card(message: dict[str, Any], index: int) -> str:
     ]
     if message.get("content") not in (None, ""):
         parts.append(render_pre_text(message.get("content"), preserve_newlines=True))
+    if message.get("role") == "assistant" and message.get("reasoning"):
+        parts.append("<h5>Reasoning</h5>")
+        parts.append(render_pre_text(message["reasoning"], preserve_newlines=True))
     if message.get("tool_calls"):
         parts.append("<h5>Tool Calls</h5>")
         parts.append(render_pre_text(message["tool_calls"], preserve_newlines=True))
     extra = {
         key: value
         for key, value in message.items()
-        if key not in {"role", "content", "tool_calls", "tool_name"}
+        if key not in {"role", "content", "reasoning", "tool_calls", "tool_name"}
         and value not in (None, "", [], {})
     }
-    if extra:
+    if extra and message.get("role") != "tool" and message.get("kind") != "tool_result":
         parts.append("<h5>Metadata</h5>")
         parts.append(render_pre_text(extra, preserve_newlines=True))
     parts.append("</div>")
@@ -1259,7 +1262,12 @@ def render_detail_section(
     if name == "messages":
         messages = render_messages_section(payload)
         if messages:
-            return f"<h4>{title}</h4>{messages}"
+            return (
+                '<details class="validation-detail-group">'
+                f"<summary>{title}</summary>"
+                f'<div class="validation-detail-group-body">{messages}</div>'
+                "</details>"
+            )
     render_payload = "" if payload in (None, "", [], {}) else payload
     rendered = render_pre_text(
         render_payload,
@@ -1271,6 +1279,13 @@ def render_detail_section(
     )
     if name.endswith("_rendered_prompt"):
         return f"<details><summary>{title}</summary>{rendered}</details>"
+    if name in {"messages", "validation"}:
+        return (
+            '<details class="validation-detail-group">'
+            f"<summary>{title}</summary>"
+            f'<div class="validation-detail-group-body">{rendered}</div>'
+            "</details>"
+        )
     return f"<h4>{title}</h4>{rendered}"
 
 

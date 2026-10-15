@@ -6,6 +6,7 @@ from cypher_3dsg_agent_distillation.reporting import workflow_report as workflow
 from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     collect_workflow_report_data,
     render_generated_questions_tab,
+    render_message_card,
     render_record_detail,
     render_scene_graph_tab,
     render_workflow_report,
@@ -13,6 +14,63 @@ from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     validation_example_rows,
     workflow_report_output_path,
 )
+
+
+def test_message_card_separates_reasoning_from_content_and_metadata():
+    html = render_message_card(
+        {
+            "role": "assistant",
+            "content": "<answer>O1</answer>",
+            "reasoning": "Use returned symbols.\nPreserve <O1>.",
+            "tool_call_id": "call-1",
+        },
+        1,
+    )
+
+    assert "<pre>&lt;answer&gt;O1&lt;/answer&gt;</pre>" in html
+    assert "<h5>Reasoning</h5><pre>Use returned symbols.\nPreserve &lt;O1&gt;.</pre>" in html
+    assert html.count("Use returned symbols.") == 1
+    assert '<h5>Metadata</h5>' in html
+    assert "call-1" in html
+    assert "<h5>Reasoning</h5>" not in render_message_card(
+        {"role": "assistant", "content": "answer", "reasoning": None}, 2
+    )
+
+
+def test_tool_response_hides_metadata_but_preserves_result():
+    html = render_message_card(
+        {
+            "role": "tool",
+            "tool_name": "run_cypher_query",
+            "content": [{"id": "O1"}],
+            "tool_call_id": "call-1",
+            "metadata": {"duration": 0.1},
+        },
+        2,
+    )
+
+    assert "2. Tool / run_cypher_query" in html
+    assert "O1" in html
+    assert "Metadata" not in html
+    assert "call-1" not in html
+    assert "duration" not in html
+
+
+def test_messages_and_validation_use_collapsible_detail_groups():
+    html = render_record_detail(
+        {
+            "sections": {
+                "messages": [{"role": "assistant", "reasoning": "Plan a query."}],
+                "validation": {"passed": True},
+            }
+        }
+    )
+
+    assert html.count('<details class="validation-detail-group">') == 2
+    assert html.count('class="validation-detail-group-body"') == 2
+    assert "<summary>Messages</summary>" in html
+    assert "<summary>Validation</summary>" in html
+    assert "<h5>Reasoning</h5><pre>Plan a query.</pre>" in html
 
 
 def test_generated_questions_tab_reports_empty_and_repair_counts():

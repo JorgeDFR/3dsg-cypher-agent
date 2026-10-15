@@ -186,9 +186,16 @@ def test_generation_checkpoints_cost_coverage_and_resumes_without_duplicates(
     openrouter_teacher.generate_command(args)
     report = load_yaml(traces / "pilot_report.yaml")
     assert report["coverage"]["accepted"] == 2
-    assert report["coverage"]["accepted_with_both_stage_reasoning"] == 2
+    expected_both_stages = 0 if provider == "synthetic" else 2
+    assert report["coverage"]["accepted_with_both_stage_reasoning"] == expected_both_stages
     assert load_yaml(traces / "metadata.yaml")["status"] == "pilot_complete"
     records = (traces / "teacher_traces.jsonl").read_bytes()
+    if provider == "synthetic":
+        for record in map(json.loads, records.decode().splitlines()):
+            tool_turn = next(message for message in record["messages"] if message.get("tool_calls"))
+            assert not tool_turn.get("reasoning")
+            assert tool_turn["reasoning_selection"]["selected_rules"] == []
+            assert record["messages"][-1]["reasoning"] == "SLDP integer."
     if provider == "openrouter":
         assert report["billing"]["total_cost_usd"] == pytest.approx(0.004)
         assert len(calls) == 4

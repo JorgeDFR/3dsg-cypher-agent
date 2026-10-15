@@ -12,7 +12,7 @@ lora:
   target_modules: all-linear
 
 training:
-  include_reasoning: false
+  include_reasoning: true #false
   output_dir: outputs/lora/qwen3.5-4b-finetune
   loss_mode: assistant-only
   loss_type: chunked_nll
@@ -38,7 +38,7 @@ training:
   report_to: none
 
 inference:
-  enable_thinking: false
+  enable_thinking: true #false
 
 ollama_export:
   model_name: qwen3.5-4b-finetune

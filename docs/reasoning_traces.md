@@ -171,46 +171,175 @@ reasoning:
   max_sentences: null
 ```
 
-`null` includes every relevant sentence; there is no default sentence cap.
+`null` includes every relevant decision unit; there is no default sentence cap.
 An integer greater than or equal to zero limits each assistant turn independently.
 `max_tool_sentences` and `max_final_sentences` override the shared cap for their
 respective stages. An override of `null` restores unlimited sentences for that
 stage, and zero emits no reasoning text while retaining selection diagnostics.
 
-Rules in `agents/synthetic_reasoning.py` build relevant sentences from structured
-template semantics, label-space restrictions, symbols in the question, and the
-observed tool outcome. New seeds retain variable bindings, class restrictions,
-and the PDDL goal tree in `metadata.reasoning_context`. Existing seeds are
-enriched from their configured question template when generating new traces.
-These annotations are private metadata, not additional information in the
-teacher's prompt. Before-tool sentences do not use expected answers or result rows.
+Synthetic reasoning renderer version 3 uses validated retrieval operations and the
+existing PDDL goal tree. Retrieval declarations remain at semantics version 1.
+Sentence triggers do not inspect question wording, tags, or
+`query_type`. The same operation rules handle new combinations of supported tasks.
+Before-tool reasoning never reads expected answers, expected grounding, or tool rows.
+Final reasoning uses observed rows and public grounding roles only.
 
-An offline preview on the saved `2026-09-16-T-16-34-51-Z` dataset added a median
-of 44 Qwen tokens per trace (maximum 110), with 1–10 selected sentences per
-assistant turn and no traces over 5,000 tokens. This measured rendering on 1,660
-saved conversations, preserving their answers and calls; it did not run fresh
-database validation or measure teacher accuracy.
+The two stages describe different decisions:
+
+- Before-tool reasoning describes retrieval constraints, containment/connectivity,
+  optional matches, grouping, ranking, ties and repairs. It omits routine entity
+  matching, projection narration and all PDDL predicates, action meanings and goal
+  composition. Simple symbol/class lookups and plain counts can have no reasoning.
+  Query filters retain their own logical operators when they restrict candidates.
+- Final PDDL reasoning describes predicate arguments and the complete goal structure
+  using task roles instead of repeating retrieved symbols. `ANY` denotes an `or`
+  expansion across candidates; `ALL` denotes an `and` expansion. Explicit goal
+  operators use `AND(...)`, `OR(...)` and `NOT(...)`. For example,
+  `AND(ALL safe(chair objects), ANY in-region(office rooms)).` Distinct target roles,
+  placement argument order and negation scope are preserved. Singleton expansions
+  need no `ANY`/`ALL` wrapper, matching the grounded PDDL answer.
+- Final QA reasoning omits result values, column mapping and routine zero-count
+  narration. Short syntax reminders remain: `SLDP integer.`,
+  `SLDP POINT(x y z); no commas.`, or `SLDP set of symbol pairs; preserve row pairs.`
+  PDDL finals retain `PDDL goal expression.` No stage repeats answer-tag instructions.
+- Unlisted-class notices remain concise: `Unlisted class laundry; query for instances.`
+  An absent label never establishes that the scene has no matching instances.
+
+Related retrieval decisions share one unit. Distance computation has no standalone
+sentence; its metric appears in the relevant bound or ranking. A radius followed by
+nearest selection can read `center distance(...) <= 5; Nearest qualifying candidates.`
+Counts and extrema already explained by ranking or tie selection are not narrated
+again. More complex goals retain their complete logical structure in one unit.
+
+Retrieval declarations live in
+`configs/question_templates/synthetic_reasoning/cypher_qa_3dsg.yaml` and
+`configs/question_templates/synthetic_reasoning/cypher_pddl_3dsg.yaml`. Each file has one global
+`version` and a `templates` mapping keyed by the existing `query_type` names.
+Question catalogs retain their original question, sampling and validation fields;
+they have no `template_id`, `oracle_type` or `semantics` fields. Declarations are
+compiled from Cypher by a parser for the supported read-only subset, retaining
+bindings, layers, directed containment, bounded connectivity, logical filters,
+computations, grouping, projections, order and limits. PDDL intent continues to come
+from
+`goal`; it is not inferred from the retrieval query. This avoids maintaining rules
+for each question name and avoids duplicating the PDDL goal specification.
+
+These files describe complete retrieval queries, not the emitted sentence types.
+Keep `match`, projection and computation operations when their narration is removed:
+they supply bindings, class/layer information, unlisted-class checks, selection
+metrics and final PDDL target roles. The declarations remain private metadata;
+only renderer-selected sentences enter supervised reasoning. Renderer-only
+sentence changes require no declaration update.
+
+After changing a query, explicitly refresh its declarations and review the diff:
+
+```bash
+python scripts/agents/audit_synthetic_reasoning.py compile --write
+python scripts/agents/audit_synthetic_reasoning.py audit
+```
+
+The compiler writes only the separate reasoning files. It never rewrites question
+catalogs or prompts. Adding or renaming a question type, or changing its query,
+requires recompilation to update the mapping and operations; it needs no renderer
+change for supported operations. Changing tags, question variants or sampling
+settings requires no reasoning configuration change. `query_type` also remains the
+existing dispatch key for scene-based gold answers and result validation. There is
+no additional identity or oracle field. An operation outside the supported
+vocabulary requires parser/rendering support.
+The scene-based gold-answer oracle is a separate component; new question
+families also need oracle support, even when their reasoning operations are reused.
+
+Question generation retains sampled bindings and the goal without loading these
+files. Synthetic teacher generation with reasoning enabled verifies the separate
+declarations and attaches resolved operations, goal structure, public grounding
+fields and a fingerprint to `metadata.reasoning_context`. Real teachers and
+synthetic generation with reasoning disabled skip this configuration entirely.
+Metadata is private and adds no text to prompts. Reasoning configuration and source
+fingerprints enter synthetic reasoning run identity, preventing stale resumable runs.
+The synthetic teacher's optional `reasoning.semantics_paths` selects custom files,
+in the same order as `question_sets`; defaults use each question file's basename
+under `configs/question_templates/synthetic_reasoning/`. The offline CLI accepts
+the same override through `--semantics`, paired with `--templates`.
+
+Validation normalizes whitespace, keyword case, simple local-variable renames and
+independent conjunction order. It is a structural consistency check, not a general
+Cypher equivalence proof. Other rewrites may require recompilation. Unknown
+functions, unbounded traversals, arbitrary procedures and unsupported list
+comprehensions receive explicit diagnostics instead of partial explanations.
 
 | Priority | Stage and rule |
 | --- | --- |
-| 0 | Tool: specific repair correction. Final: empty outcome or write refusal. |
-| 5 | Final: required answer syntax. |
-| 10 | Tool: Object/Room nodes or symbols and Place/MeshPlace layers. Final: use returned rows. |
-| 15 | Tool: object/room label-space membership. |
-| 20 | Tool: intermediate visits versus final destinations. |
-| 25 | Tool: nested PDDL `and`, `or`, `not` operators and their scope. |
-| 30 | Tool: any/every target selection and per-target negation. |
-| 40 | Tool: command intent to PDDL predicate mapping. |
-| 50 | Tool: distance ranking and aggregation. |
+| 0 | Observed repair; refusal; empty outcome; missing required grounding or unavailable alternatives. |
+| 10 | Final PDDL composition, including predicates, quantification, negation and destination roles. |
+| 20 | Retrieval constraints, containment/connectivity, optional matches, bounds, aggregation, extrema and selection. |
+| 30 | Unlisted-class notices and final output syntax. |
 
-Candidates are sorted by ascending priority, then stable rule ID. Duplicate
-sentence text is removed. If there are more candidates than the configured cap,
-the first candidates are kept. Every generated assistant turn records
-`reasoning_selection.cap`, `candidate_count`, `selected_rules`, and
-`omitted_rules`, so capping can be audited without guessing why a sentence vanished.
-The rule set is intentionally extensible; unsupported task details do not cause
-invented explanations. Label-space membership does not imply that the class
-has instances in the current scene.
+Candidates are selected by priority and stable rule ID, then rendered in task order.
+Deduplication includes scope. A PDDL logical expression is one complete sentence
+unit, so caps cannot keep existential choice while dropping its enclosing negation.
+Every generated turn records `cap`, `candidate_count`, `selected_rules`,
+`omitted_rules`, `critical_omitted_rules`, `rendered_rules`, and renderer version.
+A small cap may omit essential decisions; diagnostics expose those omissions.
+Unlimited selection remains the default. Reasoning remains opt-in.
+
+Final explanations specify concise SLDP shapes, preserve pair rows, and inspect
+the goal tree before dropping unavailable alternatives. Empty answers retain their
+container syntax (`<>` or `[]`); zero counts retain ordinary integer syntax.
+An unavailable required conjunct produces an empty answer.
+Repairs retain their original masked faulty turn and identify the observed query
+correction where possible.
+
+### Offline audit and legacy migration
+
+The audit does not call a model or load/clear Neo4j. It verifies legacy bindings
+against the source query, previews both stages using saved tool feedback, and
+reports rule coverage, word lengths, optional exact tokenizer lengths, and cap
+omissions. `reasoning_by_stage` separates query/final turns, emitted reasoning
+coverage, and mean/median/maximum/total word and optional token lengths. Empty
+query reasoning contributes zero to these lengths. Outputs must be new files:
+
+```bash
+python scripts/agents/audit_synthetic_reasoning.py audit \
+  --seeds data/datasets/dataset_demo/SOURCE_VERSION/cypher_seed_records.jsonl \
+  --traces data/datasets/dataset_demo/SOURCE_VERSION/traces/teacher_traces.jsonl \
+  --output outputs/reasoning_audit/report.json
+
+python scripts/agents/audit_synthetic_reasoning.py migrate \
+  --seeds data/datasets/dataset_demo/SOURCE_VERSION/cypher_seed_records.jsonl \
+  --output outputs/reasoning_audit/migrated_seeds.jsonl
+```
+
+Use `--tokenizer /local/tokenizer/directory` for exact reasoning-token counts without
+a download. Word counts alone do not establish training-length usability.
+For renamed legacy templates, `--template-mapping mapping.json` accepts a JSON
+mapping from old `query_type` names to current names. Existing verified contexts
+carry their own source snapshot and do not need the current catalog to reproduce
+reasoning.
+
+Migration preserves UIDs, split groups, answers and queries. For legacy PDDL seeds
+with saved expected grounding, the proposed goal must reproduce the stored goal.
+Expected values are used only for this provenance check, never as sentence inputs.
+Changed source queries, conflicting bindings, incompatible goals or unknown
+templates are marked unresolved.
+Synthetic generation with reasoning rejects unresolved seeds explicitly. Regenerate
+those seeds from the current templates; do not reinterpret them with a newer goal.
+
+### Matched experiments
+
+Generate a fresh validated dataset with the existing prompts and enabled synthetic
+reasoning, then split it once. Use the existing matched-retained-UID mechanism for
+reasoning-on/off training, ensuring that length filtering retains identical examples.
+Existing saved version-2 traces are not rewritten by the renderer change. To compare
+versions 2 and 3, retain those traces and regenerate with the current renderer.
+For a version-1 comparison, preserve a separately generated version-1 corpus from
+the earlier code and intersect retained UIDs across the corpora. Align prompts,
+queries, answers, splits, tokenizer, optimizer settings and training seeds; varying
+prompt versions would confound a reasoning-only comparison.
+
+Compare executable/query-result correctness, final-answer correctness, performance
+by semantic operation, reasoning length and cap omissions. An offline coverage
+report does not establish a student accuracy improvement. Full model training and
+fresh Neo4j execution are separate validations after dataset regeneration.
 
 The synthetic teacher retains controlled repair supervision. The injected faulty
 assistant turn and its error remain masked; the corrected call explains the fix.

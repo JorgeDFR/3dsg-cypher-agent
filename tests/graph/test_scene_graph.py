@@ -245,6 +245,18 @@ def test_object_class_inventory_uses_object_labels_only():
     assert "floor" not in inventory
 
 
+def test_pddl_visit_without_holding_uses_template_bindings_and_grounding_fields():
+    index = SceneIndex(SCENE_PATH)
+
+    assert index.solution_for(
+        "pddl_visit_any_class_without_holding_any_class",
+        {"first_class": "stool", "second_class": "sofa"},
+    ) == {
+        "first": ["O481"],
+        "second": ["O0", "O218", "O219", "O268", "O306", "O530"],
+    }
+
+
 def test_new_qa_gold_solutions_cover_attributes_hierarchy_and_spatial_queries():
     index = SceneIndex(SCENE_PATH)
 

@@ -24,6 +24,8 @@ from cypher_3dsg_agent_distillation.agents.openrouter_teacher import (
     trace_token_length_report,
 )
 from cypher_3dsg_agent_distillation.core.config import load_yaml
+from cypher_3dsg_agent_distillation.cypher.task_semantics import enrich_seed_semantics
+from cypher_3dsg_agent_distillation.cypher.templates import generate_records
 
 
 class FakeValidator:
@@ -337,6 +339,52 @@ def test_synthetic_teacher_constructs_trace_from_gold_and_database_rows():
     assert "teacher_model" not in decision.record.model_dump(exclude_none=True)
     assert decision.record.metadata["teacher_provider"] == "synthetic"
     assert decision.record.metadata["generation_mode"] == "synthetic_gold_cypher"
+
+
+@pytest.mark.parametrize("reasoning_enabled", [False, True])
+@pytest.mark.parametrize(
+    ("object_symbol", "rows", "expected"),
+    [
+        ("O0", [{"place": "p663"}], "p663"),
+        ("O12", [{"place": "p1519"}, {"place": "p30886"}], "<p1519, p30886>"),
+        ("O2", [], "<>"),
+    ],
+)
+def test_synthetic_parent_lookup_accepts_actual_scene_result_shapes(
+    object_symbol, rows, expected, reasoning_enabled
+):
+    template = next(
+        template
+        for template in load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+        if template["query_type"] == "object_place_lookup"
+    )
+    template = {**template, "target_questions": 1, "questions": template["questions"][:1]}
+    records = generate_records(
+        {
+            "scene_id": "uhumans2_office",
+            "source_3dsg": "data/scenes/uhumans2_office.json",
+            "values": {"object_parent_cases": [{"object": object_symbol}]},
+        },
+        question_templates_config={"templates": [template]},
+        warn_on_target_shortfall=False,
+    )
+    seed = records[0]
+    enrich_seed_semantics(seed, template)
+    decision = run_synthetic_teacher_interaction(
+        seed,
+        profile=load_experiment_profile("configs/experiment_profiles/cypher_qa_template.yaml"),
+        validator=FakeValidator([{"executable": True, "rows": rows, "error": None}]),
+        policy=None,
+        reasoning={"enabled": reasoning_enabled},
+    )
+
+    assert decision.accepted, decision.reason
+    assert decision.record.final_answer == expected
+    assert decision.record.cypher_solution == expected
+    assert decision.record.validation.final_answer_format_valid is True
+    assert decision.record.validation.solution_match is True
+    final_message = decision.record.messages[-1]
+    assert bool(final_message.reasoning) == reasoning_enabled
 
 
 def test_synthetic_teacher_constructs_controlled_repair_trace():

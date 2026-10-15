@@ -3,7 +3,9 @@ traces_per_seed: 1
 max_tool_calls: 2
 inject_controlled_repair: true
 reasoning:
-  enabled: false
-  # null keeps every relevant sentence. Caps apply separately to each assistant turn.
+  enabled: true
+  # Declarations live in configs/question_templates/synthetic_reasoning/<question-file-name>.
+  # Optional semantics_paths override those files, in the question_sets order.
+  # null keeps all concise decision units. Caps apply separately to each assistant turn.
   max_sentences: null
   # Optional overrides: max_tool_sentences, max_final_sentences (null or integer >= 0).

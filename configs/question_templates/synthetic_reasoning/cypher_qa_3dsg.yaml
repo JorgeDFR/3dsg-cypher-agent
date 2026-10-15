@@ -1,0 +1,2031 @@
+version: 1
+templates:
+  object_class_inventory:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+    - kind: order
+      items:
+      - expression: {kind: ref, name: class}
+        direction: ASC
+  object_class_centers:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.center}
+        alias: center
+    - kind: order
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        direction: ASC
+  object_class_count:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: class}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: false
+        alias: count
+  top_object_classes_by_count:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: false
+        alias: count
+    - kind: order
+      items:
+      - expression: {kind: ref, name: count}
+        direction: DESC
+      - expression: {kind: ref, name: class}
+        direction: ASC
+    - {kind: limit, value: '{limit}'}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: class}
+        alias: null
+  objects_in_room_symbol:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_in_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: case.place}
+      optional: false
+    - kind: traverse
+      source: p
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  object_place_lookup:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: p
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+    - kind: order
+      items:
+      - expression: {kind: ref, name: place}
+        direction: ASC
+  nearest_object_to_mesh_place:
+    operations:
+    - kind: match
+      role: mp
+      layers: [MeshPlace]
+      properties:
+        nodeSymbol: {kind: binding, name: case.mesh_place}
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.class}
+      optional: false
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: mp.center}
+          - {kind: ref, name: o.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+  object_radius_from_point:
+    operations:
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: point
+          arguments:
+          - kind: map
+            entries:
+              x: {kind: binding, name: case.point.x}
+              y: {kind: binding, name: case.point.y}
+              z: {kind: binding, name: case.point.z}
+          distinct: false
+        alias: query_point
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.class}
+      optional: false
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: query_point}
+          - {kind: ref, name: o.center}
+          distinct: false
+        alias: distance
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: distance}
+        operator: <
+        right: {kind: binding, name: case.radius}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_in_bounding_box:
+    operations:
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: point
+          arguments:
+          - kind: map
+            entries:
+              x: {kind: binding, name: bbox.lower.x}
+              y: {kind: binding, name: bbox.lower.y}
+              z: {kind: binding, name: bbox.lower.z}
+          distinct: false
+        alias: lowerLeft
+      - expression:
+          kind: call
+          name: point
+          arguments:
+          - kind: map
+            entries:
+              x: {kind: binding, name: bbox.upper.x}
+              y: {kind: binding, name: bbox.upper.y}
+              z: {kind: binding, name: bbox.upper.z}
+          distinct: false
+        alias: upperRight
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: call
+        name: point.withinbbox
+        arguments:
+        - {kind: ref, name: o.center}
+        - {kind: ref, name: lowerLeft}
+        - {kind: ref, name: upperRight}
+        distinct: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  mesh_place_hops:
+    operations:
+    - kind: match
+      role: start
+      layers: [MeshPlace]
+      properties:
+        nodeSymbol: {kind: binding, name: case.mesh_place}
+      optional: false
+    - kind: match
+      role: start
+      layers: []
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: start
+      target: mp
+      relationship: MESH_PLACE_CONNECTED
+      direction: undirected
+      bounds: [1, '{case.hops}']
+      optional: false
+    - kind: match
+      role: mp
+      layers: [MeshPlace]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: mp}
+        operator: <>
+        right: {kind: ref, name: start}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: mp.nodeSymbol}
+        alias: meshPlace
+    - kind: order
+      items:
+      - expression: {kind: ref, name: meshPlace}
+        direction: ASC
+  room_adjacency_count:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: match
+      role: r
+      layers: []
+      properties: {}
+      optional: true
+    - kind: traverse
+      source: r
+      target: neighbor
+      relationship: ROOM_CONNECTED
+      direction: undirected
+      bounds: [1, 1]
+      optional: true
+    - kind: match
+      role: neighbor
+      layers: [Room]
+      properties: {}
+      optional: true
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: neighbor}
+          distinct: true
+        alias: adjacent_rooms
+  nearest_object_to_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: case.object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  place_hops:
+    operations:
+    - kind: match
+      role: start
+      layers: [Place]
+      properties:
+        nodeSymbol: {kind: binding, name: case.place}
+      optional: false
+    - kind: match
+      role: start
+      layers: []
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: start
+      target: p
+      relationship: PLACE_CONNECTED
+      direction: undirected
+      bounds: [1, '{case.hops}']
+      optional: false
+    - kind: match
+      role: p
+      layers: [Place]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: p}
+        operator: <>
+        right: {kind: ref, name: start}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+    - kind: order
+      items:
+      - expression: {kind: ref, name: place}
+        direction: ASC
+  location_hops:
+    operations:
+    - kind: match
+      role: start
+      layers: ['{case.layer}']
+      properties:
+        nodeSymbol: {kind: binding, name: case.location}
+      optional: false
+    - kind: match
+      role: start
+      layers: []
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: start
+      target: location
+      relationship: '{case.relationship}'
+      direction: undirected
+      bounds: [1, '{case.hops}']
+      optional: false
+    - kind: match
+      role: location
+      layers: ['{case.layer}']
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: location}
+        operator: <>
+        right: {kind: ref, name: start}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: location.nodeSymbol}
+        alias: location
+    - kind: order
+      items:
+      - expression: {kind: ref, name: location}
+        direction: ASC
+  objects_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  object_total:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: false
+        alias: count
+  room_total:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: r}
+          distinct: false
+        alias: count
+  combined_place_total:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: p}
+          distinct: false
+        alias: count
+  object_class_by_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+  object_center_by_symbol:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: o.center}
+        alias: center
+  room_object_count:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: match
+      role: r
+      layers: []
+      properties: {}
+      optional: true
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: true
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: true
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: true
+        alias: count
+  object_classes_in_room_symbol:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+    - kind: order
+      items:
+      - expression: {kind: ref, name: class}
+        direction: ASC
+  adjacent_rooms:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: traverse
+      source: r
+      target: neighbor
+      relationship: ROOM_CONNECTED
+      direction: undirected
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: neighbor
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: neighbor.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  most_connected_rooms:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: match
+      role: r
+      layers: []
+      properties: {}
+      optional: true
+    - kind: traverse
+      source: r
+      target: neighbor
+      relationship: ROOM_CONNECTED
+      direction: undirected
+      bounds: [1, 1]
+      optional: true
+    - kind: match
+      role: neighbor
+      layers: [Room]
+      properties: {}
+      optional: true
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r}
+        alias: null
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: neighbor}
+          distinct: true
+        alias: degree
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: collect
+          arguments:
+          - kind: map
+            entries:
+              symbol: {kind: ref, name: r.nodeSymbol}
+              degree: {kind: ref, name: degree}
+          distinct: false
+        alias: rows
+      - expression:
+          kind: call
+          name: max
+          arguments:
+          - {kind: ref, name: degree}
+          distinct: false
+        alias: extreme
+    - kind: unwind
+      expression: {kind: ref, name: rows}
+      alias: row
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row}
+        alias: null
+      - expression: {kind: ref, name: extreme}
+        alias: null
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: row.degree}
+        operator: '='
+        right: {kind: ref, name: extreme}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row.symbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  least_connected_rooms:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: match
+      role: r
+      layers: []
+      properties: {}
+      optional: true
+    - kind: traverse
+      source: r
+      target: neighbor
+      relationship: ROOM_CONNECTED
+      direction: undirected
+      bounds: [1, 1]
+      optional: true
+    - kind: match
+      role: neighbor
+      layers: [Room]
+      properties: {}
+      optional: true
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r}
+        alias: null
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: neighbor}
+          distinct: true
+        alias: degree
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: collect
+          arguments:
+          - kind: map
+            entries:
+              symbol: {kind: ref, name: r.nodeSymbol}
+              degree: {kind: ref, name: degree}
+          distinct: false
+        alias: rows
+      - expression:
+          kind: call
+          name: min
+          arguments:
+          - {kind: ref, name: degree}
+          distinct: false
+        alias: extreme
+    - kind: unwind
+      expression: {kind: ref, name: rows}
+      alias: row
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row}
+        alias: null
+      - expression: {kind: ref, name: extreme}
+        alias: null
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: row.degree}
+        operator: '='
+        right: {kind: ref, name: extreme}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row.symbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  nearest_object_any_class:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  farthest_object_from_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: DESC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  nearest_object_different_class:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left: {kind: ref, name: target.class}
+          operator: <>
+          right: {kind: ref, name: source.class}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  objects_within_radius_of_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left:
+            kind: call
+            name: point.distance
+            arguments:
+            - {kind: ref, name: source.center}
+            - {kind: ref, name: target.center}
+            distinct: false
+          operator: <
+          right: {kind: binding, name: radius}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_of_class_in_room_symbol:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_of_class_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  count_objects_of_class_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: true
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: true
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: true
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: true
+        alias: count
+  rooms_containing_object_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: object_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  object_classes_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+    - kind: order
+      items:
+      - expression: {kind: ref, name: class}
+        direction: ASC
+  nearest_object_same_class:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left: {kind: ref, name: target.class}
+          operator: '='
+          right: {kind: ref, name: source.class}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  nearest_object_excluding_class:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left: {kind: ref, name: target.class}
+          operator: <>
+          right: {kind: binding, name: excluded_class}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  nearest_object_in_class_set:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left: {kind: ref, name: target.class}
+          operator: IN
+          right:
+            kind: list
+            items:
+            - {kind: binding, name: first_class}
+            - {kind: binding, name: second_class}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  nearest_object_between_classes:
+    operations:
+    - kind: match
+      role: reference
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: reference_class}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: target_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: reference}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: reference}
+        alias: null
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: reference.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+      - expression: {kind: ref, name: reference.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  farthest_object_of_class:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: target_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: target}
+        operator: <>
+        right: {kind: ref, name: source}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: source.center}
+          - {kind: ref, name: target.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: DESC
+      - expression: {kind: ref, name: target.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+  objects_of_class_within_radius_of_object:
+    operations:
+    - kind: match
+      role: source
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: target_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: source}
+        - kind: compare
+          left:
+            kind: call
+            name: point.distance
+            arguments:
+            - {kind: ref, name: source.center}
+            - {kind: ref, name: target.center}
+            distinct: false
+          operator: <
+          right: {kind: binding, name: radius}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_of_class_near_class:
+    operations:
+    - kind: match
+      role: reference
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: reference_class}
+      optional: false
+    - kind: match
+      role: target
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: target_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left: {kind: ref, name: target}
+          operator: <>
+          right: {kind: ref, name: reference}
+        - kind: compare
+          left:
+            kind: call
+            name: point.distance
+            arguments:
+            - {kind: ref, name: reference.center}
+            - {kind: ref, name: target.center}
+            distinct: false
+          operator: <
+          right: {kind: binding, name: radius}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: target.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  adjacent_rooms_of_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        nodeSymbol: {kind: binding, name: room}
+      optional: false
+    - kind: traverse
+      source: r
+      target: neighbor
+      relationship: ROOM_CONNECTED
+      direction: undirected
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: neighbor
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: neighbor.nodeSymbol}
+        alias: room
+    - kind: order
+      items:
+      - expression: {kind: ref, name: room}
+        direction: ASC
+  objects_of_class_in_place:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: case.place}
+      optional: false
+    - kind: traverse
+      source: p
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        class: {kind: binding, name: case.object_class}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  objects_excluding_class_in_room_class:
+    operations:
+    - kind: match
+      role: r
+      layers: [Room]
+      properties:
+        class: {kind: binding, name: room_class}
+      optional: false
+    - kind: traverse
+      source: r
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [2, 2]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: o.class}
+        operator: <>
+        right: {kind: binding, name: excluded_class}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.nodeSymbol}
+        alias: object
+    - kind: order
+      items:
+      - expression: {kind: ref, name: object}
+        direction: ASC
+  place_object_count:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: case.place}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: match
+      role: p
+      layers: []
+      properties: {}
+      optional: true
+    - kind: traverse
+      source: p
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [1, 1]
+      optional: true
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: true
+    - kind: project
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: count
+          arguments:
+          - {kind: ref, name: o}
+          distinct: true
+        alias: count
+  object_classes_in_place_symbol:
+    operations:
+    - kind: match
+      role: p
+      layers: []
+      properties:
+        nodeSymbol: {kind: binding, name: case.place}
+      optional: false
+    - kind: traverse
+      source: p
+      target: o
+      relationship: CONTAINS
+      direction: outgoing
+      bounds: [1, 1]
+      optional: false
+    - kind: match
+      role: o
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: project
+      distinct: true
+      items:
+      - expression: {kind: ref, name: o.class}
+        alias: class
+    - kind: order
+      items:
+      - expression: {kind: ref, name: class}
+        direction: ASC
+  closest_cross_class_object_pairs:
+    operations:
+    - kind: match
+      role: first
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: match
+      role: second
+      layers: [Object]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: and
+        arguments:
+        - kind: compare
+          left:
+            kind: call
+            name: tointeger
+            arguments:
+            - kind: call
+              name: substring
+              arguments:
+              - {kind: ref, name: first.nodeSymbol}
+              - {kind: literal, value: 1}
+              distinct: false
+            distinct: false
+          operator: <
+          right:
+            kind: call
+            name: tointeger
+            arguments:
+            - kind: call
+              name: substring
+              arguments:
+              - {kind: ref, name: second.nodeSymbol}
+              - {kind: literal, value: 1}
+              distinct: false
+            distinct: false
+        - kind: compare
+          left: {kind: ref, name: first.class}
+          operator: <>
+          right: {kind: ref, name: second.class}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first}
+        alias: null
+      - expression: {kind: ref, name: second}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: first.center}
+          - {kind: ref, name: second.center}
+          distinct: false
+        alias: distance
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: collect
+          arguments:
+          - kind: map
+            entries:
+              first: {kind: ref, name: first.nodeSymbol}
+              second: {kind: ref, name: second.nodeSymbol}
+              distance: {kind: ref, name: distance}
+          distinct: false
+        alias: rows
+      - expression:
+          kind: call
+          name: min
+          arguments:
+          - {kind: ref, name: distance}
+          distinct: false
+        alias: minimum
+    - kind: unwind
+      expression: {kind: ref, name: rows}
+      alias: row
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row}
+        alias: null
+      - expression: {kind: ref, name: minimum}
+        alias: null
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: row.distance}
+        operator: '='
+        right: {kind: ref, name: minimum}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row.first}
+        alias: first
+      - expression: {kind: ref, name: row.second}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  closest_room_pairs:
+    operations:
+    - kind: match
+      role: first
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: match
+      role: second
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: compare
+        left:
+          kind: call
+          name: tointeger
+          arguments:
+          - kind: call
+            name: substring
+            arguments:
+            - {kind: ref, name: first.nodeSymbol}
+            - {kind: literal, value: 1}
+            distinct: false
+          distinct: false
+        operator: <
+        right:
+          kind: call
+          name: tointeger
+          arguments:
+          - kind: call
+            name: substring
+            arguments:
+            - {kind: ref, name: second.nodeSymbol}
+            - {kind: literal, value: 1}
+            distinct: false
+          distinct: false
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: first}
+        alias: null
+      - expression: {kind: ref, name: second}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: first.center}
+          - {kind: ref, name: second.center}
+          distinct: false
+        alias: distance
+    - kind: with
+      distinct: false
+      items:
+      - expression:
+          kind: call
+          name: collect
+          arguments:
+          - kind: map
+            entries:
+              first: {kind: ref, name: first.nodeSymbol}
+              second: {kind: ref, name: second.nodeSymbol}
+              distance: {kind: ref, name: distance}
+          distinct: false
+        alias: rows
+      - expression:
+          kind: call
+          name: min
+          arguments:
+          - {kind: ref, name: distance}
+          distinct: false
+        alias: minimum
+    - kind: unwind
+      expression: {kind: ref, name: rows}
+      alias: row
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row}
+        alias: null
+      - expression: {kind: ref, name: minimum}
+        alias: null
+    - kind: filter
+      expression:
+        kind: compare
+        left: {kind: ref, name: row.distance}
+        operator: '='
+        right: {kind: ref, name: minimum}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: row.first}
+        alias: first
+      - expression: {kind: ref, name: row.second}
+        alias: second
+    - kind: order
+      items:
+      - expression: {kind: ref, name: first}
+        direction: ASC
+      - expression: {kind: ref, name: second}
+        direction: ASC
+  nearest_place_to_object:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: p
+      layers: []
+      properties: {}
+      optional: false
+    - kind: filter
+      expression:
+        kind: logical
+        operator: or
+        arguments:
+        - {kind: label, role: p, layer: Place}
+        - {kind: label, role: p, layer: MeshPlace}
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: o.center}
+          - {kind: ref, name: p.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: p.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: p.nodeSymbol}
+        alias: place
+  nearest_room_to_object:
+    operations:
+    - kind: match
+      role: o
+      layers: [Object]
+      properties:
+        nodeSymbol: {kind: binding, name: object}
+      optional: false
+    - kind: match
+      role: r
+      layers: [Room]
+      properties: {}
+      optional: false
+    - kind: with
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r}
+        alias: null
+      - expression:
+          kind: call
+          name: point.distance
+          arguments:
+          - {kind: ref, name: o.center}
+          - {kind: ref, name: r.center}
+          distinct: false
+        alias: distance
+    - kind: order
+      items:
+      - expression: {kind: ref, name: distance}
+        direction: ASC
+      - expression: {kind: ref, name: r.nodeSymbol}
+        direction: ASC
+    - {kind: limit, value: 1}
+    - kind: project
+      distinct: false
+      items:
+      - expression: {kind: ref, name: r.nodeSymbol}
+        alias: room
+  write_refusal:
+    operations:
+    - {kind: refusal}

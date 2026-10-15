@@ -1355,6 +1355,20 @@ def run_synthetic_teacher_interaction(
     if not inject_controlled_repair:
         seed = without_controlled_repair(seed)
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
+    if reasoning.get("enabled"):
+        try:
+            from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
+                reasoning_sentences,
+            )
+
+            migration = (seed.get("metadata") or {}).get("reasoning_migration", {})
+            if migration.get("status") == "unresolved":
+                raise ValueError("Seed requires semantic migration or regeneration")
+            reasoning_sentences(seed, stage="tool")
+        except ValueError as exc:
+            return rejected(
+                "invalid_reasoning_semantics", messages=messages, extra={"error": str(exc)}
+            )
     cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
     if not cypher:
         return rejected("missing_gold_cypher", messages=messages)
@@ -1729,6 +1743,35 @@ def debug_trace_record(
     return debug_record
 
 
+def prepare_synthetic_reasoning(population, question_sets, teacher_config):
+    """Attach verified snapshots only when the synthetic teacher uses reasoning."""
+    reasoning = teacher_config.get("reasoning") or {}
+    if configured_teacher_provider(teacher_config) != "synthetic" or not reasoning.get("enabled"):
+        return []
+    from cypher_3dsg_agent_distillation.agents.reasoning_config import (
+        default_semantics_path,
+        load_catalog,
+    )
+    from cypher_3dsg_agent_distillation.cypher.task_semantics import enrich_seed_semantics
+
+    template_paths = [resolve_project_path(q["question_templates_path"]) for q in question_sets]
+    configured_paths = reasoning.get("semantics_paths")
+    semantics_paths = (
+        [resolve_project_path(path) for path in configured_paths]
+        if configured_paths is not None
+        else [default_semantics_path(path) for path in template_paths]
+    )
+    templates = {t["query_type"]: t for t in load_catalog(template_paths, semantics_paths)}
+    for seed in population:
+        try:
+            enrich_seed_semantics(seed, templates.get(seed["query_type"]))
+        except ValueError as exc:
+            seed.setdefault("metadata", {})["reasoning_migration"] = {
+                "status": "unresolved", "error": str(exc)
+            }
+    return semantics_paths
+
+
 def generate_command(args: argparse.Namespace) -> None:
     configure_model_library_output()
     suppress_neo4j_notification_logs()
@@ -1781,21 +1824,9 @@ def generate_command(args: argparse.Namespace) -> None:
     else:
         data_config = prepare_teacher_dataset(data_config, teacher_name=teacher_name)
     population = read_jsonl(data_config["seed_records_jsonl_path"])
-    # Old prepared datasets can also acquire goal semantics without regeneration.
-    # This enrichment is private teacher metadata and is never part of its prompt.
-    templates_by_type = {}
-    for question_set in data_config.get("question_sets") or []:
-        for template in load_yaml(question_set["question_templates_path"]).get("templates", []):
-            templates_by_type[(question_set["name"], template["query_type"])] = template
-    for seed in population:
-        metadata = seed.setdefault("metadata", {})
-        if "reasoning_context" not in metadata:
-            template = templates_by_type.get((metadata.get("question_set"), seed["query_type"]))
-            if template is not None:
-                from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
-                    semantic_context,
-                )
-                metadata["reasoning_context"] = semantic_context({}, template, seed["cypher"])
+    semantics_paths = prepare_synthetic_reasoning(
+        population, data_config.get("question_sets") or [], teacher_config
+    )
     seeds = select_pilot_seeds(
         population, per_task_type=getattr(args, "pilot_per_task_type", 2),
         random_seed=getattr(args, "sample_seed", 42),
@@ -1821,6 +1852,20 @@ def generate_command(args: argparse.Namespace) -> None:
                 profile_inputs[f"{question_set['name']}:{key}"] = config_record(
                     resolve_project_path(value), project_root=PROJECT_ROOT
                 )
+    reasoning_inputs = {}
+    if semantics_paths:
+        reasoning_inputs = {
+            "configs": [config_record(path, project_root=PROJECT_ROOT) for path in semantics_paths],
+            "renderer": file_fingerprint(
+                PROJECT_ROOT / "src/cypher_3dsg_agent_distillation/agents/synthetic_reasoning.py"
+            ),
+            "parser": file_fingerprint(
+                PROJECT_ROOT / "src/cypher_3dsg_agent_distillation/cypher/task_semantics.py"
+            ),
+            "loader": file_fingerprint(
+                PROJECT_ROOT / "src/cypher_3dsg_agent_distillation/agents/reasoning_config.py"
+            ),
+        }
     created_at = iso_now()
     identity = mapping_fingerprint({
         "teacher": effective_teacher_config, "student": student_config["model"],
@@ -1828,6 +1873,7 @@ def generate_command(args: argparse.Namespace) -> None:
         "manifest": seed_manifest, "profiles": profile_inputs,
         "traces_per_seed": traces_per_seed, "static_only": args.static_only,
         "max_tool_calls": args.max_tool_calls,
+        **({"synthetic_reasoning": reasoning_inputs} if reasoning_inputs else {}),
     })
     if resume and previous.get("run_identity") != identity:
         raise ValueError("Resume configuration or inputs differ from the saved run.")

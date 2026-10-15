@@ -17,7 +17,6 @@ from typing import Any
 import yaml
 
 from cypher_3dsg_agent_distillation.agents.experiment_profiles import load_experiment_profile
-from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import semantic_context
 from cypher_3dsg_agent_distillation.core.cli_output import captured_warnings, print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
@@ -270,7 +269,13 @@ def sampled_candidates(
 
     requested_empty = round(actual_target * empty_ratio)
     requested_non_empty = actual_target - requested_empty
-    if warn_on_shortfall and len(empty) < requested_empty:
+    # Atomic alternatives intentionally preserve incomplete grounding, so their
+    # candidate pool cannot meet the empty quota without two absent references.
+    if (
+        warn_on_shortfall
+        and len(empty) < requested_empty
+        and query_type != "pddl_atomic_alternative"
+    ):
         warnings.warn(
             f"Template `{query_type}` cannot meet empty_ratio={empty_ratio:.3g}: "
             f"it needs {requested_empty} empty questions but only "
@@ -902,7 +907,11 @@ def generate_records(
                     "question_set": question_set,
                     "task_family": task_family,
                     "output_type": output_type,
-                    "reasoning_context": deepcopy(semantic_context(variables, template, cypher)),
+                    "reasoning_context": {
+                        "variables": deepcopy(variables),
+                        "goal": deepcopy(template.get("goal")),
+                        "variable_sources": deepcopy(template.get("variables", {})),
+                    },
                 }
                 candidates.append(
                     QuestionCandidate(
@@ -1157,7 +1166,8 @@ def apply_dataset_question_targets(
                 not generated_record_has_solution(record) for record in candidates
             )
             available_non_empty = len(candidates) - available_empty
-            if available_empty < requested_empty:
+            # Atomic alternatives intentionally retain partially grounded goals.
+            if available_empty < requested_empty and query_type != "pddl_atomic_alternative":
                 warnings.warn(
                     f"Question type `{query_type}` cannot meet dataset-wide "
                     f"empty_ratio={ratio:.3g}: it needs {requested_empty} "

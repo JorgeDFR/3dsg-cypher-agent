@@ -1127,7 +1127,6 @@ class SceneIndex:
             "pddl_visit_object_symbol",
             "pddl_end_at_object_symbol",
             "pddl_inspect_object_symbol",
-            "pddl_hold_object_symbol",
             "pddl_not_holding_object_symbol",
             "pddl_visit_object_without_holding",
         }:
@@ -1194,6 +1193,7 @@ class SceneIndex:
             )
         if query_type in {
             "pddl_visit_any_class_and_end_at_any_class",
+            "pddl_visit_any_class_without_holding_any_class",
             "pddl_atomic_alternative",
             "pddl_compound_alternative",
         }:
@@ -1219,21 +1219,6 @@ class SceneIndex:
                     node_symbol(node.id)
                     for node in self.rooms_with_class(
                         str(template_value(variables, "room_class"))
-                    )
-                ],
-            }
-        if query_type == "pddl_visit_any_class_without_holding_any_class":
-            return {
-                "visit": [
-                    node_symbol(node.id)
-                    for node in self.objects_with_class(
-                        str(template_value(variables, "visit_class"))
-                    )
-                ],
-                "unheld": [
-                    node_symbol(node.id)
-                    for node in self.objects_with_class(
-                        str(template_value(variables, "unheld_class"))
                     )
                 ],
             }

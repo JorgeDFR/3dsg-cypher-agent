@@ -116,7 +116,7 @@ templates:
     target_questions: 20
     tags: [hierarchy]
     requires_any_layers: [[Place, MeshPlace]]
-    solution_formats: [str]
+    solution_formats: [str, "set[str]"]
     variables:
       case: object_parent_cases
     cypher: |
