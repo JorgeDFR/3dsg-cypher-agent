@@ -1883,6 +1883,8 @@ def bool_rate_first(
 
 def record_hidden_false_positive_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
     tool_call = record.get(TOOL_CALL_CHECK) or {}
+    if tool_call.get("result_validation"):
+        return {"potential_hidden_false_positive": None, "hidden_false_positive_reasons": []}
     existing = tool_call.get("potential_hidden_false_positive")
     if existing is not None:
         return {
@@ -1919,6 +1921,9 @@ def record_hidden_false_positive_diagnostics(record: dict[str, Any]) -> dict[str
 
 
 def hidden_false_positive_rate(records: list[dict[str, Any]]) -> float | None:
+    if not records:
+        return None
+    records = [r for r in records if not (r.get(TOOL_CALL_CHECK) or {}).get("result_validation")]
     if not records:
         return None
     return sum(
@@ -2068,13 +2073,14 @@ def validation_example_rows(
                 "task_type": task_type(record),
                 "question": record.get("question"),
                 "tool_call_status": tool_call.get("status"),
+                "result_validation_status": (tool_call.get("result_validation") or {}).get(
+                    "status"
+                ),
+                "semantic_check_status": (tool_call.get("semantic_check") or {}).get("status"),
+                "final_answer_grounded": end_to_end.get("final_answer_grounded"),
                 "final_answer_status": final_answer.get("status"),
-                "tool_call_parse_success": bool_or_none(
-                    tool_call.get("tool_call_parse_success")
-                ),
-                "tool_call_static_valid": bool_or_none(
-                    tool_call.get("static_valid")
-                ),
+                "tool_call_parse_success": bool_or_none(tool_call.get("tool_call_parse_success")),
+                "tool_call_static_valid": bool_or_none(tool_call.get("static_valid")),
                 "tool_call_executable": bool_or_none(tool_call.get("executable")),
                 "cypher_solution_match": None if pddl else result_match,
                 "grounding_match": result_match if pddl else None,
@@ -2084,12 +2090,8 @@ def validation_example_rows(
                 "final_answer_domain_valid": bool_or_none(
                     final_answer.get("final_answer_domain_valid")
                 ),
-                "final_answer_match": bool_or_none(
-                    final_answer.get("final_answer_match")
-                ),
-                "end_to_end_match": bool_or_none(
-                    end_to_end.get("final_answer_match")
-                ),
+                "final_answer_match": bool_or_none(final_answer.get("final_answer_match")),
+                "end_to_end_match": bool_or_none(end_to_end.get("final_answer_match")),
             }
             rows.append(row)
             expected = record.get("expected") or {
@@ -2148,6 +2150,8 @@ def validation_example_rows(
             cypher_validation_issues = {
                 key: value
                 for key, value in {
+                    "result_validation": tool_call.get("result_validation"),
+                    "semantic_check": tool_call.get("semantic_check"),
                     "static_issues": tool_call.get("static_issues"),
                     "parse_error": tool_call.get("parse_error"),
                     "execution_error": tool_call.get("execution_error"),
@@ -2170,6 +2174,8 @@ def validation_example_rows(
             end_to_end_validation_issues = {
                 key: value
                 for key, value in {
+                    "result_validation": end_to_end.get("result_validation"),
+                    "grounding_check": end_to_end.get("grounding_check"),
                     "last_failure_reason": end_to_end.get("last_failure_reason"),
                     "generation_error": end_to_end.get("generation_error"),
                 }.items()

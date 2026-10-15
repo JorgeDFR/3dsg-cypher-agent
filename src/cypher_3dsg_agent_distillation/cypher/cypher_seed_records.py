@@ -25,6 +25,7 @@ class CypherSeedRecord(BaseModel):
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
+    validation_contract: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     labelspace_description: str | None = None
@@ -47,6 +48,7 @@ class PreparedCypherSeedRecord(BaseModel):
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
+    validation_contract: dict[str, Any] | None = None
     tags: list[str]
     scene_id: str | None = None
     labelspace_description: str | None = None
@@ -101,6 +103,7 @@ def prepare_seed_records(
                 solution_formats=record.solution_formats,
                 answer_validation=record.answer_validation,
                 grounding=record.grounding,
+                validation_contract=record.validation_contract,
                 tags=record.tags,
                 scene_id=record.scene_id,
                 labelspace_description=record.labelspace_description,

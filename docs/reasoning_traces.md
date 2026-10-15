@@ -215,8 +215,10 @@ Retrieval declarations live in
 `configs/question_templates/synthetic_reasoning/cypher_qa_3dsg.yaml` and
 `configs/question_templates/synthetic_reasoning/cypher_pddl_3dsg.yaml`. Each file has one global
 `version` and a `templates` mapping keyed by the existing `query_type` names.
-Question catalogs retain their original question, sampling and validation fields;
-they have no `template_id`, `oracle_type` or `semantics` fields. Declarations are
+Question catalogs retain question, query and sampling fields. Validation contracts
+and PDDL goal trees live under `configs/question_templates/validation/`; the shared
+loader supplies those goals to reasoning. See [Cypher and grounding validation](cypher_grounding_validation.md).
+Question catalogs have no `template_id`, `oracle_type` or `semantics` fields. Declarations are
 compiled from Cypher by a parser for the supported read-only subset, retaining
 bindings, layers, directed containment, bounded connectivity, logical filters,
 computations, grouping, projections, order and limits. PDDL intent continues to come
@@ -243,7 +245,8 @@ catalogs or prompts. Adding or renaming a question type, or changing its query,
 requires recompilation to update the mapping and operations; it needs no renderer
 change for supported operations. Changing tags, question variants or sampling
 settings requires no reasoning configuration change. `query_type` also remains the
-existing dispatch key for scene-based gold answers and result validation. There is
+existing dispatch key for scene-based gold answers and configuration lookup.
+Result interpretation and comparison use the resolved validation contract. There is
 no additional identity or oracle field. An operation outside the supported
 vocabulary requires parser/rendering support.
 The scene-based gold-answer oracle is a separate component; new question

@@ -68,8 +68,10 @@ def test_changed_inputs_invalidate_evaluation(evaluation, change):
     assert evaluation_identity(*evaluation, runtime_identity=runtime) != initial
 
 
-@pytest.mark.parametrize("content", ["{", "[]", "{}", '{"metadata": null}',
-                                       '{"metadata": {"evaluation_status": "running"}}'])
+@pytest.mark.parametrize(
+    "content",
+    ["{", "[]", "{}", '{"metadata": null}', '{"metadata": {"evaluation_status": "running"}}'],
+)
 def test_incomplete_or_corrupt_reports_are_not_reused(tmp_path, content):
     path = tmp_path / "report.json"
     path.write_text(content)
@@ -110,3 +112,27 @@ def test_command_skips_before_loading_baseline_and_force_bypasses_cache(
     forced.force = True
     with pytest.raises(RuntimeError, match="model load reached"):
         student_evaluation.command(forced)
+
+
+def test_validation_config_changes_invalidate_cache_but_test_fixtures_do_not(evaluation, tmp_path):
+    args, data, student, adapter = evaluation
+    template = tmp_path / "questions.yaml"
+    template.write_text("templates: []\n")
+    sidecar = tmp_path / "validation"
+    sidecar.mkdir()
+    catalog = sidecar / template.name
+    catalog.write_text("version: 1\ntemplates: {}\n")
+    defaults = sidecar / "defaults.yaml"
+    defaults.write_text("version: 1\ndefaults: {}\n")
+    data["question_sets"] = [{"question_templates_path": str(template)}]
+    initial = evaluation_identity(*evaluation)
+    defaults.write_text('version: 1\ndefaults: {answer: {empty: "<>"}}\n')
+    changed = evaluation_identity(*evaluation)
+    assert changed != initial
+    catalog.write_text("version: 1\ntemplates: {changed: {}}\n")
+    changed_catalog = evaluation_identity(*evaluation)
+    assert changed_catalog != changed
+    fixtures = sidecar / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "cases.yaml").write_text("version: 1\ncases: {}\n")
+    assert evaluation_identity(*evaluation) == changed_catalog

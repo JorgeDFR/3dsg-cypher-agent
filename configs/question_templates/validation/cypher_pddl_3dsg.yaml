@@ -1,0 +1,1121 @@
+version: 1
+templates:
+  pddl_visit_object_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_end_at_object_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_inspect_object_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: safe
+      arguments:
+      - result: object
+      multiple: or
+  pddl_hold_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: holding
+      arguments:
+      - result: object
+      multiple: or
+  pddl_visit_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_end_at_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_inspect_nearest_object:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: case.class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: safe
+      arguments:
+      - result: object
+      multiple: or
+  pddl_end_at_nearest_object:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: case.class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_visit_place_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-place
+      arguments:
+      - result: place
+      multiple: or
+  pddl_end_at_place_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-place
+      arguments:
+      - result: place
+      multiple: or
+  pddl_visit_mesh_place_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        place:
+          type: node_symbol
+          layers:
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: mesh_place
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-place
+      arguments:
+      - result: place
+      multiple: or
+  pddl_end_at_mesh_place_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        place:
+          type: node_symbol
+          layers:
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: mesh_place
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-place
+      arguments:
+      - result: place
+      multiple: or
+  pddl_visit_room_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: room
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_end_in_room_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: room
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: in-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_visit_room_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: room_class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_end_in_room_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: room_class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: in-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_visit_room_containing_object:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin: {}
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_end_in_room_containing_object:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin: {}
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: in-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_move_object_to_place:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: object
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: place
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: object-in-place
+      arguments:
+      - result: object
+      - result: place
+      multiple: or
+  pddl_inspect_object_and_end_at_place:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: object
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          property: nodeSymbol
+          oracle_source: place
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: safe
+        arguments:
+        - result: object
+      - fact: at-place
+        arguments:
+        - result: place
+  pddl_visit_object_and_end_at_object:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        waypoint:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: waypoint
+          origin:
+            nodeSymbol:
+              binding: waypoint_object
+          cardinality: set
+          nulls: reject
+        destination:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: destination
+          origin:
+            nodeSymbol:
+              binding: destination_object
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-object
+        arguments:
+        - result: waypoint
+      - fact: at-object
+        arguments:
+        - result: destination
+  pddl_not_holding_object_symbol:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: not
+      clauses:
+      - fact: holding
+        arguments:
+        - result: object
+  pddl_not_holding_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: not
+      clauses:
+      - fact: holding
+        arguments:
+        - result: object
+        multiple: or
+  pddl_visit_object_without_holding:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-object
+        arguments:
+        - result: object
+      - operator: not
+        clauses:
+        - fact: holding
+          arguments:
+          - result: object
+  pddl_inspect_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: safe
+      arguments:
+      - result: object
+      multiple: or
+  pddl_object_not_in_place:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: object
+          origin:
+            nodeSymbol:
+              binding: object
+          cardinality: set
+          nulls: reject
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: place
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: not
+      clauses:
+      - fact: object-in-place
+        arguments:
+        - result: object
+        - result: place
+  pddl_visit_place_and_end_in_room:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        place:
+          type: node_symbol
+          layers:
+          - Place
+          property: nodeSymbol
+          oracle_source: place
+          origin:
+            nodeSymbol:
+              binding: place
+          cardinality: set
+          nulls: reject
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: room
+          origin:
+            nodeSymbol:
+              binding: room
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-place
+        arguments:
+        - result: place
+      - fact: in-region
+        arguments:
+        - result: room
+  pddl_visit_all_objects_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-object
+      arguments:
+      - result: object
+      multiple: and
+  pddl_inspect_all_objects_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: safe
+      arguments:
+      - result: object
+      multiple: and
+  pddl_visit_any_class_and_end_at_any_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        first:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: first
+          origin:
+            class:
+              binding: first_class
+          cardinality: set
+          nulls: reject
+        second:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: second
+          origin:
+            class:
+              binding: second_class
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-object
+        arguments:
+        - result: first
+        multiple: or
+      - fact: at-object
+        arguments:
+        - result: second
+        multiple: or
+  pddl_visit_all_class_and_end_in_room_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: object
+          origin:
+            class:
+              binding: object_class
+          cardinality: set
+          nulls: reject
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: room
+          origin:
+            class:
+              binding: room_class
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-object
+        arguments:
+        - result: object
+        multiple: and
+      - fact: in-region
+        arguments:
+        - result: room
+        multiple: or
+  pddl_visit_any_class_without_holding_any_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        first:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: first
+          origin:
+            class:
+              binding: first_class
+          cardinality: set
+          nulls: reject
+        second:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: second
+          origin:
+            class:
+              binding: second_class
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-object
+        arguments:
+        - result: first
+        multiple: or
+      - fact: holding
+        arguments:
+        - result: second
+        multiple: and
+        negate_each: true
+  pddl_atomic_alternative:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        first:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: first
+          origin:
+            class:
+              binding: first_class
+          cardinality: set
+          nulls: empty_set
+        second:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: second
+          origin:
+            class:
+              binding: second_class
+          cardinality: set
+          nulls: empty_set
+    goal:
+      operator: or
+      clauses:
+      - fact: safe
+        arguments:
+        - result: first
+        multiple: or
+      - fact: visited-object
+        arguments:
+        - result: second
+        multiple: or
+  pddl_compound_alternative:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        first:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: first
+          origin:
+            class:
+              binding: first_class
+          cardinality: set
+          nulls: empty_set
+        second:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: second
+          origin:
+            class:
+              binding: second_class
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: or
+      clauses:
+      - operator: and
+        clauses:
+        - fact: safe
+          arguments:
+          - result: first
+          multiple: or
+        - fact: visited-object
+          arguments:
+          - result: second
+          multiple: or
+      - fact: at-object
+        arguments:
+        - result: second
+        multiple: or
+  pddl_end_in_room_containing_object_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        room:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: value
+          origin: {}
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: in-region
+      arguments:
+      - result: room
+      multiple: or
+  pddl_visit_object_class_in_room_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: object_class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: visited-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_end_at_object_class_in_room_class:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: object_class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: at-object
+      arguments:
+      - result: object
+      multiple: or
+  pddl_inspect_closest_between_classes:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        object:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: value
+          origin:
+            class:
+              binding: target_class
+          cardinality: set
+          nulls: reject
+    goal:
+      fact: safe
+      arguments:
+      - result: object
+  pddl_ordered_places:
+    answer:
+      empty: ''
+      comparison:
+        mode: pddl_equivalence
+    result:
+      kind: role_sets
+      roles:
+        first:
+          type: node_symbol
+          layers:
+          - Place
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: first
+          origin:
+            nodeSymbol:
+              binding: first
+          cardinality: set
+          nulls: reject
+        second:
+          type: node_symbol
+          layers:
+          - Place
+          - MeshPlace
+          property: nodeSymbol
+          oracle_source: second
+          origin:
+            nodeSymbol:
+              binding: second
+          cardinality: set
+          nulls: reject
+    goal:
+      operator: and
+      clauses:
+      - fact: visited-place
+        arguments:
+        - result: first
+      - fact: at-place
+        arguments:
+        - result: second

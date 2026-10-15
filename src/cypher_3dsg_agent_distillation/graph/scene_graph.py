@@ -85,6 +85,7 @@ LABEL_TO_DSG_LAYER = {
     "Building": spark_dsg.DsgLayers.BUILDINGS,
 }
 
+
 class NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data: Any) -> bool:
         return True
@@ -2081,6 +2082,9 @@ def command(args: argparse.Namespace) -> None:
                 referenced_configs[f"profile_input:{name}:{key}"] = config_record(
                     resolve_project_path(value), project_root=PROJECT_ROOT
                 )
+    from cypher_3dsg_agent_distillation.cypher.validation_config import validation_identity
+
+    referenced_configs["validation"] = validation_identity(data_config)
     created_at = iso_now()
     atomic_write_yaml(
         {

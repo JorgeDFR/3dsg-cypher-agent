@@ -1,0 +1,13 @@
+version: 1
+defaults:
+  query_policy:
+    read_only: true
+  result:
+    mapping: provenance_or_unique_type
+    ambiguity: unresolved
+    extra_columns: reject
+    symbol_case_sensitive: true
+  answer:
+    answer_tags: exactly_one
+  semantic_checks:
+    mode: supported_fragment

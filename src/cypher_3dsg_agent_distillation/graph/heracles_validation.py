@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
@@ -30,6 +31,7 @@ def ensure_heracles_agents_importable() -> None:
 
 ensure_heracles_agents_importable()
 
+from lark import Lark  # noqa: E402
 from pypddl.pddl_goal_manipulations import pddl_goal_equals  # noqa: E402
 from pypddl.pddl_goal_parser import lark_parse_pddl_goal  # noqa: E402
 from pypddl.pddl_goal_types import (  # noqa: E402
@@ -41,7 +43,8 @@ from pypddl.pddl_goal_types import (  # noqa: E402
     NegatedClause,
     Symbol,
 )
-from sldp.sldp_lang import get_sldp_type, lark_parse_sldp, sldp_equals  # noqa: E402
+from sldp.lark_parser import SldpTransformer, get_sldp_lark_grammar  # noqa: E402
+from sldp.sldp_lang import get_sldp_type, sldp_equals  # noqa: E402
 
 OutputType = Literal["SLDP", "PDDL"]
 SLDP_COLLECTION_FORMAT_RE = re.compile(r"^(set|list)\[(.+)\]$")
@@ -65,6 +68,17 @@ PDDL_SYMBOL_PATTERNS = {
     "Room": re.compile(r"^R\d+$"),
     "Building": re.compile(r"^B\d+$"),
 }
+
+
+@lru_cache(maxsize=1)
+def _sldp_parser():
+    # Keep Heracles' grammar and parser defaults; compiling them per answer is expensive.
+    return Lark(get_sldp_lark_grammar())
+
+
+def lark_parse_sldp(value: str):
+    """Parse using a reusable grammar and a fresh transformer for each answer."""
+    return SldpTransformer().transform(_sldp_parser().parse(value))
 
 
 def pddl_goal_domain_issues(goal: Any) -> list[str]:
@@ -162,7 +176,7 @@ def _sldp_ast_matches_format(parsed: Any, solution_format: str) -> bool:
     if normalized == "str":
         return isinstance(parsed, str)
     if normalized in {"int", "float"}:
-        return isinstance(parsed, float)
+        return isinstance(parsed, float) and (normalized != "int" or parsed.is_integer())
     if normalized == "point":
         return isinstance(parsed, tuple) and bool(parsed) and parsed[0] == "point"
     if normalized == "bool":

@@ -250,6 +250,7 @@ def repair_rejected_invalid_answer_trace(
             "solution_formats": trace.get("solution_formats", []),
             "answer_validation": trace.get("answer_validation"),
             "grounding": trace.get("grounding"),
+            "validation_contract": trace.get("validation_contract"),
             "cypher_solution": cypher_solution,
             "final_answer": str(cypher_solution),
             "split_group": trace.get("split_group"),

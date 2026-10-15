@@ -33,6 +33,7 @@ from cypher_3dsg_agent_distillation.agents.agent_records import (
     DEFAULT_TEACHER_MODEL,
     WRITE_REFUSAL_ANSWER,
     AgentTraceRecord,
+    TraceValidation,
     split_group_for_record,
 )
 from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
@@ -471,10 +472,10 @@ def build_tool_result_message(tool_call_id: str | None, content: str) -> dict[st
 def answer_inner_text(content: str | None) -> str | None:
     if not content:
         return None
-    match = re.search(r"<answer>(.*?)</answer>", content, flags=re.IGNORECASE | re.DOTALL)
-    if match is None:
+    matches = re.findall(r"<answer>(.*?)</answer>", content, flags=re.IGNORECASE | re.DOTALL)
+    if len(matches) != 1 or len(re.findall(r"</?answer>", content, flags=re.IGNORECASE)) != 2:
         return None
-    return match.group(1).strip()
+    return matches[0].strip()
 
 
 def tool_error_content(error_type: str, issues: list[str]) -> str:
@@ -623,6 +624,7 @@ def build_candidate_trace(
         solution_formats=seed.get("solution_formats", []),
         answer_validation=seed.get("answer_validation"),
         grounding=seed.get("grounding"),
+        validation_contract=seed.get("validation_contract"),
         final_answer=final_answer_from_messages(candidate["messages"]),
         split_group=split_group_for_record(
             seed.get("scene_id"),
@@ -639,6 +641,63 @@ def build_candidate_trace(
             "task_family": seed.get("task_family", "cypher_qa"),
             "output_type": seed.get("output_type", "SLDP"),
         },
+    )
+
+
+def configured_trace_decision(seed, record, candidate, execution):
+    from cypher_3dsg_agent_distillation.cypher.result_validation import (
+        compare_answers,
+        final_grounding_check,
+        validate_record_result,
+    )
+    from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+    contract = contract_for_record(seed)
+    query = record.gold_cypher
+    if not execution.get("executable") or "rows" not in execution:
+        outcome = {"status": "not_checked", "match": None}
+    else:
+        outcome = validate_record_result(seed, execution["rows"], query, execution.get("columns"))
+    final = answer_inner_text(record.final_answer_text)
+    answer = (
+        compare_answers(
+            final or "", str(seed_real_solution(seed)), contract, seed.get("answer_validation")
+        )
+        if final is not None
+        else {"status": "missing_answer_tags", "format_valid": False, "match": False}
+    )
+    grounded = final_grounding_check(seed, final, outcome)
+    accepted = outcome["status"] == "pass" and answer["match"] is True and grounded["match"] is True
+    record.cypher_solution = outcome.get("solution")
+    record.validation = TraceValidation(
+        **{
+            **record.validation.model_dump(),
+            **execution,
+            "result_validation": outcome,
+            "semantic_check": outcome.get("semantic_check"),
+            "cypher_solution_match": outcome["match"],
+            "tool_result_match": outcome["match"],
+            "final_answer_match": answer["match"],
+            "final_answer_format_valid": answer["format_valid"],
+            "final_answer_domain_valid": answer["format_valid"],
+            "final_answer_cypher_match": grounded["match"],
+            "answer_grounded": grounded["match"],
+            "grounding_check": grounded,
+            "answer_check": answer,
+            "solution_match": accepted,
+        }
+    )
+    reason = (
+        "accepted"
+        if accepted
+        else outcome["status"]
+        if outcome["status"] != "pass"
+        else answer["status"]
+        if answer["status"] != "pass"
+        else "final_answer_cypher_mismatch"
+    )
+    return TraceDecision(
+        accepted, record, reason, {**candidate, "validation": record.validation.model_dump()}
     )
 
 
@@ -707,6 +766,7 @@ def build_interaction_trace(
         solution_formats=seed.get("solution_formats", []),
         answer_validation=seed.get("answer_validation"),
         grounding=seed.get("grounding"),
+        validation_contract=seed.get("validation_contract"),
         cypher_solution=cypher_solution,
         final_answer=final_answer_from_messages(messages),
         split_group=split_group_for_record(
@@ -786,13 +846,17 @@ def evaluate_candidate_trace(
     if DEFAULT_AGENT_TOOL not in [call.function.name for call in record.tool_calls]:
         return TraceDecision(False, record, "missing_required_tool", candidate)
 
-    static_issues = static_checks(cypher, allow_writes=not record.read_only, policy=policy)
+    static_issues = static_checks(
+        cypher, allow_writes=not record.read_only and not record.validation_contract, policy=policy
+    )
     record.validation.static_issues = static_issues
     record.validation.static_valid = not static_issues
     if static_issues:
         return TraceDecision(False, record, "static_issues", candidate)
 
     if validator is None:
+        if seed.get("validation_contract"):
+            return configured_trace_decision(seed, record, candidate, {})
         record.validation.executable = True
         record.validation.solution_match = True
         return TraceDecision(True, record, "accepted_static_only", candidate)
@@ -808,15 +872,20 @@ def evaluate_candidate_trace(
             {**candidate, "validation": validation},
         )
 
+    if seed.get("validation_contract"):
+        return configured_trace_decision(seed, record, candidate, validation)
+
     task_family = str(seed.get("task_family") or "cypher_qa")
     if task_family == "cypher_pddl":
         cypher_matches_real, cypher_solution, _actual_grounding = validate_grounding_rows(
-            validation.get("rows", []), seed.get("grounding")
+            validation.get("rows", []), seed.get("grounding"), query=cypher
         )
         valid_cypher_format = True
     else:
         try:
-            cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
+            cypher_solution = rows_to_solution_text(
+                {**seed, "_validation_query": cypher}, validation.get("rows", [])
+            )
         except ResultShapeError as exc:
             record.validation.error = str(exc)
             return TraceDecision(
@@ -1059,7 +1128,8 @@ def _run_teacher_interaction(
 
             static_issues = static_checks(
                 cypher,
-                allow_writes=not bool(seed.get("read_only", True)),
+                allow_writes=not bool(seed.get("read_only", True))
+                and not seed.get("validation_contract"),
                 policy=policy,
             )
             if static_issues:
@@ -1097,6 +1167,8 @@ def _run_teacher_interaction(
                     cypher_solution=None,
                     static_only=True,
                 )
+                if seed.get("validation_contract"):
+                    return configured_trace_decision(seed, record, {"messages": messages}, {})
                 return TraceDecision(True, record, "accepted_static_only", {"messages": messages})
 
             if validator is None:
@@ -1124,12 +1196,58 @@ def _run_teacher_interaction(
                 )
                 continue
 
+            if seed.get("validation_contract"):
+                from cypher_3dsg_agent_distillation.cypher.result_validation import (
+                    validate_record_result,
+                )
+
+                outcome = validate_record_result(
+                    seed, validation.get("rows", []), cypher, validation.get("columns")
+                )
+                validation = {**validation, "result_validation": outcome}
+                if outcome["status"] != "pass":
+                    if (
+                        outcome["status"] in {"invalid_expected_solution", "not_checked"}
+                        or tool_call_count >= max_tool_calls
+                    ):
+                        return rejected(
+                            outcome["status"],
+                            messages=messages,
+                            cypher=cypher,
+                            validation=validation,
+                            cypher_solution=outcome.get("solution"),
+                        )
+                    last_failure_reason = outcome["status"]
+                    messages.append(
+                        build_tool_result_message(
+                            tool_call_id,
+                            tool_error_content(
+                                outcome["status"],
+                                outcome.get("issues")
+                                or ["Returned result does not satisfy the task contract."],
+                            ),
+                        )
+                    )
+                    continue
+                final_successful_cypher = cypher
+                final_validation = validation
+                successful_tool_call_index = tool_call_count
+                cypher_solution = outcome["solution"]
+                messages.append(
+                    build_tool_result_message(
+                        tool_call_id, tool_success_content(validation.get("rows", []))
+                    )
+                )
+                continue
+
             final_successful_cypher = cypher
             final_validation = validation
             successful_tool_call_index = tool_call_count
             if task_family == "cypher_qa":
                 try:
-                    cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
+                    cypher_solution = rows_to_solution_text(
+                        {**seed, "_validation_query": cypher}, validation.get("rows", [])
+                    )
                 except ResultShapeError as exc:
                     last_failure_reason = "result_shape_error"
                     validation = {**validation, "result_shape_error": str(exc)}
@@ -1150,7 +1268,7 @@ def _run_teacher_interaction(
                     continue
             elif task_family == "cypher_pddl":
                 grounding_match, cypher_solution, _actual_grounding = validate_grounding_rows(
-                    validation.get("rows", []), seed.get("grounding")
+                    validation.get("rows", []), seed.get("grounding"), query=cypher
                 )
                 if not grounding_match:
                     last_failure_reason = "grounding_mismatch"
@@ -1194,6 +1312,22 @@ def _run_teacher_interaction(
         inner_answer = answer_inner_text(final_answer)
         if inner_answer is None:
             return rejected("missing_answer_tags", messages=messages, final_answer=final_answer)
+        if seed.get("validation_contract"):
+            record = build_interaction_trace(
+                seed,
+                messages=messages,
+                teacher_model=teacher_model,
+                cypher=final_successful_cypher,
+                validation=final_validation or {},
+                max_tool_calls=max_tool_calls,
+                tool_call_count=tool_call_count,
+                successful_tool_call_index=successful_tool_call_index,
+                cypher_solution=cypher_solution,
+            )
+            return configured_trace_decision(
+                seed, record, {"messages": messages}, final_validation or {}
+            )
+
         cypher_solution_match: bool | None = None
         final_answer_cypher_match: bool | None = None
         if task_family == "cypher_qa":
@@ -1405,7 +1539,7 @@ def run_synthetic_teacher_interaction(
 
     static_issues = static_checks(
         cypher,
-        allow_writes=not bool(seed.get("read_only", True)),
+        allow_writes=not bool(seed.get("read_only", True)) and not seed.get("validation_contract"),
         policy=policy,
     )
     if static_issues:
@@ -1485,12 +1619,35 @@ def run_synthetic_teacher_interaction(
 
     task_family = str(seed.get("task_family") or profile.task_family)
     output_type = str(seed.get("output_type") or profile.output_type)
+    if seed.get("validation_contract"):
+        final_answer = str(real_solution).strip()
+        messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
+        add_synthetic_reasoning(
+            messages[-1], seed, reasoning, stage="final", rows=validation.get("rows", [])
+        )
+        record = build_interaction_trace(
+            seed,
+            messages=messages,
+            teacher_model=None,
+            cypher=cypher,
+            validation=validation,
+            max_tool_calls=max_tool_calls,
+            tool_call_count=2 if repair_context_message_count is not None else 1,
+            successful_tool_call_index=2 if repair_context_message_count is not None else 1,
+            cypher_solution=None,
+        )
+        record.metadata["teacher_provider"] = "synthetic"
+        record.metadata["generation_mode"] = "synthetic_gold_cypher"
+        return configured_trace_decision(seed, record, {"messages": messages}, validation)
+
     cypher_solution: str | None = None
     cypher_solution_match: bool | None = None
     final_answer_cypher_match: bool | None = None
     if task_family == "cypher_qa":
         try:
-            cypher_solution = rows_to_solution_text(seed, validation.get("rows", []))
+            cypher_solution = rows_to_solution_text(
+                {**seed, "_validation_query": cypher}, validation.get("rows", [])
+            )
         except ResultShapeError as exc:
             return rejected(
                 "result_shape_error",
@@ -1526,7 +1683,7 @@ def run_synthetic_teacher_interaction(
         final_answer_cypher_match = True
     elif task_family == "cypher_pddl":
         cypher_solution_match, cypher_solution, _actual_grounding = validate_grounding_rows(
-            validation.get("rows", []), seed.get("grounding")
+            validation.get("rows", []), seed.get("grounding"), query=cypher
         )
         if not cypher_solution_match:
             return rejected(
@@ -1729,6 +1886,7 @@ def debug_trace_record(
         "solution_formats": seed.get("solution_formats", []),
         "answer_validation": seed.get("answer_validation"),
         "grounding": seed.get("grounding"),
+        "validation_contract": seed.get("validation_contract"),
         "cypher_solution": cypher_solution,
         "final_answer": final_answer,
         "validation": payload.get("validation") or record_json.get("validation"),
@@ -1761,7 +1919,15 @@ def prepare_synthetic_reasoning(population, question_sets, teacher_config):
         if configured_paths is not None
         else [default_semantics_path(path) for path in template_paths]
     )
-    templates = {t["query_type"]: t for t in load_catalog(template_paths, semantics_paths)}
+    templates = {
+        t["query_type"]: t
+        for t in load_catalog(
+            template_paths,
+            semantics_paths,
+            validation_paths=[q.get("validation_config_path") for q in question_sets],
+            validation_defaults_paths=[q.get("validation_defaults_path") for q in question_sets],
+        )
+    }
     for seed in population:
         try:
             enrich_seed_semantics(seed, templates.get(seed["query_type"]))
@@ -1867,14 +2033,22 @@ def generate_command(args: argparse.Namespace) -> None:
             ),
         }
     created_at = iso_now()
-    identity = mapping_fingerprint({
-        "teacher": effective_teacher_config, "student": student_config["model"],
-        "training_max_length": training_max_length,
-        "manifest": seed_manifest, "profiles": profile_inputs,
-        "traces_per_seed": traces_per_seed, "static_only": args.static_only,
-        "max_tool_calls": args.max_tool_calls,
-        **({"synthetic_reasoning": reasoning_inputs} if reasoning_inputs else {}),
-    })
+    from cypher_3dsg_agent_distillation.cypher.validation_config import validation_identity
+
+    identity = mapping_fingerprint(
+        {
+            "validation": validation_identity(data_config),
+            "teacher": effective_teacher_config,
+            "student": student_config["model"],
+            "training_max_length": training_max_length,
+            "manifest": seed_manifest,
+            "profiles": profile_inputs,
+            "traces_per_seed": traces_per_seed,
+            "static_only": args.static_only,
+            "max_tool_calls": args.max_tool_calls,
+            **({"synthetic_reasoning": reasoning_inputs} if reasoning_inputs else {}),
+        }
+    )
     if resume and previous.get("run_identity") != identity:
         raise ValueError("Resume configuration or inputs differ from the saved run.")
     journal = TeacherRunJournal(traces_dir)

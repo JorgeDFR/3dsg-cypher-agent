@@ -35,6 +35,7 @@ edge: "-" "[" ":" layer bounds? "]" "->" -> outgoing
     | "<-" "[" ":" layer bounds? "]" "-" -> incoming
     | "-" "[" ":" layer bounds? "]" "-" -> undirected
 bounds: "*" bound ".." bound
+      | "*" bound -> exact_bounds
 ?bound: INT | BINDING
 with_clause: "WITH"i distinct? projections
 return_clause: "RETURN"i distinct? projections
@@ -169,6 +170,10 @@ class _AST(Transformer):
 
     def bounds(self, items):
         return [str(item) if str(item).startswith("{") else int(item) for item in items]
+
+    def exact_bounds(self, items):
+        value = int(items[0])
+        return [value, value]
 
     def _edge(self, items, direction):
         return {

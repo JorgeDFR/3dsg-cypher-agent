@@ -77,6 +77,10 @@ class AgentMessage(BaseModel):
 class TraceValidation(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    result_validation: dict[str, Any] | None = None
+    semantic_check: dict[str, Any] | None = None
+    answer_check: dict[str, Any] | None = None
+    grounding_check: dict[str, Any] | None = None
     static_valid: bool = False
     executable: bool = False
     solution_match: bool = False
@@ -109,6 +113,7 @@ class AgentTraceRecord(BaseModel):
     solution_formats: list[str] = Field(default_factory=list)
     answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
+    validation_contract: dict[str, Any] | None = None
     cypher_solution: Any | None = None
     final_answer: str | None = None
     split_group: str | None = None

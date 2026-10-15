@@ -47,7 +47,10 @@ def evaluation_identity(
             "enable_thinking", False,
         ))
     model = student_config["model"]
+    from cypher_3dsg_agent_distillation.cypher.validation_config import validation_identity
+
     identity = {
+        "validation": validation_identity(data_config),
         "schema_version": 1,
         "dataset": [data_config.get("dataset_id"), data_config.get("dataset_version")],
         "splits": {name: file_fingerprint(path) for name, path in selected.items()},
@@ -55,8 +58,7 @@ def evaluation_identity(
             file_fingerprint(scene["scene_path"]) for scene in data_config.get("scenes", [])
         ],
         "schema": (
-            file_fingerprint(data_config["schema_path"])
-            if data_config.get("schema_path") else None
+            file_fingerprint(data_config["schema_path"]) if data_config.get("schema_path") else None
         ),
         "model": model,
         "model_files": model_files(model.get("base_model")),

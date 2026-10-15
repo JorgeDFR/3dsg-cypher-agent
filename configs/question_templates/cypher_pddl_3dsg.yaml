@@ -14,17 +14,6 @@ templates:
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
       RETURN o.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: visited-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Pass by object {object} at some point, then continue with the mission.
       - Make object {object} one of the stops on your route.
@@ -41,17 +30,6 @@ templates:
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
       RETURN o.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: at-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Finish beside object {object}.
       - Object {object} is your final destination.
@@ -68,17 +46,6 @@ templates:
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
       RETURN o.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: safe
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Inspect object {object}.
       - Give {object} a careful safety check before moving on.
@@ -96,17 +63,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: holding
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Pick up a {class}.
       - Find any object categorized as {class} and take it with you.
@@ -123,17 +79,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: visited-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Visit any {class}, then continue onward.
       - Add one of the {class} objects as an intermediate stop.
@@ -151,17 +96,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: at-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - End the route at a {class}.
       - Choose one of the {class} objects as your final stopping point.
@@ -183,17 +117,6 @@ templates:
       RETURN target.nodeSymbol AS object
       ORDER BY distance ASC, object ASC
       LIMIT 1
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: safe
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Inspect the {case.class} closest to object {case.object}.
       - Starting from {case.object}, identify the nearest {case.class} and check its safety.
@@ -215,17 +138,6 @@ templates:
       RETURN target.nodeSymbol AS object
       ORDER BY distance ASC, object ASC
       LIMIT 1
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: at-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Finish at the {case.class} nearest to object {case.object}.
       - Find the closest {case.class} to {case.object} and make it your final position.
@@ -242,17 +154,6 @@ templates:
     cypher: |
       MATCH (p:Place {nodeSymbol: "{place}"})
       RETURN p.nodeSymbol AS place
-    grounding:
-      fields:
-        place:
-          source: value
-          aliases: [place, nodeSymbol]
-          symbol_type: Place
-          cardinality: set
-    goal:
-      fact: visited-place
-      arguments: [{result: place}]
-      multiple: or
     questions:
       - Pass through place {place} before heading elsewhere.
       - Put {place} on the itinerary as a waypoint.
@@ -270,17 +171,6 @@ templates:
     cypher: |
       MATCH (p:Place {nodeSymbol: "{place}"})
       RETURN p.nodeSymbol AS place
-    grounding:
-      fields:
-        place:
-          source: value
-          aliases: [place, nodeSymbol]
-          symbol_type: Place
-          cardinality: set
-    goal:
-      fact: at-place
-      arguments: [{result: place}]
-      multiple: or
     questions:
       - Finish at place {place}.
       - Treat {place} as the destination and remain there.
@@ -298,17 +188,6 @@ templates:
     cypher: |
       MATCH (p:MeshPlace {nodeSymbol: "{mesh_place}"})
       RETURN p.nodeSymbol AS place
-    grounding:
-      fields:
-        place:
-          source: value
-          aliases: [place, nodeSymbol]
-          symbol_type: MeshPlace
-          cardinality: set
-    goal:
-      fact: visited-place
-      arguments: [{result: place}]
-      multiple: or
     questions:
       - Cross mesh place {mesh_place} during the route.
       - Put {mesh_place} on the itinerary as a waypoint.
@@ -325,17 +204,6 @@ templates:
     cypher: |
       MATCH (p:MeshPlace {nodeSymbol: "{mesh_place}"})
       RETURN p.nodeSymbol AS place
-    grounding:
-      fields:
-        place:
-          source: value
-          aliases: [place, nodeSymbol]
-          symbol_type: MeshPlace
-          cardinality: set
-    goal:
-      fact: at-place
-      arguments: [{result: place}]
-      multiple: or
     questions:
       - End at mesh place {mesh_place}.
       - Treat {mesh_place} as the destination and remain there.
@@ -353,17 +221,6 @@ templates:
     cypher: |
       MATCH (r:Room {nodeSymbol: "{room}"})
       RETURN r.nodeSymbol AS room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: visited-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Pass through room {room}, but feel free to finish elsewhere.
       - Include region {room} somewhere in the route.
@@ -380,17 +237,6 @@ templates:
     cypher: |
       MATCH (r:Room {nodeSymbol: "{room}"})
       RETURN r.nodeSymbol AS room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: in-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Finish in room {room}.
       - Make region {room} the final destination rather than a pass-through.
@@ -408,17 +254,6 @@ templates:
       MATCH (r:Room {class: "{room_class}"})
       RETURN r.nodeSymbol AS room
       ORDER BY room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: visited-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Visit any {room_class} room before continuing to the destination.
       - Pass through any region classified as {room_class}.
@@ -436,17 +271,6 @@ templates:
       MATCH (r:Room {class: "{room_class}"})
       RETURN r.nodeSymbol AS room
       ORDER BY room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: in-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Finish in a {room_class} room.
       - Select any region of type {room_class} as the mission's endpoint.
@@ -464,17 +288,6 @@ templates:
       MATCH (r:Room)-[:CONTAINS*2..2]->(o:Object {nodeSymbol: "{case.object}"})
       RETURN DISTINCT r.nodeSymbol AS room
       ORDER BY room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: visited-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Visit the room containing object {case.object}.
       - Use {case.object} to identify its room and include that region as a waypoint.
@@ -493,17 +306,6 @@ templates:
       MATCH (r:Room)-[:CONTAINS*2..2]->(o:Object {nodeSymbol: "{case.object}"})
       RETURN DISTINCT r.nodeSymbol AS room
       ORDER BY room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: in-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Finish in the room containing object {case.object}.
       - Locate {case.object}'s room and use that entire region as the final destination.
@@ -523,22 +325,6 @@ templates:
       MATCH (p {nodeSymbol: "{place}"})
       WHERE p:Place OR p:MeshPlace
       RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
-    grounding:
-      fields:
-        object:
-          source: object
-          aliases: [object]
-          symbol_type: Object
-          cardinality: set
-        place:
-          source: place
-          aliases: [place]
-          symbol_type: PlaceOrMeshPlace
-          cardinality: set
-    goal:
-      fact: object-in-place
-      arguments: [{result: object}, {result: place}]
-      multiple: or
     questions:
       - Move object {object} to place {place}.
       - Object {object} belongs in {place}. Relocate it there.
@@ -557,25 +343,6 @@ templates:
       MATCH (o:Object {nodeSymbol: "{object}"})
       MATCH (p:Place {nodeSymbol: "{place}"})
       RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
-    grounding:
-      fields:
-        object:
-          source: object
-          aliases: [object]
-          symbol_type: Object
-          cardinality: set
-        place:
-          source: place
-          aliases: [place]
-          symbol_type: Place
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: safe
-          arguments: [{result: object}]
-        - fact: at-place
-          arguments: [{result: place}]
     questions:
       - Inspect object {object} and finish at place {place}.
       - Before stopping at {place}, complete a safety check on {object}.
@@ -594,25 +361,6 @@ templates:
       MATCH (destination:Object {nodeSymbol: "{destination_object}"})
       WHERE waypoint <> destination
       RETURN waypoint.nodeSymbol AS waypoint, destination.nodeSymbol AS destination
-    grounding:
-      fields:
-        waypoint:
-          source: waypoint
-          aliases: [waypoint]
-          symbol_type: Object
-          cardinality: set
-        destination:
-          source: destination
-          aliases: [destination]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-object
-          arguments: [{result: waypoint}]
-        - fact: at-object
-          arguments: [{result: destination}]
     questions:
       - Visit object {waypoint_object}, but end the route at {destination_object}.
       - Pass by {waypoint_object} on the way. The final destination is object {destination_object}.
@@ -629,18 +377,6 @@ templates:
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
       RETURN o.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: not
-      clauses:
-        - fact: holding
-          arguments: [{result: object}]
     questions:
       - Do not finish while holding object {object}.
       - Make sure {object} is out of the robot's gripper when the task is complete.
@@ -658,19 +394,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: not
-      clauses:
-        - fact: holding
-          arguments: [{result: object}]
-          multiple: or
     questions:
       - Do not end up holding any {class}.
       - Every {class} must be outside the robot's gripper at completion.
@@ -687,22 +410,6 @@ templates:
     cypher: |
       MATCH (o:Object {nodeSymbol: "{object}"})
       RETURN o.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-object
-          arguments: [{result: object}]
-        - operator: not
-          clauses:
-            - fact: holding
-              arguments: [{result: object}]
     questions:
       - Visit object {object}, but do not finish holding it.
       - Pass by {object} without taking it away in the gripper.
@@ -719,17 +426,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: safe
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Inspect a {class}.
       - Pick any {class} in the scene and verify its safety.
@@ -750,23 +446,6 @@ templates:
       MATCH (p {nodeSymbol: "{place}"})
       WHERE p:Place OR p:MeshPlace
       RETURN o.nodeSymbol AS object, p.nodeSymbol AS place
-    grounding:
-      fields:
-        object:
-          source: object
-          aliases: [object]
-          symbol_type: Object
-          cardinality: set
-        place:
-          source: place
-          aliases: [place]
-          symbol_type: PlaceOrMeshPlace
-          cardinality: set
-    goal:
-      operator: not
-      clauses:
-        - fact: object-in-place
-          arguments: [{result: object}, {result: place}]
     questions:
       - Ensure object {object} is not in place {place}.
       - Remove {object} from {place} if it is there.
@@ -784,25 +463,6 @@ templates:
       MATCH (p:Place {nodeSymbol: "{place}"})
       MATCH (r:Room {nodeSymbol: "{room}"})
       RETURN p.nodeSymbol AS place, r.nodeSymbol AS room
-    grounding:
-      fields:
-        place:
-          source: place
-          aliases: [place]
-          symbol_type: Place
-          cardinality: set
-        room:
-          source: room
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-place
-          arguments: [{result: place}]
-        - fact: in-region
-          arguments: [{result: room}]
     questions:
       - Pass through place {place} and finish inside room {room}.
       - Place {place} is a required waypoint. After visiting it, end the mission in {room}.
@@ -820,17 +480,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: visited-object
-      arguments: [{result: object}]
-      multiple: and
     questions:
       - Visit every {class} object before completing the mission.
       - Make all objects classified as {class} stops on the route.
@@ -847,17 +496,6 @@ templates:
       MATCH (o:Object {class: "{class}"})
       RETURN o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: safe
-      arguments: [{result: object}]
-      multiple: and
     questions:
       - Inspect every {class} object.
       - Complete a safety check on all objects classified as {class}.
@@ -876,27 +514,6 @@ templates:
       MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second
-    grounding:
-      fields:
-        first:
-          source: first
-          aliases: [first]
-          symbol_type: Object
-          cardinality: set
-        second:
-          source: second
-          aliases: [second]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-object
-          arguments: [{result: first}]
-          multiple: or
-        - fact: at-object
-          arguments: [{result: second}]
-          multiple: or
     questions:
       - Visit any {first_class}, then finish beside any {second_class}.
       - Include one {first_class} as a waypoint and make a {second_class} the final destination.
@@ -915,27 +532,6 @@ templates:
       MATCH (r:Room {class: "{room_class}"})
       RETURN o.nodeSymbol AS object, r.nodeSymbol AS room
       ORDER BY object, room
-    grounding:
-      fields:
-        object:
-          source: object
-          aliases: [object]
-          symbol_type: Object
-          cardinality: set
-        room:
-          source: room
-          aliases: [room, region]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-object
-          arguments: [{result: object}]
-          multiple: and
-        - fact: in-region
-          arguments: [{result: room}]
-          multiple: or
     questions:
       - Visit every {object_class}, then finish in any {room_class} room.
       - Make all {object_class} objects waypoints and use a {room_class} as the final region.
@@ -954,28 +550,6 @@ templates:
       MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second
-    grounding:
-      fields:
-        first:
-          source: first
-          aliases: [first]
-          symbol_type: Object
-          cardinality: set
-        second:
-          source: second
-          aliases: [second]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-object
-          arguments: [{result: first}]
-          multiple: or
-        - fact: holding
-          arguments: [{result: second}]
-          multiple: and
-          negate_each: true
     questions:
       - Visit any {first_class}, but finish without holding any {second_class}.
       - Pass by one {first_class} and leave every {second_class} outside the gripper at completion.
@@ -994,27 +568,6 @@ templates:
       OPTIONAL MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second
-    grounding:
-      fields:
-        first:
-          source: first
-          aliases: [first]
-          symbol_type: Object
-          cardinality: set
-        second:
-          source: second
-          aliases: [second]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: or
-      clauses:
-        - fact: safe
-          arguments: [{result: first}]
-          multiple: or
-        - fact: visited-object
-          arguments: [{result: second}]
-          multiple: or
     questions:
       - Either inspect any {first_class} or visit any {second_class}.
       - "Satisfy one of these goals: check a {first_class} for safety, or pass by a {second_class}."
@@ -1033,32 +586,6 @@ templates:
       MATCH (second:Object {class: "{second_class}"})
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
       ORDER BY first, second
-    grounding:
-      fields:
-        first:
-          source: first
-          aliases: [first]
-          symbol_type: Object
-          cardinality: set
-        second:
-          source: second
-          aliases: [second]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      operator: or
-      clauses:
-        - operator: and
-          clauses:
-            - fact: safe
-              arguments: [{result: first}]
-              multiple: or
-            - fact: visited-object
-              arguments: [{result: second}]
-              multiple: or
-        - fact: at-object
-          arguments: [{result: second}]
-          multiple: or
     questions:
       - Either inspect any {first_class} and visit any {second_class}, or finish beside any {second_class}.
       - Choose between checking a {first_class} plus passing a {second_class}, and simply ending at a {second_class}.
@@ -1075,17 +602,6 @@ templates:
       MATCH (r:Room)-[:CONTAINS*2..2]->(o:Object {class: "{object_class}"})
       RETURN DISTINCT r.nodeSymbol AS room
       ORDER BY room
-    grounding:
-      fields:
-        room:
-          source: value
-          aliases: [room, region, nodeSymbol]
-          symbol_type: Room
-          cardinality: set
-    goal:
-      fact: in-region
-      arguments: [{result: room}]
-      multiple: or
     questions:
       - Finish in any room that contains a {object_class}.
       - Find a room with a {object_class} object and use that region as the final destination.
@@ -1103,17 +619,6 @@ templates:
       MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object {class: "{object_class}"})
       RETURN DISTINCT o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: visited-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Visit any {object_class} located in a {room_class} room.
       - Find a {object_class} inside a {room_class} and make it a waypoint.
@@ -1131,17 +636,6 @@ templates:
       MATCH (r:Room {class: "{room_class}"})-[:CONTAINS*2..2]->(o:Object {class: "{object_class}"})
       RETURN DISTINCT o.nodeSymbol AS object
       ORDER BY object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: at-object
-      arguments: [{result: object}]
-      multiple: or
     questions:
       - Finish beside any {object_class} located in a {room_class} room.
       - Choose a {object_class} inside a {room_class} as the final destination.
@@ -1163,16 +657,6 @@ templates:
       ORDER BY distance ASC, target.nodeSymbol ASC, reference.nodeSymbol ASC
       LIMIT 1
       RETURN target.nodeSymbol AS object
-    grounding:
-      fields:
-        object:
-          source: value
-          aliases: [object, nodeSymbol]
-          symbol_type: Object
-          cardinality: set
-    goal:
-      fact: safe
-      arguments: [{result: object}]
     questions:
       - Inspect the {target_class} closest to any {reference_class}.
       - Find the {target_class} with the shortest distance to a {reference_class} and check it for safety.
@@ -1194,25 +678,6 @@ templates:
         AND (second:Place OR second:MeshPlace)
         AND first <> second
       RETURN first.nodeSymbol AS first, second.nodeSymbol AS second
-    grounding:
-      fields:
-        first:
-          source: first
-          aliases: [first]
-          symbol_type: PlaceOrMeshPlace
-          cardinality: set
-        second:
-          source: second
-          aliases: [second]
-          symbol_type: PlaceOrMeshPlace
-          cardinality: set
-    goal:
-      operator: and
-      clauses:
-        - fact: visited-place
-          arguments: [{result: first}]
-        - fact: at-place
-          arguments: [{result: second}]
     questions:
       - Visit place {first}, then finish at place {second}.
       - Use {first} as a waypoint before making {second} the final destination.

@@ -89,6 +89,33 @@ def forbidden_function_issues(cypher: str, policy: dict[str, Any]) -> list[str]:
     return issues
 
 
+def typed_result_value(value):
+    """JSON-safe values retaining node labels and point coordinates."""
+    from collections.abc import Mapping
+
+    from neo4j.graph import Node
+    from neo4j.spatial import Point
+
+    if isinstance(value, Node):
+        return {
+            "__neo4j_type__": "node",
+            "labels": sorted(value.labels),
+            "properties": {k: typed_result_value(v) for k, v in value.items()},
+        }
+    if isinstance(value, Point):
+        return {k: float(v) for k, v in zip(("x", "y", "z"), value, strict=False)}
+    if isinstance(value, Mapping):
+        return {k: typed_result_value(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [typed_result_value(v) for v in value]
+    return value
+
+
+def typed_record(record):
+    # record.data() strips Node labels before we can inspect them.
+    return typed_result_value(dict(record.items()) if hasattr(record, "items") else record.data())
+
+
 def result_hash(rows: list[dict[str, Any]]) -> str:
     normalized = json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -177,11 +204,20 @@ def static_checks(
                 issues.append(f"unknown property: {property_name}")
 
     if policy.get("require_bounded_variable_length_paths", True):
-        for variable_path in re.findall(r"\[[^\]]*\*[^\]]*\]", cypher):
-            if ".." not in variable_path:
-                issues.append(f"unbounded variable-length path: {variable_path}")
-            elif re.search(r"\*\d*\.\.\s*\]", variable_path):
+        # Bounds are syntax, never content inside strings/comments/identifiers.
+        masked = re.sub(
+            r"'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"|`(?:``|[^`])*`|//[^\n]*|/\*.*?\*/",
+            lambda m: " " * len(m.group()),
+            cypher,
+            flags=re.DOTALL,
+        )
+        for variable_path in re.findall(r"\[[^\]]*\*[^\]]*\]", masked):
+            bounds = variable_path.split("*", 1)[1].rstrip("]").strip()
+            match = re.match(r"(\d+)?\s*(\.\.\s*(\d+)?)?", bounds)
+            if not match or (match.group(2) and match.group(3) is None):
                 issues.append(f"missing upper bound on variable-length path: {variable_path}")
+            elif match.group(1) is None and match.group(3) is None:
+                issues.append(f"unbounded variable-length path: {variable_path}")
     return issues
 
 
@@ -310,6 +346,7 @@ class Neo4jValidator:
         query_text = cypher if execute else f"EXPLAIN\n{cypher}"
         try:
             rows_truncated = False
+            columns = []
             if execute and max_rows is not None:
                 # ``Driver.execute_query`` eagerly materializes the complete result.
                 # Stream at most max_rows + 1 records instead so an accidentally broad
@@ -321,11 +358,12 @@ class Neo4jValidator:
                     fetch_size=max_rows + 1,
                 ) as session:
                     result = session.run(Query(query_text, timeout=self.timeout))
+                    columns = list(result.keys()) if hasattr(result, "keys") else []
                     for record in result:
                         if len(rows) >= max_rows:
                             rows_truncated = True
                             break
-                        rows.append(record.data())
+                        rows.append(typed_record(record))
                     if not rows_truncated:
                         summary = result.consume()
                         notifications = [
@@ -333,11 +371,12 @@ class Neo4jValidator:
                         ]
                 records_present = bool(rows) or rows_truncated
             else:
-                records, summary, _ = self.driver.execute_query(
+                records, summary, returned_columns = self.driver.execute_query(
                     Query(query_text, timeout=self.timeout),
                     database_=self.database,
                 )
-                rows = [record.data() for record in records] if execute else []
+                columns = list(returned_columns or [])
+                rows = [typed_record(record) for record in records] if execute else []
                 notifications = [str(item) for item in (summary.notifications or [])]
                 records_present = bool(records)
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -349,6 +388,7 @@ class Neo4jValidator:
                 "elapsed_ms": elapsed_ms,
                 "notifications": notifications,
                 "rows": rows,
+                "columns": columns,
                 "rows_truncated": rows_truncated,
                 "row_limit": max_rows,
                 "result_hash": (

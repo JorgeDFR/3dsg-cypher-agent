@@ -1606,3 +1606,36 @@ def test_summarize_raw_generation_records_counts_hidden_false_positive_risks():
 
 def test_finite_perplexity_reports_none_before_json_overflow():
     assert finite_perplexity(700.0) is None
+
+
+def test_contract_end_to_end_separates_correct_answer_from_actual_grounding():
+    record = raw_generation_record()
+    record["validation_contract"] = {
+        "result": {"kind": "set", "type": "node_symbol", "layers": ["Object"]},
+        "answer": {"formats": ["set[str]"], "empty": "<>"},
+    }
+    responses = iter(
+        [
+            generated_native_tool_call(record["gold_cypher"]),
+            generated_result("<answer><O1></answer>"),
+        ]
+    )
+
+    class WrongRows:
+        def validate(self, cypher, execute, **kwargs):
+            return {"executable": True, "rows": [{"renamed": "O999"}], "error": None}
+
+    runtime = FakeGenerationRuntime(lambda *args, **kwargs: next(responses))
+    result = evaluate_end_to_end_record(
+        record,
+        runtime=runtime,
+        validator=WrongRows(),
+        policy=None,
+        tool_schemas=[run_cypher_tool_schema()],
+        max_new_tokens=32,
+        enable_thinking=False,
+    )
+    assert result["final_answer_match"] is True
+    assert result["result_validation"]["match"] is False
+    assert result["final_answer_grounded"] is False
+    assert result["attempts"][0]["validation"]["rows"] == [{"renamed": "O999"}]

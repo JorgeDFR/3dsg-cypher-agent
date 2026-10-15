@@ -167,3 +167,41 @@ def test_sldp_validation_enforces_declared_solution_format():
         True,
         True,
     )
+
+
+def test_sldp_parser_reuses_grammar_without_changing_heracles_results(monkeypatch):
+    import pytest
+    from lark.exceptions import UnexpectedInput
+    from sldp.lark_parser import lark_parse_sldp as reference_parse
+
+    from cypher_3dsg_agent_distillation.graph import heracles_validation as validation
+
+    samples = [
+        "0",
+        "3.25",
+        "chair",
+        "<>",
+        "[]",
+        "<O1, O2>",
+        "[O1, [p1, P2]]",
+        "POINT(-1.25 2 3)",
+        "{target: O1}",
+    ]
+    expected = [reference_parse(value) for value in samples]
+    original = validation.Lark
+    compiled = []
+
+    def count_compilation(*args, **kwargs):
+        compiled.append(True)
+        return original(*args, **kwargs)
+
+    validation._sldp_parser.cache_clear()
+    monkeypatch.setattr(validation, "Lark", count_compilation)
+    try:
+        assert [validation.lark_parse_sldp(value) for value in samples] == expected
+        with pytest.raises(UnexpectedInput):
+            validation.lark_parse_sldp("<broken")
+        assert validation.lark_parse_sldp("<O3>") == ("set", "O3")
+        assert len(compiled) == 1
+    finally:
+        validation._sldp_parser.cache_clear()

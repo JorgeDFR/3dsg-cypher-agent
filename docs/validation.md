@@ -4,6 +4,11 @@ Validation operates at three levels: dataset trace checks, student eval-loss,
 and end-to-end raw generation. Raw generation can use either Transformers or a
 GGUF model registered in Ollama.
 
+Cypher-result and PDDL grounding checks use typed, versioned contracts, including
+alias-independent decoding, explicit unresolved outcomes, and separate final-answer
+grounding checks. See [Cypher and grounding validation](cypher_grounding_validation.md)
+for configuration, semantic evidence, migration, and saved-output rescoring.
+
 ## Automated validation and reuse
 
 Run `docker/stack.sh demo-validate` after training. It evaluates loss, validates

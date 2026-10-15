@@ -26,6 +26,7 @@ from cypher_3dsg_agent_distillation.agents.openrouter_teacher import (
 from cypher_3dsg_agent_distillation.core.config import load_yaml
 from cypher_3dsg_agent_distillation.cypher.task_semantics import enrich_seed_semantics
 from cypher_3dsg_agent_distillation.cypher.templates import generate_records
+from cypher_3dsg_agent_distillation.cypher.validation_config import load_question_catalog
 
 
 class FakeValidator:
@@ -355,7 +356,9 @@ def test_synthetic_parent_lookup_accepts_actual_scene_result_shapes(
 ):
     template = next(
         template
-        for template in load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+        for template in load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")[
+            "templates"
+        ]
         if template["query_type"] == "object_place_lookup"
     )
     template = {**template, "target_questions": 1, "questions": template["questions"][:1]}
@@ -1148,3 +1151,83 @@ def test_static_only_accepts_incomplete_statically_valid_trace():
     assert decision.reason == "accepted_static_only"
     assert decision.record.metadata["static_only"]
     assert decision.record.metadata["incomplete_conversation"]
+
+
+def test_contract_teacher_accepts_alias_and_retains_recomputable_evidence():
+    contract = {
+        "result": {"kind": "scalar", "type": "integer", "row_count": {"min": 1, "max": 1}},
+        "answer": {"formats": ["int"], "empty": "0"},
+    }
+    query = "MATCH (o:Object) RETURN count(o) AS total"
+    decision, client = run_interaction(
+        seed_record(validation_contract=contract),
+        [tool_assistant(query), final_assistant()],
+        validator=FakeValidator([{"executable": True, "rows": [{"total": 3}], "error": None}]),
+    )
+    assert decision.accepted
+    assert decision.record.validation.result_validation["status"] == "pass"
+    assert decision.record.validation.answer_grounded
+    from cypher_3dsg_agent_distillation.agents.agent_evaluation import recompute_trace_validation
+
+    assert recompute_trace_validation(decision.record)["result_validation"]["match"]
+    assert "validation_contract" not in json.dumps(client.calls)
+
+
+@pytest.mark.parametrize(
+    "text", ["<answer>3</answer><answer>4</answer>", "<answer><answer>3</answer></answer>"]
+)
+def test_answer_blocks_must_be_unique(text):
+    assert openrouter_teacher.answer_inner_text(text) is None
+
+
+def test_real_pddl_aliases_use_top_level_contract_without_legacy_field_hints():
+    query = (
+        'MATCH (a:Object {nodeSymbol:"O1"}), (b:Object {nodeSymbol:"O2"}) '
+        "RETURN a.nodeSymbol AS stop, b.nodeSymbol AS finish"
+    )
+    goal = "(and (visited-object O1) (at-object O2))"
+    c = {
+        "result": {
+            "kind": "role_sets",
+            "roles": {
+                "waypoint": {
+                    "type": "node_symbol",
+                    "layers": ["Object"],
+                    "property": "nodeSymbol",
+                    "origin": {"nodeSymbol": "O1"},
+                },
+                "destination": {
+                    "type": "node_symbol",
+                    "layers": ["Object"],
+                    "property": "nodeSymbol",
+                    "origin": {"nodeSymbol": "O2"},
+                },
+            },
+        },
+        "goal": {
+            "operator": "and",
+            "clauses": [
+                {"fact": "visited-object", "arguments": [{"result": "waypoint"}]},
+                {"fact": "at-object", "arguments": [{"result": "destination"}]},
+            ],
+        },
+    }
+    seed = seed_record(
+        task_family="cypher_pddl",
+        output_type="PDDL",
+        cypher=query,
+        solution=goal,
+        validation_contract=c,
+        grounding={"expected": {"waypoint": ["O1"], "destination": ["O2"]}},
+    )
+    decision, client = run_interaction(
+        seed,
+        [tool_assistant(query), final_assistant(goal)],
+        validator=FakeValidator([{"executable": True, "rows": [{"stop": "O1", "finish": "O2"}]}]),
+    )
+    assert decision.accepted, decision.reason
+    assert decision.record.validation.result_validation["bindings"] == {
+        "waypoint": "stop",
+        "destination": "finish",
+    }
+    assert "validation_contract" not in json.dumps(client.calls)

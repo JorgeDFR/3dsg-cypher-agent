@@ -25,7 +25,9 @@ def default_semantics_path(template_path: str | Path) -> Path:
     )
 
 
-def load_catalog(template_paths, semantics_paths=None):
+def load_catalog(
+    template_paths, semantics_paths=None, *, validation_paths=None, validation_defaults_paths=None
+):
     """Join separate files and check that their query operations still agree.
 
     Question generation and real teachers do not call this loader. The merged
@@ -40,10 +42,28 @@ def load_catalog(template_paths, semantics_paths=None):
     )
     if len(template_paths) != len(semantics_paths):
         raise ValueError("Provide one synthetic reasoning file per question template file")
+    validation_paths = list(validation_paths or [None] * len(template_paths))
+    validation_defaults_paths = list(validation_defaults_paths or [None] * len(template_paths))
+    if len(validation_paths) != len(template_paths) or len(validation_defaults_paths) != len(
+        template_paths
+    ):
+        raise ValueError("Provide one validation config/defaults path per question template file")
     catalog = []
     seen = set()
-    for template_path, semantics_path in zip(template_paths, semantics_paths, strict=True):
-        templates = yaml.safe_load(Path(template_path).read_text())["templates"]
+    for template_path, semantics_path, validation_path, defaults_path in zip(
+        template_paths, semantics_paths, validation_paths, validation_defaults_paths, strict=True
+    ):
+        from cypher_3dsg_agent_distillation.cypher.validation_config import (
+            default_validation_path,
+            load_question_catalog,
+        )
+
+        if validation_path or default_validation_path(template_path).exists():
+            templates = load_question_catalog(template_path, validation_path, defaults_path)[
+                "templates"
+            ]
+        else:
+            templates = yaml.safe_load(Path(template_path).read_text())["templates"]
         config = yaml.safe_load(Path(semantics_path).read_text())
         version = config.get("version")
         if type(version) is not int or version != SEMANTICS_VERSION:

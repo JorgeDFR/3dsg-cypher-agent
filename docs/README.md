@@ -22,6 +22,7 @@ material.
 | Dataset, teacher, model, and report lineage | [Artifact versioning](artifact_versioning.md) |
 | Consolidated static results and artifact inspection | [HTML workflow report](workflow_report.md) |
 | External performance sweeps | [Heracles Benchmark integration](../examples/herables_benchmark/README.md) |
+| Typed result contracts, grounding, alias handling and offline audits | [Cypher and grounding validation](cypher_grounding_validation.md) |
 | Controlled repair mutations and coverage | [Cypher repair supervision](cypher_repair_supervision.md) |
 | Reasoning generation, sentence selection, teacher capability checks, pilots, and matched experiments | [Reasoning traces](reasoning_traces.md) |
 | Room labels and 3DSG editing | [Scene utilities](scene_tools.md) |

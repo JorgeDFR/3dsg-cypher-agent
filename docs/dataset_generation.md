@@ -53,6 +53,11 @@ scenes:
     scene_path: data/scenes/spot_demo.json
 ```
 
+Question catalogs contain wording, variables, gold queries and sampling settings.
+Answer formats, grounding types, PDDL goal trees and comparison policies live in
+`configs/question_templates/validation/` and are composed before seed generation.
+See [Cypher and grounding validation](cypher_grounding_validation.md) for the schema.
+
 Question templates are generated once per compatible scene. Templates that
 require a missing layer are skipped for that scene. For example, room templates
 are not generated for a graph without `Room`. Object-containment templates use

@@ -33,6 +33,8 @@ class QuestionSetPaths:
     name: str
     question_templates_path: Path
     experiment_profile_path: Path
+    validation_config_path: Path | None = None
+    validation_defaults_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,6 @@ class DataPaths:
     rejected_traces_path: Path
     splits: dict[str, Path]
     test_report_path: Path
-
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -240,6 +241,16 @@ def data_paths_from_config(
             question_sets.append(
                 QuestionSetPaths(
                     name=name,
+                    validation_config_path=(
+                        resolve_config_path(item["validation_config_path"])
+                        if item.get("validation_config_path")
+                        else None
+                    ),
+                    validation_defaults_path=(
+                        resolve_config_path(item["validation_defaults_path"])
+                        if item.get("validation_defaults_path")
+                        else None
+                    ),
                     question_templates_path=resolve_config_path(
                         templates_path, "question_templates"
                     ),
@@ -254,13 +265,21 @@ def data_paths_from_config(
         resolved_question_sets = (
             QuestionSetPaths(
                 name=str(config.get("question_set_name") or "cypher_qa"),
+                validation_config_path=(
+                    resolve_config_path(config["validation_config_path"])
+                    if config.get("validation_config_path")
+                    else None
+                ),
+                validation_defaults_path=(
+                    resolve_config_path(config["validation_defaults_path"])
+                    if config.get("validation_defaults_path")
+                    else None
+                ),
                 question_templates_path=resolve_config_path(
                     config.get("question_templates_path", "cypher_qa_3dsg.yaml"),
                     "question_templates",
                 ),
-                experiment_profile_path=resolve_config_path(
-                    profile_value, "experiment_profiles"
-                ),
+                experiment_profile_path=resolve_config_path(profile_value, "experiment_profiles"),
             ),
         )
 
@@ -334,9 +353,19 @@ def load_data_config(
             "scene_path": str(paths.scene_path),
             "schema_path": str(paths.schema_path),
             "question_templates_path": str(paths.question_templates_path),
+            "validation_config_path": (str(paths.question_sets[0].validation_config_path)
+                if paths.question_sets[0].validation_config_path else None),
+            "validation_defaults_path": (str(paths.question_sets[0].validation_defaults_path)
+                if paths.question_sets[0].validation_defaults_path else None),
             "question_sets": [
                 {
                     "name": question_set.name,
+                    "validation_config_path": str(question_set.validation_config_path)
+                    if question_set.validation_config_path
+                    else None,
+                    "validation_defaults_path": str(question_set.validation_defaults_path)
+                    if question_set.validation_defaults_path
+                    else None,
                     "question_templates_path": str(question_set.question_templates_path),
                     "experiment_profile_path": str(question_set.experiment_profile_path),
                 }
@@ -366,12 +395,14 @@ def load_data_config(
     if not (traces_dir / "metadata.yaml").exists() and isinstance(teacher, dict):
         if teacher.get("version") and teacher.get("teacher_name"):
             traces_dir = traces_dir / teacher["teacher_name"] / validate_version(teacher["version"])
-    resolved.update({
-        "teacher_metadata_path": str(traces_dir / "metadata.yaml"),
-        "teacher_traces_jsonl_path": str(traces_dir / "teacher_traces.jsonl"),
-        "accepted_traces_path": str(traces_dir / "accepted.json"),
-        "rejected_traces_path": str(traces_dir / "rejected.json"),
-    })
+    resolved.update(
+        {
+            "teacher_metadata_path": str(traces_dir / "metadata.yaml"),
+            "teacher_traces_jsonl_path": str(traces_dir / "teacher_traces.jsonl"),
+            "accepted_traces_path": str(traces_dir / "accepted.json"),
+            "rejected_traces_path": str(traces_dir / "rejected.json"),
+        }
+    )
     return resolved
 
 

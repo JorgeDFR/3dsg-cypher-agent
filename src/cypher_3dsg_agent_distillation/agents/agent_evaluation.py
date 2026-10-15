@@ -13,6 +13,68 @@ from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.cypher.evaluation import build_summary as build_cypher_summary
 
 
+def saved_execution(record):
+    """Return the latest successful saved tool response and its query."""
+    query = None
+    latest = None
+    for message in record.messages:
+        if message.tool_calls:
+            query = None
+            for call in message.tool_calls:
+                if call.function.name == DEFAULT_AGENT_TOOL:
+                    query = call.function.arguments.get("cypher_string")
+        if message.role == "tool" and query:
+            try:
+                payload = json.loads(message.content or "")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(payload, dict) and payload.get("ok") is not False:
+                rows = payload.get("rows", payload.get("result"))
+                if isinstance(rows, list):
+                    latest = (query, rows, payload.get("columns"))
+            elif isinstance(payload, list):
+                latest = (query, payload, None)
+    # Only reuse saved execution when its exact query is recorded or is the
+    # validated successful query retained on a generated trace.
+    extras = record.validation.model_dump()
+    if latest is None and extras.get("executable") and isinstance(extras.get("rows"), list):
+        latest = (record.gold_cypher, extras["rows"], extras.get("columns"))
+    return latest
+
+
+def recompute_trace_validation(record):
+    from cypher_3dsg_agent_distillation.agents.openrouter_teacher import answer_inner_text
+    from cypher_3dsg_agent_distillation.agents.student_evaluation import (
+        score_final_answer_generation,
+    )
+    from cypher_3dsg_agent_distillation.cypher.result_validation import (
+        final_grounding_check,
+        validate_record_result,
+    )
+
+    payload = record.model_dump()
+    execution = saved_execution(record)
+    result = (
+        validate_record_result(payload, execution[1], execution[0], execution[2])
+        if execution
+        else {
+            "status": "not_checked",
+            "match": None,
+            "issues": ["No saved successful execution evidence"],
+        }
+    )
+    final = score_final_answer_generation(payload, record.final_answer_text or "")
+    grounded = final_grounding_check(payload, answer_inner_text(record.final_answer_text), result)
+    return {
+        **final,
+        "result_validation": result,
+        "cypher_solution_match": result["match"],
+        "tool_result_match": result["match"],
+        "answer_grounded": grounded["match"],
+        "grounding_check": grounded,
+    }
+
+
 def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
     tool_calls = record.tool_calls
     tool_names = [call.function.name for call in tool_calls]
@@ -32,7 +94,9 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         else record.validation.solution_match
     )
 
+    recomputed = recompute_trace_validation(record) if record.validation_contract else {}
     return {
+        **recomputed,
         "uid": record.uid,
         "task_type": record.task_type,
         "task_family": record.task_family,
@@ -43,7 +107,7 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         "valid_cypher_argument": valid_cypher_argument,
         "static_read_only_safe": bool(record.validation.static_valid),
         "cypher_execution_success": bool(record.validation.executable),
-        "final_answer_match": bool(final_answer_match),
+        "final_answer_match": recomputed.get("final_answer_match", bool(final_answer_match)),
         "n_tool_calls": len(tool_calls),
         "hallucinated_tool": hallucinated_tool,
         "refusal": record.is_refusal,
@@ -80,7 +144,11 @@ def build_agent_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         by_family[task_family]["n_tool_calls"] += int(record.get("n_tool_calls", 0))
 
     total = len(records)
+    validation_counts = Counter(
+        (r.get("result_validation") or {"status": "not_checked"})["status"] for r in records
+    )
     return {
+        "result_validation_status_counts": dict(validation_counts),
         "total": total,
         "metrics": dict(counters),
         "rates": {

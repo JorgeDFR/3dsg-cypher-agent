@@ -309,3 +309,18 @@ def test_suppress_neo4j_notification_logs_sets_logger_to_error():
         assert logger.level == logging.ERROR
     finally:
         logger.setLevel(previous_level)
+
+
+def test_fixed_and_bounded_path_policy_ignores_quoted_content_and_comments():
+    for bounds in ["2", "2..2", "..2", "1..2"]:
+        assert not static_checks(f"MATCH (a)-[:NEAR*{bounds}]->(b) RETURN b", False)
+    for bounds in ["", "2..", ".."]:
+        assert static_checks(f"MATCH (a)-[:NEAR*{bounds}]->(b) RETURN b", False)
+    for query in [
+        "RETURN '[:NEAR*]' AS x",
+        'RETURN "[:NEAR*2..]" AS x',
+        "RETURN 1 AS `[:NEAR*]`",
+        "RETURN 1 // [:NEAR*]",
+        "RETURN 1 /* [:NEAR*2..] */",
+    ]:
+        assert not static_checks(query, False)

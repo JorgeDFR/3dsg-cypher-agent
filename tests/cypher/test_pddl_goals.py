@@ -157,7 +157,7 @@ def test_grounding_validation_rejects_wrong_entities():
     assert validate_grounding_rows([{"object": "O2"}], contract)[0] is False
 
 
-def test_grounding_validation_accepts_semantically_mapped_aliases():
+def test_legacy_grounding_never_uses_expected_values_to_remap_aliases():
     contract = {
         "expected": {"first": ["O1", "O2"], "second": ["O3"]},
         "fields": {
@@ -183,8 +183,8 @@ def test_grounding_validation_accepts_semantically_mapped_aliases():
         contract,
     )
 
-    assert matches
-    assert actual == {"first": ["O1", "O2"], "second": ["O3"]}
+    assert not matches
+    assert actual == {"first": [], "second": []}
 
 
 def test_grounding_validation_rejects_columns_that_collapse_distinct_roles():

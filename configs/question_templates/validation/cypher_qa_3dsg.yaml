@@ -1,0 +1,740 @@
+version: 1
+templates:
+  object_class_inventory:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: string
+      property: class
+      layers:
+      - Object
+  object_class_centers:
+    answer:
+      formats:
+      - set[point]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: point
+      property: center
+      layers:
+      - Object
+  object_class_count:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  top_object_classes_by_count:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: top_k_with_ties
+        limit:
+          binding: limit
+        score_source:
+          kind: property_counts
+          layer: Object
+          property: class
+      empty: <>
+    result:
+      kind: set
+      type: string
+      property: class
+      layers:
+      - Object
+      comparison:
+        mode: top_k_with_ties
+        limit:
+          binding: limit
+        score_source:
+          kind: property_counts
+          layer: Object
+          property: class
+  objects_in_room_symbol:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_in_place_symbol:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  object_place_lookup:
+    answer:
+      formats:
+      - str
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: flexible
+      type: node_symbol
+      property: nodeSymbol
+      layers: []
+  nearest_object_to_mesh_place:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  object_radius_from_point:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_in_bounding_box:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  mesh_place_hops:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - MeshPlace
+  room_adjacency_count:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  nearest_object_to_object:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  place_hops:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Place
+  location_hops:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - binding: case.layer
+  objects_in_room_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  object_total:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  room_total:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  combined_place_total:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  object_class_by_symbol:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: string
+      property: class
+      layers:
+      - Object
+  object_center_by_symbol:
+    answer:
+      formats:
+      - point
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: point
+      property: center
+      layers:
+      - Object
+  room_object_count:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  object_classes_in_room_symbol:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: string
+      property: class
+      layers:
+      - Object
+  adjacent_rooms:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  most_connected_rooms:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  least_connected_rooms:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  nearest_object_any_class:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  farthest_object_from_object:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  nearest_object_different_class:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_within_radius_of_object:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_of_class_in_room_symbol:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_of_class_in_room_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  count_objects_of_class_in_room_class:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  rooms_containing_object_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  object_classes_in_room_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: string
+      property: class
+      layers:
+      - Object
+  nearest_object_same_class:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  nearest_object_excluding_class:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  nearest_object_in_class_set:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  nearest_object_between_classes:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  farthest_object_of_class:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_of_class_within_radius_of_object:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_of_class_near_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  adjacent_rooms_of_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  objects_of_class_in_place:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  objects_excluding_class_in_room_class:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Object
+  place_object_count:
+    answer:
+      formats:
+      - int
+      comparison:
+        mode: exact
+      empty: '0'
+    result:
+      kind: scalar
+      type: integer
+      property: null
+      layers: []
+      row_count:
+        min: 1
+        max: 1
+  object_classes_in_place_symbol:
+    answer:
+      formats:
+      - set[str]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: set
+      type: string
+      property: class
+      layers:
+      - Object
+  closest_cross_class_object_pairs:
+    answer:
+      formats:
+      - set[list[str]]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: tuples
+      roles:
+        item_0:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: first
+          origin: {}
+          cardinality: set
+          nulls: reject
+        item_1:
+          type: node_symbol
+          layers:
+          - Object
+          property: nodeSymbol
+          oracle_source: second
+          origin: {}
+          cardinality: set
+          nulls: reject
+      unordered_tuple: true
+  closest_room_pairs:
+    answer:
+      formats:
+      - set[list[str]]
+      comparison:
+        mode: exact
+      empty: <>
+    result:
+      kind: tuples
+      roles:
+        item_0:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: first
+          origin: {}
+          cardinality: set
+          nulls: reject
+        item_1:
+          type: node_symbol
+          layers:
+          - Room
+          property: nodeSymbol
+          oracle_source: second
+          origin: {}
+          cardinality: set
+          nulls: reject
+      unordered_tuple: true
+  nearest_place_to_object:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers: []
+  nearest_room_to_object:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: node_symbol
+      property: nodeSymbol
+      layers:
+      - Room
+  write_refusal:
+    answer:
+      formats:
+      - str
+      comparison:
+        mode: exact
+      empty: ''
+    result:
+      kind: scalar
+      type: string
+      property: null
+      layers: []
+    query_policy:
+      refusal: WRITE_QUERY_NOT_ALLOWED

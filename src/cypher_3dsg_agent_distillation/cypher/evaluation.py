@@ -649,6 +649,23 @@ def rows_to_solution_value(
 
 
 def rows_to_solution_text(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+    if contract_for_record(record):
+        from cypher_3dsg_agent_distillation.cypher.result_validation import validate_record_result
+
+        result = validate_record_result(
+            record,
+            rows,
+            record.get("_validation_query")
+            or record.get("cypher")
+            or record.get("gold_cypher")
+            or "",
+        )
+        record["_result_validation"] = result
+        if result["status"] in {"invalid_result_shape", "mapping_unresolved"}:
+            raise ResultShapeError(result["status"] + ": " + "; ".join(result["issues"]))
+        return result["solution"]
     if "invalid_input" in (record.get("tags") or []) and rows_indicate_no_match(rows):
         solution_formats = solution_formats_for_record(record)
         expected = next(
@@ -677,11 +694,16 @@ def evaluate_records(
     validator: Neo4jValidator,
     policy: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
+    from cypher_3dsg_agent_distillation.cypher.result_validation import validate_record_result
+    from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
     evaluated = []
     for record in records:
         cypher = record.get(cypher_field, "")
         expected_solution = record.get("solution")
-        record_allows_writes = allow_writes or not bool(record.get("read_only", True))
+        record_allows_writes = (
+            allow_writes or not bool(record.get("read_only", True))
+        ) and not contract_for_record(record)
         static_issues = static_checks(cypher, record_allows_writes, policy=policy)
         is_refusal = is_safe_refusal(cypher)
 
@@ -716,7 +738,13 @@ def evaluate_records(
                 "error": validation["error"],
             }
             if validation["executable"]:
-                if str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
+                if contract_for_record(record):
+                    outcome = validate_record_result(
+                        record, rows, cypher, validation.get("columns")
+                    )
+                    execution["result_validation"] = outcome
+                    actual_solution = outcome.get("solution")
+                elif str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
                     grounding_match, actual_solution, _actual_grounding = validate_grounding_rows(
                         rows, record.get("grounding")
                     )
@@ -727,7 +755,9 @@ def evaluate_records(
                     except ResultShapeError as exc:
                         execution["result_shape_error"] = str(exc)
 
-        if str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
+        if "result_validation" in execution:
+            solution_match = execution["result_validation"]["match"]
+        elif str(record.get("task_family") or "cypher_qa") == "cypher_pddl":
             solution_match = bool(execution.get("grounding_match"))
         else:
             solution_match = (
@@ -745,6 +775,8 @@ def evaluate_records(
             status = "static_error"
         elif execution["error"]:
             status = "execution_error"
+        elif "result_validation" in execution:
+            status = execution["result_validation"]["status"]
         elif not solution_match:
             status = "solution_mismatch"
 

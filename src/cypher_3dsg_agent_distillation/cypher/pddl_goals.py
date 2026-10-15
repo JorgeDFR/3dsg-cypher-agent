@@ -213,98 +213,19 @@ def grounding_from_rows(
     return extracted
 
 
-def _semantic_grounding_from_rows(
-    rows: list[dict[str, Any]], contract: dict[str, Any]
-) -> dict[str, list[str]] | None:
-    """Map result columns to grounding roles by their values, not their aliases."""
-    fields = contract.get("fields") or {}
-    expected = {
-        str(key): _ordered_values(value) for key, value in (contract.get("expected") or {}).items()
-    }
-    match_mode = str(contract.get("match") or "exact")
-    column_values: dict[str, list[str]] = {}
-    for row in rows:
-        for column, value in row.items():
-            column_values.setdefault(str(column), []).extend(_grounding_values_in_value(value))
-
-    candidates: dict[str, list[str]] = {}
-    for field_name, field_spec in fields.items():
-        field_name = str(field_name)
-        expected_values = set(expected.get(field_name, []))
-        if not expected_values:
-            candidates[field_name] = []
-            continue
-        pattern = SYMBOL_PATTERNS.get(str(field_spec.get("symbol_type") or ""))
-        matching_columns = []
-        for column, raw_values in column_values.items():
-            values = {value for value in raw_values if pattern is None or pattern.fullmatch(value)}
-            matches = (
-                expected_values.issubset(values)
-                if match_mode == "subset"
-                else values == expected_values
-            )
-            if matches:
-                matching_columns.append(column)
-        if not matching_columns:
-            return None
-        candidates[field_name] = matching_columns
-
-    assignments: dict[str, str] = {}
-
-    def assign(field_names: list[str], used: dict[str, str]) -> bool:
-        if not field_names:
-            return True
-        field_name = min(field_names, key=lambda name: len(candidates[name]))
-        remaining = [name for name in field_names if name != field_name]
-        for column in candidates[field_name]:
-            previous_field = used.get(column)
-            if previous_field is not None and set(expected[previous_field]) != set(
-                expected[field_name]
-            ):
-                continue
-            assignments[field_name] = column
-            used[column] = field_name
-            if assign(remaining, used):
-                return True
-            assignments.pop(field_name, None)
-            if previous_field is None:
-                used.pop(column, None)
-            else:
-                used[column] = previous_field
-        return False
-
-    non_empty_fields = [name for name in candidates if expected.get(name)]
-    if not assign(non_empty_fields, {}):
-        return None
-
-    return {
-        field_name: (
-            sorted(
-                {
-                    value
-                    for value in column_values[assignments[field_name]]
-                    if (
-                        SYMBOL_PATTERNS.get(str(fields[field_name].get("symbol_type") or ""))
-                        is None
-                        or SYMBOL_PATTERNS[
-                            str(fields[field_name].get("symbol_type") or "")
-                        ].fullmatch(value)
-                    )
-                }
-            )
-            if field_name in assignments
-            else []
-        )
-        for field_name in fields
-    }
-
-
 def validate_grounding_rows(
     rows: list[dict[str, Any]],
     contract: dict[str, Any] | None,
+    *,
+    query: str = "",
 ) -> tuple[bool, str | None, dict[str, list[str]] | None]:
     if not contract:
         return True, None, None
+    if contract.get("validation_contract"):
+        from cypher_3dsg_agent_distillation.cypher.result_validation import validate_record_result
+
+        result = validate_record_result({"grounding": contract}, rows, query)
+        return result["match"], result["solution"], result.get("actual")
     expected = {
         str(key): _ordered_values(value) for key, value in (contract.get("expected") or {}).items()
     }
@@ -332,20 +253,6 @@ def validate_grounding_rows(
             for symbol in _symbols_in_value(row)
             for pattern in patterns
         )
-    if not matches and not expected_is_empty:
-        semantic_actual = _semantic_grounding_from_rows(rows, contract)
-        if semantic_actual is not None:
-            actual = semantic_actual
-            if match_mode == "subset":
-                matches = all(
-                    set(values).issubset(set(actual.get(key, [])))
-                    for key, values in expected.items()
-                )
-            else:
-                matches = all(
-                    set(actual.get(key, [])) == set(values) for key, values in expected.items()
-                )
-
     actual_is_empty = bool(actual) and all(not values for values in actual.values())
     rendered = (
         ""

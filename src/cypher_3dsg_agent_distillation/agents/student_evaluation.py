@@ -56,12 +56,21 @@ from cypher_3dsg_agent_distillation.core.versioning import (
     confirm_dataset_lineage,
     read_metadata,
 )
+from cypher_3dsg_agent_distillation.cypher.result_validation import (
+    compare_answers,
+    final_grounding_check,
+    validate_record_result,
+)
+from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
 
 EVAL_LOSS_MODE = "eval-loss"
 RAW_GENERATION_MODE = "raw-generation"
 SUPPORTED_SPLITS = ("train", "eval", "test", "challenge")
+
 ALL_SPLITS = "all"
 SPLIT_CHOICES = (*SUPPORTED_SPLITS, ALL_SPLITS)
+
+
 FINAL_ANSWER_CHECK = "final_answer_from_trace"
 TOOL_CALL_CHECK = "tool_call_from_prompt"
 END_TO_END_CHECK = "end_to_end_final_answer"
@@ -413,15 +422,23 @@ def score_final_answer_generation(
     answer = answer_inner_text(generated_text)
     format_valid = False
     answer_match = False
+    comparison_status = None
     if answer is not None and expected_solution is not None:
-        format_valid, answer_match = answer_matches_with_heracles(
-            answer,
-            str(expected_solution),
-            record_output_type(record),
-            answer_validation=record.get("answer_validation"),
-            solution_formats=record.get("solution_formats") or record.get("solution_format"),
-        )
-
+        contract = contract_for_record(record)
+        if contract:
+            comparison = compare_answers(
+                answer, str(expected_solution), contract, record.get("answer_validation")
+            )
+            format_valid, answer_match = comparison["format_valid"], comparison["match"]
+            comparison_status = comparison["status"]
+        else:
+            format_valid, answer_match = answer_matches_with_heracles(
+                answer,
+                str(expected_solution),
+                record_output_type(record),
+                answer_validation=record.get("answer_validation"),
+                solution_formats=record.get("solution_formats") or record.get("solution_format"),
+            )
     status = "pass"
     if expected_solution is None:
         status = "missing_expected_solution"
@@ -429,6 +446,8 @@ def score_final_answer_generation(
         status = "missing_generation"
     elif answer is None:
         status = "missing_answer_tags"
+    elif comparison_status == "invalid_expected_solution":
+        status = comparison_status
     elif not format_valid:
         status = "invalid_answer_format"
     elif not answer_match:
@@ -636,6 +655,7 @@ def evaluate_end_to_end_record(
     attempts: list[dict[str, Any]] = []
     query_attempts = 0
     max_query_attempts = max_query_retries + 1
+    latest_result = None
 
     while True:
         try:
@@ -676,6 +696,13 @@ def evaluate_end_to_end_record(
 
         if not parsed.tool_calls and not parsed.tool_call_generated:
             score = score_final_answer_generation(record, generated_text)
+            grounded = final_grounding_check(record, score.get("generated_answer"), latest_result)
+            score.update(
+                result_validation=latest_result or {"status": "not_checked", "match": None},
+                final_answer_grounded=grounded["match"],
+                tool_result_match=(latest_result or {}).get("match"),
+                grounding_check=grounded,
+            )
             attempt["status"] = score["status"]
             return {
                 **score,
@@ -735,7 +762,8 @@ def evaluate_end_to_end_record(
                 else:
                     static_issues, explain_validation = static_checks_with_explain(
                         cypher,
-                        allow_writes=not bool(record.get("read_only", True)),
+                        allow_writes=not bool(record.get("read_only", True))
+                        and not contract_for_record(record),
                         policy=policy,
                         validator=validator,
                     )
@@ -785,6 +813,11 @@ def evaluate_end_to_end_record(
                                 else:
                                     attempt["tool_response_chars"] = len(candidate_content)
                                     tool_content = candidate_content
+                                    latest_result = validate_record_result(
+                                        record, rows, cypher, validation.get("columns")
+                                    )
+                                    attempt["result_validation"] = latest_result
+                                    attempt["validation"] = jsonable(validation)
 
         if tool_content is not None and retry_tool_call is not None:
             attempt["status"] = "tool_success"
@@ -1011,7 +1044,7 @@ def score_tool_call_generation(
 
     static_issues, explain_validation = static_checks_with_explain(
         cypher,
-        allow_writes=not bool(record.get("read_only", True)),
+        allow_writes=not bool(record.get("read_only", True)) and not contract_for_record(record),
         policy=policy,
         validator=validator,
     )
@@ -1072,6 +1105,26 @@ def score_tool_call_generation(
         return {**base, "status": "execution_error"}
     if result_too_large:
         return {**base, "status": "result_too_large"}
+
+    if contract_for_record(record):
+        outcome = validate_record_result(record, rows, cypher, validation.get("columns"))
+        is_pddl = record_task_family(record) == "cypher_pddl"
+        return {
+            **base,
+            "status": outcome["status"],
+            "result_validation": outcome,
+            "semantic_check": outcome.get("semantic_check"),
+            "cypher_solution": outcome.get("solution"),
+            "cypher_solution_format_valid": outcome["status"]
+            not in {"invalid_result_shape", "mapping_unresolved"},
+            "cypher_solution_match": outcome["match"],
+            "tool_result_match": outcome["match"],
+            **(
+                {"actual_grounding": outcome.get("actual"), "grounding_match": outcome["match"]}
+                if is_pddl
+                else {}
+            ),
+        }
 
     expected_solution = record_expected_solution(record)
     is_pddl = record_task_family(record) == "cypher_pddl"
@@ -1144,7 +1197,17 @@ def summarize_raw_section(
         key: sum(1 for record in section_records if bool(record.get(key))) for key in metric_keys
     }
     denominator = evaluated if evaluated else total
+    check_counts = Counter(
+        (r.get("result_validation") or {"status": "not_checked"})["status"] for r in section_records
+    )
     return {
+        "result_validation_status_counts": dict(check_counts),
+        "result_validation_coverage": sum(
+            r.get("result_validation", {}).get("match") is not None for r in section_records
+        )
+        / total
+        if total
+        else 0,
         "total": total,
         "evaluated": evaluated,
         "skipped": skipped,
@@ -1154,6 +1217,12 @@ def summarize_raw_section(
         },
         "statuses": dict(status_counts),
     }
+
+
+def end_to_end_metrics(records):
+    if any((record.get(END_TO_END_CHECK) or {}).get("result_validation") for record in records):
+        return ("final_answer_match", "final_answer_grounded", "tool_result_match")
+    return ("final_answer_match",)
 
 
 def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1189,7 +1258,7 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
         END_TO_END_CHECK: summarize_raw_section(
             records,
             END_TO_END_CHECK,
-            ("final_answer_match",),
+            end_to_end_metrics(records),
         ),
     }
     by_family = {}
@@ -1226,7 +1295,7 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
             END_TO_END_CHECK: summarize_raw_section(
                 family_records,
                 END_TO_END_CHECK,
-                ("final_answer_match",),
+                end_to_end_metrics(family_records),
             ),
         }
     summary["by_task_family"] = by_family
@@ -1309,6 +1378,7 @@ def raw_generation_report_record(
                 "pddl_goal": None if empty_answer else expected_solution,
                 "empty_answer": empty_answer,
                 "grounding": record.get("grounding"),
+                "validation_contract": record.get("validation_contract"),
             }
         )
         generated["actual_grounding"] = tool_call_result.get("actual_grounding")
@@ -1850,6 +1920,16 @@ def print_raw_generation_summary(
                 "End-to-end final-answer match",
                 format_count_rate(end_to_end, "final_answer_match"),
             )
+        )
+    if "final_answer_grounded" in end_to_end["metrics"]:
+        rows.append(
+            ("End-to-end grounded answer", format_count_rate(end_to_end, "final_answer_grounded"))
+        )
+        rows.append(
+            ("End-to-end retrieval match", format_count_rate(end_to_end, "tool_result_match"))
+        )
+        rows.append(
+            ("Retrieval checks", str(end_to_end.get("result_validation_status_counts", {})))
         )
     if tool_call["skipped"]:
         rows.append(

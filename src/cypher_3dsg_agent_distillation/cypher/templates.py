@@ -38,6 +38,12 @@ from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
     apply_controlled_repair_sampling,
     repair_cypher_sampling_ratio,
 )
+from cypher_3dsg_agent_distillation.cypher.validation_config import (
+    fingerprint,
+    load_question_catalog,
+    resolve_contract,
+    validation_identity,
+)
 from cypher_3dsg_agent_distillation.graph.heracles_validation import validate_pddl_goal
 from cypher_3dsg_agent_distillation.graph.scene_graph import SceneIndex
 
@@ -686,6 +692,31 @@ def format_solution_field(
     return formatted
 
 
+def _attach_validation_contracts(records, template):
+    """Validate selected bindings once; discarded candidates never need contracts."""
+    contract = template.get("validation_contract")
+    if not contract:
+        return
+    resolved_bindings = {}
+    for record in records:
+        variables = record["metadata"]["reasoning_context"]["variables"]
+        key = json.dumps(variables, sort_keys=True, default=str)
+        if key not in resolved_bindings:
+            resolved = resolve_contract(contract, variables)
+            if record.get("answer_validation") is not None:
+                resolved["answer"]["comparison"].update(record["answer_validation"])
+                resolved["result"]["comparison"].update(record["answer_validation"])
+            resolved_bindings[key] = (resolved, fingerprint(resolved))
+        cached, contract_hash = resolved_bindings[key]
+        # Variants share a validation result, but not a mutable contract dictionary.
+        resolved = deepcopy(cached)
+        record["validation_contract"] = resolved
+        record["metadata"]["validation_contract_hash"] = contract_hash
+        record["metadata"]["validation_provenance"] = template.get("validation_provenance", {})
+        if record.get("grounding") is not None:
+            record["grounding"]["validation_contract"] = resolved
+
+
 def generate_records(
     config: dict[str, Any],
     question_templates_config: dict[str, Any] | None = None,
@@ -819,12 +850,36 @@ def generate_records(
                     if solution_has_no_matches(raw_solution)
                     else raw_solution
                 )
-            answer_validation_for = getattr(scene_index, "answer_validation_for", None)
-            answer_validation = (
-                answer_validation_for(query_type, variables)
-                if callable(answer_validation_for)
-                else None
+            comparison = (
+                (template.get("validation_contract") or {}).get("answer", {}).get("comparison", {})
             )
+            if comparison.get("score_source") and scene_index is not None:
+                from cypher_3dsg_agent_distillation.graph.scene_graph import node_symbol
+
+                source = comparison["score_source"]
+                counts = Counter()
+                for node in scene_index.nodes_with_label(source["layer"]):
+                    symbol = node_symbol(node.id)
+                    value = (
+                        symbol
+                        if source["property"] == "nodeSymbol"
+                        else scene_index.classes_by_symbol.get(symbol)
+                    )
+                    if value is not None:
+                        counts[value] += 1
+                resolved_comparison = resolve_contract(template["validation_contract"], variables)[
+                    "answer"
+                ]["comparison"]
+                answer_validation = {**resolved_comparison, "scores": dict(sorted(counts.items()))}
+            elif template.get("validation_contract"):
+                answer_validation = None
+            else:
+                answer_validation_for = getattr(scene_index, "answer_validation_for", None)
+                answer_validation = (
+                    answer_validation_for(query_type, variables)
+                    if callable(answer_validation_for)
+                    else None
+                )
             variable_key = json.dumps(
                 variables,
                 ensure_ascii=False,
@@ -945,19 +1000,18 @@ def generate_records(
                     stacklevel=2,
                 )
             ratio = empty_sampling_ratio(template, sampling_config, empty_ratio)
-            records.extend(
-                sampled_candidates(
-                    candidates,
-                    target=target,
-                    empty_ratio=ratio,
-                    query_type=query_type,
-                    rng=random.Random(f"{sampling_seed}:{query_type}"),
-                    warn_on_shortfall=warn_on_target_shortfall,
-                )
+            selected_records = sampled_candidates(
+                candidates,
+                target=target,
+                empty_ratio=ratio,
+                query_type=query_type,
+                rng=random.Random(f"{sampling_seed}:{query_type}"),
+                warn_on_shortfall=warn_on_target_shortfall,
             )
         else:
-            candidate_records = [candidate.record for candidate in candidates]
-            records.extend(candidate_records[:target])
+            selected_records = [candidate.record for candidate in candidates][:target]
+        _attach_validation_contracts(selected_records, template)
+        records.extend(selected_records)
     return records
 
 
@@ -1204,25 +1258,27 @@ def apply_dataset_question_targets(
 def load_question_templates(config: dict[str, Any]) -> dict[str, Any] | None:
     template_path = config.get("question_templates_path")
     if template_path:
-        return load_yaml(template_path)
+        return load_question_catalog(
+            template_path,
+            config.get("validation_config_path"),
+            config.get("validation_defaults_path"),
+        )
     return None
 
 
 def write_questions_yaml(records: list[dict[str, Any]], path: str) -> None:
     output = ensure_parent(path)
     with output.open("w", encoding="utf-8") as handle:
-        handle.write("questions:\n")
-        for record in records:
-            rendered = yaml.dump(
-                [record],
-                Dumper=DatasetDumper,
-                sort_keys=False,
-                allow_unicode=True,
-                default_flow_style=False,
-                width=120,
-            )
-            handle.write(rendered)
-            handle.write("\n")
+        # One dumper per document keeps anchor names unique across all questions.
+        yaml.dump(
+            {"questions": records},
+            handle,
+            Dumper=DatasetDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+            width=120,
+        )
 
 
 def command(args: argparse.Namespace) -> None:
@@ -1236,7 +1292,11 @@ def command(args: argparse.Namespace) -> None:
     question_repair_ratios: dict[str, float] = {}
     question_set_inputs = []
     for question_set in question_sets:
-        templates_config = load_yaml(question_set["question_templates_path"])
+        templates_config = load_question_catalog(
+            question_set["question_templates_path"],
+            question_set.get("validation_config_path"),
+            question_set.get("validation_defaults_path"),
+        )
         profile = load_experiment_profile(question_set["experiment_profile_path"])
         question_set_inputs.append((question_set, templates_config, profile))
         for template in templates_config.get("templates") or []:
@@ -1328,7 +1388,10 @@ def command(args: argparse.Namespace) -> None:
         outputs={"generated_questions": output_path},
         project_root=PROJECT_ROOT,
         extra={
-            "data_config": config_record(data_config["data_config_path"], project_root=PROJECT_ROOT)
+            "data_config": config_record(
+                data_config["data_config_path"], project_root=PROJECT_ROOT
+            ),
+            "validation": validation_identity(data_config),
         },
     )
     counts = Counter(record["query_type"] for record in records)

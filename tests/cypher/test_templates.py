@@ -4,7 +4,6 @@ from collections import Counter
 import pytest
 
 import cypher_3dsg_agent_distillation.cypher.templates as templates_module
-from cypher_3dsg_agent_distillation.core.config import load_yaml
 from cypher_3dsg_agent_distillation.cypher.templates import (
     SolutionBlock,
     apply_dataset_question_targets,
@@ -16,6 +15,7 @@ from cypher_3dsg_agent_distillation.cypher.templates import (
     normalize_solution_formats,
     stable_uid,
 )
+from cypher_3dsg_agent_distillation.cypher.validation_config import load_question_catalog
 
 
 def test_generate_records_expands_nested_values():
@@ -844,7 +844,7 @@ def test_no_variable_template_keeps_each_wording_variant():
 
 
 def test_write_refusal_template_has_ten_unique_question_variants():
-    templates_config = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")
+    templates_config = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")
     write_refusal = next(
         template
         for template in templates_config["templates"]
@@ -1014,7 +1014,9 @@ def test_valid_empty_scalar_solution_uses_empty_answer(monkeypatch):
 
 
 def test_pddl_alternative_queries_preserve_only_satisfiable_branches():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     by_query_type = {template["query_type"]: template for template in templates}
 
     atomic = by_query_type["pddl_atomic_alternative"]["cypher"]
@@ -1083,7 +1085,9 @@ def test_pddl_template_rejects_missing_grounding_contract():
 
 
 def test_pddl_templates_have_multiple_distinct_instruction_variants():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
 
     assert all(len(template["questions"]) >= 5 for template in templates)
     assert all(
@@ -1092,7 +1096,7 @@ def test_pddl_templates_have_multiple_distinct_instruction_variants():
 
 
 def test_qa_templates_have_at_least_five_distinct_question_variants():
-    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
 
     assert all(len(template["questions"]) >= 5 for template in templates)
     assert all(
@@ -1101,7 +1105,7 @@ def test_qa_templates_have_at_least_five_distinct_question_variants():
 
 
 def test_qa_templates_disable_empty_sampling_for_deterministic_and_count_queries():
-    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
 
     zero_empty_ratio_types = {
         template["query_type"] for template in templates if template.get("empty_ratio") == 0.0
@@ -1128,7 +1132,7 @@ def test_qa_templates_disable_empty_sampling_for_deterministic_and_count_queries
 
 
 def test_qa_templates_return_only_fields_required_by_the_answer():
-    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
     final_returns = {
         template["query_type"]: [
             line.strip()
@@ -1195,7 +1199,7 @@ def test_qa_templates_return_only_fields_required_by_the_answer():
 
 
 def test_object_containment_queries_support_both_parent_layer_labels():
-    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
     by_query_type = {template["query_type"]: template for template in templates}
 
     for query_type in ("objects_in_place_symbol", "object_place_lookup"):
@@ -1205,7 +1209,9 @@ def test_object_containment_queries_support_both_parent_layer_labels():
 
 
 def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     by_query_type = {template["query_type"]: template for template in templates}
 
     pairs = (
@@ -1224,7 +1230,9 @@ def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
 
         assert len(place_questions & mesh_questions) >= 2
 
-    qa_templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    qa_templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")[
+        "templates"
+    ]
     qa_by_query_type = {template["query_type"]: template for template in qa_templates}
     place_hop_questions = {
         question.replace("{case.place}", "{case.symbol}")
@@ -1239,7 +1247,7 @@ def test_place_and_mesh_place_templates_include_symbol_only_contrast_pairs():
 
 
 def test_location_hops_composes_both_place_layers():
-    templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
     template = next(template for template in templates if template["query_type"] == "location_hops")
 
     assert template["variables"] == {"case": "location_hop_cases"}
@@ -1261,7 +1269,9 @@ def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkey
             return "R0"
 
     monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     room_query_types = {
         "pddl_visit_room_symbol",
         "pddl_end_in_room_symbol",
@@ -1300,16 +1310,26 @@ def test_pddl_room_templates_cover_symbols_classes_and_object_containment(monkey
 
 
 def test_all_pddl_room_groundings_accept_region_result_aliases():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
-    room_fields = [
-        field
-        for template in templates
-        for field in (template.get("grounding", {}).get("fields", {}).values())
-        if field.get("symbol_type") == "Room"
-    ]
+    from cypher_3dsg_agent_distillation.cypher.result_validation import decode_result
 
-    assert room_fields
-    assert all("region" in field.get("aliases", []) for field in room_fields)
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
+    room_contracts = [
+        t["validation_contract"]
+        for t in templates
+        if set(t["validation_contract"]["result"]["roles"]) == {"room"}
+    ]
+    assert room_contracts
+    for contract in room_contracts:
+        for role in contract["result"]["roles"].values():
+            role["origin"] = {}
+        assert (
+            decode_result(
+                "MATCH (r:Room) RETURN r.nodeSymbol AS region", [{"region": "R1"}], contract
+            ).status
+            == "pass"
+        )
 
 
 def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypatch):
@@ -1329,7 +1349,9 @@ def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypat
             return "O0"
 
     monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     at_query_types = {
         "pddl_end_at_object_symbol",
         "pddl_end_at_object_class",
@@ -1365,7 +1387,9 @@ def test_pddl_at_templates_cover_objects_places_and_spatial_references(monkeypat
 
 
 def test_pddl_navigation_template_tags_distinguish_waypoints_from_destinations():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
 
     for template in templates:
         fact = template["goal"].get("fact")
@@ -1397,7 +1421,9 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
             return "O0"
 
     monkeypatch.setattr(templates_module, "SceneIndex", FakeSceneIndex)
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     compound_query_types = {
         "pddl_inspect_object_and_end_at_place",
         "pddl_visit_object_and_end_at_object",
@@ -1439,7 +1465,9 @@ def test_pddl_compound_templates_generate_and_not_goals(monkeypatch):
 
 
 def test_pddl_object_in_place_templates_accept_both_place_layers():
-    templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     by_query_type = {template["query_type"]: template for template in templates}
 
     for query_type in ("pddl_move_object_to_place", "pddl_object_not_in_place"):
@@ -1451,8 +1479,12 @@ def test_pddl_object_in_place_templates_accept_both_place_layers():
 
 
 def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
-    qa_templates = load_yaml("configs/question_templates/cypher_qa_3dsg.yaml")["templates"]
-    pddl_templates = load_yaml("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"]
+    qa_templates = load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")[
+        "templates"
+    ]
+    pddl_templates = load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")[
+        "templates"
+    ]
     affected_query_types = {
         "objects_in_room_symbol",
         "objects_in_room_class",
@@ -1469,4 +1501,63 @@ def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
     assert all(
         "(r:Room" in template["cypher"] and "[:CONTAINS*2..2]->(o:Object" in template["cypher"]
         for template in affected_templates
+    )
+
+
+def test_contracts_are_resolved_only_for_selected_bindings_and_variants_are_independent(
+    monkeypatch,
+):
+    from copy import deepcopy
+
+    from cypher_3dsg_agent_distillation.cypher.validation_config import fingerprint
+
+    template = deepcopy(
+        load_question_catalog("configs/question_templates/cypher_pddl_3dsg.yaml")["templates"][0]
+    )
+    template["target_questions"] = 6
+
+    class Scene:
+        def __init__(self, path):
+            pass
+
+        def solution_for(self, query_type, variables):
+            return variables["object"]
+
+    monkeypatch.setattr(templates_module, "SceneIndex", Scene)
+    resolved_variables = []
+    resolve = templates_module.resolve_contract
+
+    def count_resolve(contract, variables):
+        resolved_variables.append(deepcopy(variables))
+        return resolve(contract, variables)
+
+    monkeypatch.setattr(templates_module, "resolve_contract", count_resolve)
+    records = generate_records(
+        {"source_3dsg": "unused", "values": {"object_symbols": ["O1", "O2", "O3"]}},
+        {"templates": [template]},
+        task_family="cypher_pddl",
+        output_type="PDDL",
+        warn_on_target_shortfall=False,
+    )
+    assert len(records) == 6
+    chosen = {record["metadata"]["reasoning_context"]["variables"]["object"] for record in records}
+    assert sorted(v["object"] for v in resolved_variables) == sorted(chosen)
+    assert len(resolved_variables) < len(template["questions"]) * 3
+    for record in records:
+        symbol = record["metadata"]["reasoning_context"]["variables"]["object"]
+        contract = record["validation_contract"]
+        assert contract["result"]["roles"]["object"]["origin"] == {"nodeSymbol": symbol}
+        assert record["metadata"]["validation_contract_hash"] == fingerprint(contract)
+        assert record["grounding"]["validation_contract"] is contract
+    first, second = next(
+        (a, b)
+        for i, a in enumerate(records)
+        for b in records[i + 1 :]
+        if a["metadata"]["reasoning_context"]["variables"]
+        == b["metadata"]["reasoning_context"]["variables"]
+    )
+    assert first["validation_contract"] is not second["validation_contract"]
+    first["validation_contract"]["result"]["roles"]["object"]["origin"]["nodeSymbol"] = "O999"
+    assert (
+        second["validation_contract"]["result"]["roles"]["object"]["origin"]["nodeSymbol"] != "O999"
     )
