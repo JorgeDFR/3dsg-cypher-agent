@@ -6,12 +6,14 @@ import json
 import math
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from itertools import product
 from typing import Any
 
 from cypher_3dsg_agent_distillation.cypher.query_provenance import (
     canonical_key,
+    predicate_covers,
     projections,
     semantic_evidence,
 )
@@ -45,6 +47,8 @@ class DecodedResult:
     bindings: dict[str, str] = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
     candidates: dict[str, list[str]] = field(default_factory=dict)
+    auxiliary_columns: list[str] = field(default_factory=list)
+    role_rows: dict[str, list[int]] = field(default_factory=dict)
 
 
 def _atom(value, spec: ValueSpec, forms):
@@ -131,13 +135,20 @@ def _lineage_atom(lineage):
 
 
 def _origin_matches(spec, lineage):
+    if lineage.get("kind") == "union":
+        matches = [_origin_matches(spec, item) for item in lineage["alternatives"]]
+        return matches[0] if all(item is matches[0] for item in matches) else None
     lineage = _lineage_atom(lineage)
     for part in spec.path:
-        lineage = (
-            lineage.get("entries", {}).get(part, {"kind": "unknown"})
-            if isinstance(part, str)
-            else lineage.get("item", {"kind": "unknown"})
-        )
+        if isinstance(part, str):
+            lineage = lineage.get("entries", {}).get(part, {"kind": "unknown"})
+        elif lineage.get("kind") == "list":
+            try:
+                lineage = lineage["items"][part]
+            except IndexError:
+                return None
+        else:
+            lineage = lineage.get("item", {"kind": "unknown"})
     if lineage.get("kind") == "map" and spec.property:
         lineage = lineage.get("entries", {}).get(spec.property, {"kind": "unknown"})
     if lineage.get("kind") == "unknown":
@@ -148,15 +159,146 @@ def _origin_matches(spec, lineage):
         and (lineage.get("property") != spec.property)
     ):
         return False
-    if spec.origin and any(lineage.get("origin", {}).get(k) != v for k, v in spec.origin.items()):
-        return False
+    uncertain = False
+    for key, value in spec.origin.items():
+        if key in lineage.get("origin", {}):
+            if lineage["origin"][key] != value:
+                return False
+        elif key in lineage.get("domains", {}):
+            if value not in lineage["domains"][key]:
+                return False
+            uncertain = True
+        else:
+            uncertain = True
     if (
         spec.layers
         and lineage.get("layers")
         and not set(spec.layers).intersection(lineage["layers"])
     ):
         return False
-    return True
+    return None if uncertain else True
+
+
+def _projection_spec(info):
+    """Known expression types, independent of aliases and expected values."""
+    if info.get("kind") == "union":
+        specs = [_projection_spec(item) for item in info["alternatives"]]
+        return specs[0] if specs and all(item == specs[0] for item in specs) else None
+    info = _lineage_atom(info)
+    kind = info.get("value_type")
+    if kind is None:
+        return None
+    return ValueSpec(type=kind, layers=info.get("layers", []) if kind == "node_symbol" else [])
+
+
+def _compatible_type(role, info):
+    known = _projection_spec(info)
+    return (
+        known is None
+        or known.type == role.type
+        or (known.type, role.type)
+        in {
+            ("integer", "number"),
+            ("node_symbol", "string"),
+        }
+    )
+
+
+def _row_provenance(lineage, row, forms):
+    """Attach same-node observations; identify UNION branches only by actual evidence."""
+    if not lineage:
+        return {}
+    branches = (
+        list(zip(*(item["alternatives"] for item in lineage), strict=True))
+        if lineage[0].get("kind") == "union"
+        else [lineage]
+    )
+    compatible = []
+    for branch in branches:
+        entries = deepcopy(list(branch))
+        sources = {}
+        try:
+            for info in entries:
+                if info["column"] not in row:
+                    raise DecodeError("Missing returned column")
+                value = row[info["column"]]
+                known = _projection_spec(info)
+                if value is not None and known:
+                    _values(value, known, forms)
+                source = info.get("source")
+                if not source or info.get("kind") == "collection":
+                    continue
+                evidence = sources.setdefault(source, {"origin": {}, "domains": {}, "layers": []})
+                evidence["domains"].update(info.get("domains", {}))
+                evidence["layers"] = sorted(set(evidence["layers"] + info.get("layers", [])))
+                observed = dict(info.get("origin", {}))
+                labels = None
+                if info.get("kind") == "property" and not isinstance(value, Mapping | list | tuple):
+                    if value is not None:
+                        prop = info["property"]
+                        if prop in observed and observed[prop] != value:
+                            raise DecodeError("Returned property conflicts with query provenance")
+                        observed[prop] = value
+                elif info.get("kind") == "labels":
+                    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                        raise DecodeError("Expected a list of node labels")
+                    labels = value
+                elif isinstance(value, Mapping) and value.get("__neo4j_type__") == "node":
+                    for prop, actual in value["properties"].items():
+                        if prop in observed and observed[prop] != actual:
+                            raise DecodeError("Returned node conflicts with query provenance")
+                        observed[prop] = actual
+                    labels = value["labels"]
+                if labels is not None:
+                    if evidence["layers"] and not set(evidence["layers"]) <= set(labels):
+                        raise DecodeError("Returned labels conflict with query provenance")
+                    evidence["layers"] = labels
+                for prop, actual in observed.items():
+                    if prop in evidence["origin"] and evidence["origin"][prop] != actual:
+                        raise DecodeError("Same-node projections disagree")
+                    if prop in evidence["domains"] and actual not in evidence["domains"][prop]:
+                        raise DecodeError("Returned property is outside its query constraint")
+                    evidence["origin"][prop] = actual
+            for info in entries:
+                if info.get("source") in sources:
+                    info.update(sources[info["source"]])
+            compatible.append({info["column"]: info for info in entries})
+        except DecodeError:
+            continue
+    if not compatible:
+        raise DecodeError("Returned values conflict with projection provenance")
+    if len(compatible) == 1:
+        return compatible[0]
+    # Preserve every possible branch. A role can use the row only if those
+    # branches agree about its provenance; a simple typed answer may not need
+    # branch identity at all.
+    return {
+        column: {"kind": "union", "alternatives": [item[column] for item in compatible]}
+        for column in compatible[0]
+    }
+
+
+def _covers_role(role, info, *, empty_rows=False):
+    """A complete, constrained source must cover even a role with no returned rows."""
+    alternatives = info.get("alternatives", [info])
+    for item in alternatives:
+        if item.get("kind") not in {"property", "node"} or not (
+            item.get("complete") or empty_rows and item.get("empty_complete")
+        ):
+            continue
+        if not _compatible_type(role, item) or _origin_matches(role, item) is False:
+            continue
+        if all(
+            item.get("origin", {}).get(key) == value
+            or value in item.get("domains", {}).get(key, [])
+            or any(
+                key in predicate["properties"] and predicate_covers(predicate, role.origin)
+                for predicate in item.get("predicates", [])
+            )
+            for key, value in role.origin.items()
+        ):
+            return True
+    return False
 
 
 def _unique(values):
@@ -186,6 +328,12 @@ def decode_result(query, rows, contract, columns=None):
         if len(keys) != len(set(keys)) or len(lineage) != len({p["column"] for p in lineage}):
             raise DecodeError("Duplicate returned column names lose projection information")
         by_column = {item["column"]: item for item in lineage}
+        # Legacy evidence sometimes renames every column. It can still supply
+        # unique typed values, but cannot supply query provenance or inferred extras.
+        observed_lineage = lineage if set(keys).intersection(by_column) else []
+        row_provenance = [
+            _row_provenance(observed_lineage, row, spec.accepted_forms) for row in rows
+        ]
         roles = spec.roles or {
             "value": ValueSpec(
                 type=spec.type, layers=spec.layers, property=spec.property, origin=spec.origin
@@ -193,7 +341,25 @@ def decode_result(query, rows, contract, columns=None):
             if spec.element is None
             else spec.element
         }
-        candidates, data = {}, {}
+        # A literal list projection preserves tuple positions without guessing
+        # from aliases or expected values. Explicit contract selectors win.
+        if spec.kind == "tuples" and not any(
+            role.column is not None or role.position is not None or role.path
+            for role in roles.values()
+        ):
+            packed = [
+                info for info in lineage
+                if info.get("kind") == "list" and len(info["items"]) == len(roles)
+                and all(_compatible_type(role, item) for role, item in zip(
+                    roles.values(), info["items"], strict=True,
+                ))
+            ]
+            if len(packed) == 1:
+                roles = {
+                    name: role.model_copy(update={"column": packed[0]["column"], "path": [index]})
+                    for index, (name, role) in enumerate(roles.items())
+                }
+        candidates, data, partitions = {}, {}, {}
         for name, role in roles.items():
             if any(not isinstance(layer, str) for layer in role.layers):
                 raise DecodeError("Resolve controlled layer bindings before decoding")
@@ -205,35 +371,80 @@ def decode_result(query, rows, contract, columns=None):
                 else None
             )
             # Configured semantic keys are authoritative, not hints to be swapped.
-            if selected is None and name != "value" and name in keys:
+            pooled_union = (
+                spec.kind == "role_sets" and name in by_column
+                and by_column[name].get("kind") == "union"
+                and _origin_matches(role, by_column[name]) is None
+            )
+            if selected is None and name != "value" and name in keys and not pooled_union:
                 selected = name
             possible = []
             for key in keys:
                 if selected is not None and key != selected:
                     continue
+                info = by_column.get(key, {"kind": "unknown"})
+                if not _compatible_type(role, info):
+                    continue
+                origin = _origin_matches(role, info)
+                row_matches = [
+                    _origin_matches(role, evidence.get(key, {"kind": "unknown"}))
+                    for evidence in row_provenance
+                ]
+                partition = (
+                    spec.kind == "role_sets"
+                    and bool(role.origin)
+                    and selected is None
+                    and not role.path
+                    and _covers_role(role, info, empty_rows=not rows)
+                    and (origin is not True or any(match is not True for match in row_matches))
+                )
+                if partition:
+                    if any(match is None for match in row_matches):
+                        continue
+                    mask = [match is True for match in row_matches]
+                else:
+                    mask = [True] * len(rows)
+                    if origin is False or any(match is False for match in row_matches):
+                        if selected == key:
+                            raise DecodeError(f"Projection origin conflicts with role {name}")
+                        continue
+                    if (
+                        role.origin
+                        and selected is None
+                        and (
+                            any(match is None for match in row_matches)
+                            or not rows
+                            and origin is not True
+                        )
+                    ):
+                        continue
                 try:
-                    values = [_values(row[key], role, spec.accepted_forms) for row in rows]
+                    values = [
+                        _values(row[key], role, spec.accepted_forms) if included else []
+                        for row, included in zip(rows, mask, strict=True)
+                    ]
                 except KeyError:
                     continue
                 except DecodeError:
                     if selected == key:
                         raise
                     continue
-                origin = _origin_matches(role, by_column.get(key, {"kind": "unknown"}))
-                if origin is False:
-                    if selected == key:
-                        raise DecodeError(f"Projection origin conflicts with role {name}")
-                    continue
-                if role.origin and origin is None and selected is None and rows:
-                    continue
                 possible.append(key)
                 data[name, key] = values
+                if partition:
+                    partitions[name, key] = mask
             # Empty rows carry no answer values; roles still cannot invent nonempty results.
             if not rows and not keys:
                 possible = [f"empty:{name}"]
                 data[name, possible[0]] = []
             if not possible:
-                if role.origin and not lineage and selected is None and rows:
+                if (
+                    role.origin
+                    and selected is None
+                    and (
+                        not lineage or any(_origin_matches(role, item) is None for item in lineage)
+                    )
+                ):
                     raise MappingUnresolved(f"Query provenance needed for role {name}")
                 raise DecodeError(f"No compatible projection for role {name}")
             candidates[name] = possible
@@ -255,18 +466,42 @@ def decode_result(query, rows, contract, columns=None):
                     if (
                         assignment[name] == assignment[other]
                         and not independent_paths
+                        and not (
+                            (name, assignment[name]) in partitions
+                            and (other, assignment[other]) in partitions
+                        )
                         and (roles[name].origin != roles[other].origin or not roles[name].origin)
                     ):
                         valid = False
             if not valid:
                 continue
-            unused = set(keys) - set(keys_for_roles)
-            if unused - spec.auxiliary.keys():
+            for key in set(keys_for_roles):
+                users = [n for n in names if assignment[n] == key]
+                if any((n, key) in partitions for n in users) and any(
+                    sum(partitions.get((n, key), [True] * len(rows))[i] for n in users) != 1
+                    for i in range(len(rows))
+                ):
+                    valid = False
+            if not valid:
                 continue
+            unused = set(keys) - set(keys_for_roles)
+            can_infer_auxiliary = all(
+                key in by_column
+                or roles[name].column is not None
+                or roles[name].position is not None
+                for name, key in assignment.items()
+            )
             for key in unused:
+                auxiliary = spec.auxiliary.get(key)
+                if auxiliary is None and spec.extra_columns == "inferred" and can_infer_auxiliary:
+                    auxiliary = _projection_spec(by_column.get(key, {}))
+                if auxiliary is None:
+                    valid = False
+                    break
                 for row in rows:
-                    _values(row[key], spec.auxiliary[key], spec.accepted_forms)
-            assignments.append(assignment)
+                    _values(row[key], auxiliary, spec.accepted_forms)
+            if valid:
+                assignments.append(assignment)
         if not assignments:
             raise DecodeError("Missing roles or undeclared extra result columns")
 
@@ -305,7 +540,18 @@ def decode_result(query, rows, contract, columns=None):
         if len({canonical_key(v) for v, _ in interpretations}) != 1:
             raise MappingUnresolved("Multiple materially different result interpretations")
         actual, bindings = interpretations[0]
-        return DecodedResult("pass", actual, bindings, candidates=candidates)
+        return DecodedResult(
+            "pass",
+            actual,
+            bindings,
+            candidates=candidates,
+            auxiliary_columns=sorted(set(keys) - set(bindings.values())),
+            role_rows={
+                name: [i for i, included in enumerate(partitions[name, key]) if included]
+                for name, key in bindings.items()
+                if (name, key) in partitions
+            },
+        )
     except MappingUnresolved as exc:
         return DecodedResult("mapping_unresolved", issues=[str(exc)], candidates=candidates)
     except DecodeError as exc:

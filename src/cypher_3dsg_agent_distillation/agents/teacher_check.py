@@ -264,6 +264,11 @@ def check_command(args: argparse.Namespace) -> None:
     config = load_yaml(args.teacher_config)
     if configured_teacher_provider(config) != "openrouter":
         raise ValueError("The paid teacher check requires provider: openrouter.")
+    from cypher_3dsg_agent_distillation.agents.teacher_optimizations import (
+        configured_teacher_optimizations,
+    )
+
+    optimizations = configured_teacher_optimizations(config)
     reasoning = dict(config.get("reasoning") or {})
     reasoning["enabled"] = args.include_reasoning
     if args.reasoning_effort == "default":
@@ -292,26 +297,11 @@ def check_command(args: argparse.Namespace) -> None:
         temperature=float(config.get("temperature", 0.2)),
         max_tokens=args.max_tokens,
         reasoning=reasoning,
-        provider=config.get("routing"),
         max_cost_usd=args.max_cost_usd,
         max_requests=args.max_requests,
     ) as client:
         client.require_api_key()
         client.preflight()
-        # Older configurations have no routing price ceilings. Supply advertised
-        # prices as routing limits so the check's spending reservation still applies.
-        routing = dict(client.provider or {})
-        ceilings = dict(routing.get("max_price") or {})
-        for key in ("prompt", "completion"):
-            if key not in ceilings:
-                price = _price((client.model_info.get("pricing") or {}).get(key))
-                if price is None:
-                    raise ValueError("Teacher check requires routing.max_price or catalog pricing.")
-                ceilings[key] = price * 1_000_000
-        routing["max_price"] = ceilings
-        routing.setdefault("require_parameters", True)
-        client.provider = routing
-
         # Preserve all response fields locally, including provider-specific metrics.
         def capture(entry):
             requests.append(deepcopy(entry))
@@ -359,6 +349,7 @@ def check_command(args: argparse.Namespace) -> None:
                 policy=schema_policy(load_yaml(data["schema_path"])),
                 max_tool_calls=max(1, args.max_requests - 1),
                 static_only=False,
+                tuning_prompt=optimizations["tuning_prompt"],
             )
             messages = decision.payload.get("messages") or []
             outcome = {
@@ -401,7 +392,6 @@ def check_command(args: argparse.Namespace) -> None:
         report["effective"] = {
             "model": client.model,
             "reasoning": reasoning,
-            "routing": client.provider,
             "max_tokens": client.max_tokens,
             "max_requests": client.max_requests,
             "max_cost_usd": client.max_cost_usd,

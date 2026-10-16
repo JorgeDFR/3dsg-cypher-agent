@@ -178,6 +178,22 @@ class TeacherRunJournal:
         self.attempts.append(item)
         self.completed[item["attempt_id"]] = item
 
+    def replace_attempts(self, attempts: list[dict[str, Any]]) -> None:
+        """Commit generation optimizations atomically without appending duplicate attempts."""
+        if [item["attempt_id"] for item in attempts] != [
+            item["attempt_id"] for item in self.attempts
+        ]:
+            raise ValueError("Optimizations must preserve the completed attempt IDs and order.")
+        target = self.attempts_path.with_suffix(".tmp")
+        with target.open("w", encoding="utf-8") as handle:
+            for item in attempts:
+                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        target.replace(self.attempts_path)
+        self.attempts = attempts
+        self.completed = {item["attempt_id"]: item for item in attempts}
+
 
 def attempt_payload(
     seed: dict[str, Any],
@@ -241,6 +257,10 @@ def attempt_payload(
 def _rates(items: list[dict[str, Any]]) -> dict[str, Any]:
     count = len(items)
     accepted = sum(bool(item["accepted"]) for item in items)
+    optimized = [item for item in items if item.get("optimization") and item["accepted"]]
+    kinds = Counter(item["optimization"]["kind"] for item in optimized)
+    repaired = kinds["repair_invalid_final_answers"]
+    recovered = kinds["recover_earlier_retrievals"]
     readable = sum(item["accepted"] and item["reasoning"]["both_stages"] for item in items)
     usable = sum(
         item["accepted"] and item["reasoning"]["both_stages"] and item["trainable_with_reasoning"]
@@ -249,6 +269,11 @@ def _rates(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "attempts": count,
         "accepted": accepted,
+        "rejected": count - accepted,
+        "accepted_before_optimizations": accepted - len(optimized),
+        "rejected_before_optimizations": count - accepted + len(optimized),
+        "repaired": repaired,
+        "recovered": recovered,
         "accepted_with_both_stage_reasoning": readable,
         "usable_reasoning_traces": usable,
         "acceptance_rate": accepted / count if count else None,
@@ -335,6 +360,18 @@ def pilot_report(
         interval = [max(0.0, projected_cost - margin), projected_cost + margin]
     return {
         "schema_version": 1,
+        "optimizations": {
+            "stage": "generation",
+            "accepted_before": overall["accepted_before_optimizations"],
+            "rejected_before": overall["rejected_before_optimizations"],
+            "repaired": overall["repaired"],
+            "recovered": overall["recovered"],
+            "accepted_after": overall["accepted"],
+            "rejected_after": overall["rejected"],
+            "by_kind": dict(Counter(
+                item["optimization"]["kind"] for item in attempts if item.get("optimization")
+            )),
+        },
         "population_seeds": len(population),
         "population_task_types": len(
             {(seed.get("task_family"), seed.get("query_type")) for seed in population}

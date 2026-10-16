@@ -46,6 +46,7 @@ docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
 | --- | --- |
 | `--data-config` | Select the scenes, dataset family, and artifact roots |
 | `--dataset-version` | Select an exact dataset version instead of the latest |
+| `--dataset-only` | Include only scene graphs, questions, teacher traces, splits, and dataset artifacts; ignore model selection and training/inference reports |
 | `--student-config` | Include the selected model's training and evaluation data |
 | `--model-version` | Select an exact completed model version |
 | `--allow-dataset-mismatch` | Permit an intentional mismatch between model lineage and selected data |
@@ -58,6 +59,15 @@ report directory:
 data/datasets/{dataset_id}/{dataset_version}/reports/
   {model_family}/{model_version}/workflow_report.html
 ```
+
+For a dataset report without model artifacts:
+
+```bash
+python scripts/reporting/generate_workflow_report.py \
+  --dataset-version 2026-10-16-T-12-14-20-Z --dataset-only
+```
+
+The output is written to the dataset's `reports/workflow_report.html`.
 
 See [Artifact versioning](artifact_versioning.md) for selection behavior and
 the complete report hierarchy.
@@ -104,7 +114,7 @@ when filenames repeat), and displays paths as plain text.
 Regenerate the report after any stage that changes the selected artifacts:
 
 - question or trace generation.
-- dataset splitting or student-trace optimization.
+- dataset splitting or teacher-trace optimization during generation.
 - training or eval-loss evaluation.
 - baseline or fine-tuned raw-generation validation.
 - GGUF export and Ollama quantization validation.

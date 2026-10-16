@@ -14,7 +14,15 @@ from cypher_3dsg_agent_distillation.cypher.evaluation import build_summary as bu
 
 
 def saved_execution(record):
-    """Return the latest successful saved tool response and its query."""
+    """Return saved evidence under the trace's verified selection policy."""
+    from cypher_3dsg_agent_distillation.agents.trace_evidence import (
+        marked_earlier_execution,
+        uses_earlier_retrieval,
+    )
+
+    payload = record.model_dump()
+    if uses_earlier_retrieval(payload):
+        return marked_earlier_execution(payload)
     query = None
     latest = None
     for message in record.messages:
@@ -37,6 +45,12 @@ def saved_execution(record):
     # Only reuse saved execution when its exact query is recorded or is the
     # validated successful query retained on a generated trace.
     extras = record.validation.model_dump()
+    if (
+        latest is not None and latest[2] is None
+        and latest[0] == record.gold_cypher and latest[1] == extras.get("rows")
+        and not extras.get("rows_truncated") and not extras.get("rows_omitted")
+    ):
+        latest = (latest[0], latest[1], extras.get("columns"))
     if latest is None and extras.get("executable") and isinstance(extras.get("rows"), list):
         latest = (record.gold_cypher, extras["rows"], extras.get("columns"))
     return latest

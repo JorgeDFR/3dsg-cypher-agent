@@ -5,7 +5,7 @@ defaults:
   result:
     mapping: provenance_or_unique_type
     ambiguity: unresolved
-    extra_columns: reject
+    extra_columns: inferred
     symbol_case_sensitive: true
   answer:
     answer_tags: exactly_one

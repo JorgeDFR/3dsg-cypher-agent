@@ -44,15 +44,16 @@ def load_templates(paths):
     return templates
 
 
-def migrate_records(records, templates):
+def migrate_records(records, templates, *, refresh_contracts=False):
     """Explicit selection plus verified gold query/bindings; never lookup by type alone."""
     catalog = {t["query_type"]: t for t in templates}
+    implementation = implementation_fingerprint()
     migrated, issues = [], []
     for original in records:
         record = deepcopy(original)
         try:
             contract = contract_for_record(record)
-            if contract:
+            if contract and not refresh_contracts:
                 ValidationContract.model_validate(contract)
             else:
                 query_type = record.get("query_type", record.get("task_type"))
@@ -68,11 +69,23 @@ def migrate_records(records, templates):
                 if not query:
                     raise ValueError("No saved trusted query")
                 variables = recover_bindings(template["cypher"], query)
+                previous_contract = contract
                 contract = resolve_contract(template["validation_contract"], variables)
                 if record.get("answer_validation"):
                     contract["answer"]["comparison"].update(record["answer_validation"])
+                # Scores are scene observations, not template declarations. Reuse
+                # them only when the scoring rule and resolved limit are unchanged.
+                for section in ("result", "answer"):
+                    old = (previous_contract or {}).get(section, {}).get("comparison", {})
+                    new = contract[section]["comparison"]
+                    if all(old.get(key) == new.get(key) for key in (
+                        "mode", "score_source", "limit",
+                    )) and old.get("scores") is not None:
+                        new["scores"] = deepcopy(old["scores"])
                 ValidationContract.model_validate(contract)
                 record["validation_contract"] = contract
+                if record.get("grounding"):
+                    record["grounding"]["validation_contract"] = deepcopy(contract)
                 record.setdefault("metadata", {})["validation_provenance"] = template[
                     "validation_provenance"
                 ]
@@ -81,7 +94,7 @@ def migrate_records(records, templates):
             meta["validation_migration"] = {
                 "status": "migrated",
                 "source_record_hash": fingerprint(original),
-                "implementation": implementation_fingerprint(),
+                "implementation": implementation,
             }
             expected = next(
                 (
@@ -129,6 +142,11 @@ def migrate_records(records, templates):
 
 def saved_result(record):
     """Read actual saved execution evidence; absence is never interpreted as empty rows."""
+    from cypher_3dsg_agent_distillation.agents.trace_evidence import (
+        marked_earlier_execution,
+        uses_earlier_retrieval,
+    )
+
     tool = (
         record.get("tool_call_from_prompt")
         or record.get("tool_call_check")
@@ -139,6 +157,10 @@ def saved_result(record):
     query = tool.get("generated_cypher") or (record.get("generated") or {}).get("cypher")
     rows = validation.get("rows")
     if not query:
+        if uses_earlier_retrieval(record):
+            # Canonical traces and accepted debug records share the same proof.
+            # Invalid markers must never fall back to a cached grade.
+            return marked_earlier_execution(record)
         from cypher_3dsg_agent_distillation.agents.agent_evaluation import saved_execution
         from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
 
@@ -274,6 +296,7 @@ def main():
         if name == "migrate":
             command.add_argument("--records", required=True)
             command.add_argument("--output", required=True)
+            command.add_argument("--refresh-contracts", action="store_true")
     command = commands.add_parser("rescore")
     command.add_argument("--records", required=True)
     command.add_argument("--source-records")
@@ -296,7 +319,8 @@ def main():
         )
     elif args.command == "migrate":
         records, issues = migrate_records(
-            load_records(args.records), load_templates(args.templates)
+            load_records(args.records), load_templates(args.templates),
+            refresh_contracts=args.refresh_contracts,
         )
         write_new(args.output, records, jsonl=True)
         print(json.dumps({"records": len(records), "issues": len(issues), "diagnostics": issues}))

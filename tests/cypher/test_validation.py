@@ -58,6 +58,21 @@ def test_static_checks_accept_fields_from_unwound_projected_maps():
     assert static_checks(query, allow_writes=False, policy=policy) == []
 
 
+def test_map_values_are_not_labels_but_nested_node_labels_are_checked():
+    policy = schema_policy(SCHEMA)
+    query = "MATCH (r:Room) WITH r, 3 AS deg RETURN collect({r:r, deg:deg})"
+    assert static_checks(query, allow_writes=False, policy=policy) == []
+    issues = static_checks(
+        "RETURN {nested: {value: foo}, nodes: [(x:Person)--(o:Object) | o]}",
+        allow_writes=False, policy=policy,
+    )
+    assert issues == ["unknown label: Person"]
+    assert static_checks(
+        "MATCH (r:Room) RETURN {label: ':Person', `node`: r}",
+        allow_writes=False, policy=policy,
+    ) == []
+
+
 def test_generated_room_object_queries_pass_bounded_path_policy():
     policy = schema_policy(load_yaml("configs/schema_3dsg.yaml"))
     query_types = {

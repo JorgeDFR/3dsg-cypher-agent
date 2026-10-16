@@ -88,6 +88,42 @@ def test_pddl_invalid_format_is_reported():
     assert not correct
 
 
+def test_pddl_reordered_three_way_alternatives_under_conjunction_are_equivalent():
+    expected = (
+        "(and (or (visited-object O1) (visited-object O2) (visited-object O3)) "
+        "(or (at-object O4) (at-object O5) (at-object O6)))"
+    )
+    reordered = (
+        "(and (or (at-object O6) (at-object O4) (at-object O5)) "
+        "(or (visited-object O3) (visited-object O1) (visited-object O2)))"
+    )
+    assert answer_matches_with_heracles(reordered, expected, "PDDL") == (True, True)
+    assert answer_matches_with_heracles(
+        reordered.replace("(visited-object O2)", "(visited-object O7)"), expected, "PDDL",
+    ) == (True, False)
+
+
+def test_pddl_distributes_all_alternatives_without_false_acceptance():
+    goal = "(and (holding O4) (or (safe O1) (safe O2) (safe O3)))"
+    distributed = (
+        "(or (and (holding O4) (safe O1)) (and (holding O4) (safe O2)) "
+        "(and (holding O4) (safe O3)))"
+    )
+    defective = "(or (and (holding O4) (safe O1)) (and (holding O4) (safe O2) (safe O3)))"
+    assert answer_matches_with_heracles(distributed, goal, "PDDL") == (True, True)
+    assert answer_matches_with_heracles(defective, goal, "PDDL") == (True, False)
+
+
+def test_pddl_nested_negation_of_three_way_conjunction_is_distributed_correctly():
+    goal = "(not (or (holding O4) (and (safe O1) (safe O2) (safe O3))))"
+    expanded = (
+        "(or (and (not (holding O4)) (not (safe O1))) "
+        "(and (not (holding O4)) (not (safe O2))) "
+        "(and (not (holding O4)) (not (safe O3))))"
+    )
+    assert answer_matches_with_heracles(expanded, goal, "PDDL") == (True, True)
+
+
 def test_pddl_mismatch_does_not_print_dependency_diagnostics(capsys):
     valid_format, correct = answer_matches_with_heracles(
         "(at-place p31)",

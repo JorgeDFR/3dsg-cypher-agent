@@ -52,6 +52,29 @@ def test_rescore_does_not_treat_missing_rows_as_empty_execution():
     assert report["records"][0]["result_validation"]["status"] == "pass"
 
 
+def test_refresh_existing_contract_uses_the_trusted_query_without_changing_labels():
+    templates = load_templates(["configs/question_templates/cypher_qa_3dsg.yaml"])
+    template = next(t for t in templates if t["query_type"] == "nearest_object_between_classes")
+    query = template["cypher"].replace('{reference_class}', 'bed').replace(
+        '{target_class}', 'light',
+    )
+    record = {
+        "uid": "old", "query_type": template["query_type"], "cypher": query, "solution": "O47",
+        "validation_contract": {"result": {"kind": "scalar", "type": "node_symbol",
+                                           "layers": ["Object"]},
+                                "answer": {"formats": ["str"]}},
+    }
+    original = deepcopy(record)
+    migrated, issues = migrate_records([record], templates, refresh_contracts=True)
+    assert not issues
+    assert migrated[0]["validation_contract"]["result"]["origin"] == {"class": "light"}
+    assert migrated[0]["solution"] == record["solution"]
+    assert record == original
+    record["cypher"] = "MATCH (o:Object) RETURN o.nodeSymbol AS object"
+    _migrated, issues = migrate_records([record], templates, refresh_contracts=True)
+    assert issues
+
+
 def test_audit_outputs_cannot_overwrite_existing_data(tmp_path):
     output = tmp_path / "existing.json"
     output.write_text("original")

@@ -59,7 +59,7 @@ def normalize_reasoning(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def has_reasoning(message: dict[str, Any]) -> bool:
-    """Include opaque provider blocks when deciding whether answer repair is safe."""
+    """Detect readable, inline, and opaque provider reasoning."""
     return bool(
         reasoning_text(message)[0]
         or message.get("reasoning_details")

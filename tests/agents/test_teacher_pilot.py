@@ -105,15 +105,47 @@ def test_budget_reserves_next_call_and_stops_on_unknown_billing():
     client = OpenRouterTeacherClient(
         max_cost_usd=0.01,
         max_tokens=100,
-        provider={"max_price": {"prompt": 1, "completion": 10}},
         request_sender=lambda request: sent.append(request) or response(0.0095),
     )
+    client.model_info = {"pricing": {"prompt": "0.000001", "completion": "0.00001"}}
     client.chat([{"role": "user", "content": "q"}])
     with pytest.raises(TeacherBudgetExceeded, match="reserves"):
         client.chat([{"role": "user", "content": "q"}])
     assert len(sent) == 1
+    assert "provider" not in sent[0]
     client.requests[0]["cost_usd"] = None
     with pytest.raises(TeacherBudgetExceeded, match="unknown cost"):
+        client.chat([{"role": "user", "content": "q"}])
+
+
+def test_budget_loads_catalog_once_without_explicit_preflight(monkeypatch):
+    discovered, sent = [], []
+
+    def preflight(self):
+        discovered.append(self.model)
+        self.model_info = {"pricing": {"prompt": "0.000001", "completion": "0.00001"}}
+
+    monkeypatch.setattr(OpenRouterTeacherClient, "preflight", preflight)
+    client = OpenRouterTeacherClient(
+        max_cost_usd=0.01,
+        max_tokens=100,
+        request_sender=lambda request: sent.append(request) or response(),
+    )
+    for _ in range(2):
+        client.chat([{"role": "user", "content": "q"}])
+    assert discovered == [client.model]
+    assert len(sent) == 2
+    assert all("provider" not in request for request in sent)
+
+
+@pytest.mark.parametrize("prompt_price", [None, "unknown", -1, "nan", "inf"])
+def test_budget_rejects_unusable_catalog_pricing_before_sending(prompt_price):
+    client = OpenRouterTeacherClient(
+        max_cost_usd=0.01,
+        request_sender=lambda request: pytest.fail("request without usable pricing"),
+    )
+    client.model_info = {"pricing": {"prompt": prompt_price, "completion": "0.00001"}}
+    with pytest.raises(ValueError, match="[Cc]atalog"):
         client.chat([{"role": "user", "content": "q"}])
 
 
@@ -171,6 +203,7 @@ def test_unsampled_strata_do_not_receive_fabricated_cost_estimates():
 @pytest.mark.parametrize(
     "path,model",
     [
+        ("configs/teachers/teacher_gpt_oss_120b.yaml", "openai/gpt-oss-120b"),
         ("configs/teachers/teacher_deepseek_v4_1_flash.yaml", "deepseek/deepseek-v4.1-flash"),
         ("configs/teachers/teacher_glm_5_3_flash.yaml", "z-ai/glm-5.3-flash"),
         ("configs/teachers/teacher_mimo_v2_6_flash.yaml", "xiaomi/mimo-v2.6-flash"),
@@ -181,7 +214,7 @@ def test_candidate_configs_request_reasoning_without_synthetic_repair(path, mode
     assert config["model"] == model
     assert config["reasoning"]["enabled"]
     assert "exclude" not in config["reasoning"]
-    assert config["routing"]["require_parameters"]
+    assert "routing" not in config
     assert "inject_controlled_repair" not in config
 
 
@@ -231,4 +264,5 @@ def test_native_json_transport_preserves_reasoning_options(monkeypatch):
     )
     result = client.chat([{"role": "user", "content": "question"}])
     assert sent[0]["reasoning"] == {"enabled": True, "exclude": False, "max_tokens": 1000}
+    assert "provider" not in sent[0]
     assert result["generation_metadata"]["cost_usd"] == 0.001

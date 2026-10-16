@@ -97,10 +97,10 @@ the same clearing/loading behavior as normal generation. It does not fork a
 dataset, save training traces, or load a student tokenizer. It needs
 `OPENROUTER_API_KEY`. Reports are saved under `outputs/teacher_checks/` unless
 `--output` is supplied. Existing reports require `--force` to overwrite.
-The default spending limit is $0.10; reservations use routing price ceilings.
-For configurations without ceilings, the check derives routing limits from
-advertised catalog prices. A budgeted check stops if a completed request has
-unknown billed cost.
+The default spending limit is $0.10; next-request cost estimates use advertised
+catalog prices locally. Teacher requests send no provider routing parameters or
+price filters. Actual provider prices can differ from the catalog estimate.
+A budgeted check stops if a completed request has unknown billed cost.
 
 The terminal report separates metrics, reasoning availability, answer validation,
 and the generated example:
@@ -382,9 +382,12 @@ To use fewer examples initially, set `--pilot-per-task-type 1
 Each request records its model, provider, finish reason, latency, usage, and billed
 cost in `requests.jsonl`, including requests from rejected or unfinished
 conversations. Reasoning tokens are a subset of completion tokens and are not
-charged a second time in the report. The routing configs set price ceilings;
-when a spend limit is supplied, the client reserves a conservative next-request
-cost before sending it. Missing billed costs stop further budgeted requests.
+charged a second time in the report. When a spend limit is supplied, the client
+loads catalog pricing automatically and estimates the next request's cost before
+sending it, using the prompt byte length and maximum completion tokens. This
+estimate does not enforce a provider price ceiling, so actual costs can exceed
+the spend limit. Missing catalog prices or billed costs stop further budgeted
+requests.
 
 `attempts.jsonl` checkpoints completed outcomes. On resume, saved API responses
 are replayed and database queries are rerun, avoiding duplicate charges:
@@ -464,9 +467,20 @@ For external benchmark sweeps, set `parameters.reasoning.mode: enabled` or
 `disabled` in a copy of `examples/herables_benchmark/config/model_lists/students.yaml`.
 Benchmark settings are independent of this project's evaluation CLI defaults.
 
-`repair_invalid_final_answers` (or `--repair-invalid-final-answers`) is the only
-student trace optimization. It salvages eligible SLDP format-only rejects that
-contain no reasoning, preserving every tool call and its feedback. Readable,
-summary, inline and opaque reasoning all prevent answer replacement. Salvaged
-traces remain explicitly marked and do not increase teacher acceptance.
-The former combined optimization flag and failed-attempt pruning have been removed.
+`optimizations.repair_invalid_final_answers` in the teacher YAML enables a
+post-generation optimization pass. It repairs eligible SLDP format-only rejects
+while preserving every tool call, its feedback, and readable, summary, inline or
+opaque reasoning. Inline thinking in the final message is retained in its
+separate reasoning field. Repaired traces are explicitly marked and count as
+accepted in the finalized generation outputs. The progress bar, summary, run
+metadata and pilot report show how many repairs contributed to acceptance;
+original rejection evidence remains in the attempt journal. Splitting consumes
+these finalized outputs without applying repairs, and its former
+`--repair-invalid-final-answers` override has been removed. Failed-attempt
+pruning remains unsupported.
+
+`optimizations.tuning_prompt` adds teacher-specific guidance to each outbound
+request, including subsequent turns after tool feedback. The text is appended
+to a copy of the user message and excluded from saved conversation messages.
+It remains in teacher run metadata for reproducibility. Synthetic teachers
+ignore both optimizations with a warning when enabled.

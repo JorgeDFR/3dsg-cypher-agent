@@ -1,15 +1,14 @@
 provider: openrouter
 model: z-ai/glm-5.3-flash
+traces_per_seed: 1
+max_tool_calls: 3
 temperature: 0.2
 max_tokens: 8192
 timeout: 180
-traces_per_seed: 1
-max_tool_calls: 3
 reasoning:
   enabled: true
-routing:
-  require_parameters: true
-  max_price:
-    prompt: 0.15
-    completion: 0.50
-#max_cost_usd: 1.0
+max_cost_usd: 2.0
+optimizations:
+  repair_invalid_final_answers: false
+  recover_earlier_retrievals: false
+  tuning_prompt: ""

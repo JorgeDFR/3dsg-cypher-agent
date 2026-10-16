@@ -135,6 +135,35 @@ def neo4j_uri_candidates(uri: str | None) -> tuple[str, ...]:
     return candidates
 
 
+def _mask_schema_map_keys(cypher: str) -> str:
+    """Keep map separators and literal contents out of label scanning."""
+    tokens = list(re.finditer(
+        r"'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\"|//[^\n]*|/\*.*?\*/"
+        r"|`(?:``|[^`])*`|[A-Za-z_][A-Za-z0-9_]*|[^\s]",
+        cypher,
+        flags=re.DOTALL,
+    ))
+    masked = list(cypher)
+    stack: list[str] = []
+    previous = ""
+    for token in tokens:
+        value = token.group()
+        if value.startswith(("'", '"', "//", "/*")):
+            masked[token.start():token.end()] = " " * len(value)
+            continue
+        if value in {"(", "[", "{"}:
+            stack.append(value)
+        elif value in {")", "]", "}"}:
+            if stack:
+                stack.pop()
+        elif value == ":" and stack and stack[-1] == "{" and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*|`(?:``|[^`])*`", previous,
+        ):
+            masked[token.start()] = " "
+        previous = value
+    return "".join(masked)
+
+
 def static_checks(
     cypher: str,
     allow_writes: bool,
@@ -160,7 +189,9 @@ def static_checks(
     allowed_labels = policy.get("labels")
     if allowed_labels:
         for label in sorted(
-            set(re.findall(r":`?([A-Za-z_][A-Za-z0-9_]*)`?", schema_check_cypher))
+            set(re.findall(
+                r":`?([A-Za-z_][A-Za-z0-9_]*)`?", _mask_schema_map_keys(schema_check_cypher)
+            ))
         ):
             if label not in allowed_labels and label not in policy.get("relationships", set()):
                 issues.append(f"unknown label: {label}")

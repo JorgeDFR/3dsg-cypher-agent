@@ -54,7 +54,15 @@ def response(*, tool=False, reasoning=True, cost=0.001, finish=None):
 def setup_check(tmp_path, monkeypatch, *, cost=0.001):
     monkeypatch.setenv("OPENROUTER_API_KEY", "offline-test")
     config = tmp_path / "teacher.yaml"
-    atomic_write_yaml({"provider": "openrouter", "model": "teacher"}, config)
+    atomic_write_yaml(
+        {
+            "provider": "openrouter",
+            "model": "teacher",
+            # Legacy routing settings must not make their way into requests.
+            "routing": {"require_parameters": True, "max_price": {"prompt": 0.5}},
+        },
+        config,
+    )
     parser = argparse.ArgumentParser()
     teacher_check.add_check_parser(parser.add_subparsers(required=True))
     args = parser.parse_args(
@@ -99,7 +107,8 @@ def test_check_uses_dataset_and_preserves_response_metrics(tmp_path, monkeypatch
     assert report["metrics"]["completion_tokens"] == 100  # Includes 60 reasoning tokens.
     assert report["requests"][0]["raw_response"]["provider_extension"] == {"latency": 123}
     assert report["projection"]["full_dataset_cost_usd"] == pytest.approx(0.006)
-    assert report["effective"]["routing"]["max_price"] == {"prompt": 0.5, "completion": 1.5}
+    assert "routing" not in report["effective"]
+    assert all("provider" not in call for call in calls)
     assert report["example"]["question"] == "How many objects?"
     assert report["example"]["expected_answer"] == 3
     assert report["capability"]["reasoning_stages"]["tool_call"]["formats"] == ["text"]

@@ -5,6 +5,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from functools import lru_cache
 from io import StringIO
+from itertools import product
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,7 +33,7 @@ def ensure_heracles_agents_importable() -> None:
 ensure_heracles_agents_importable()
 
 from lark import Lark  # noqa: E402
-from pypddl.pddl_goal_manipulations import pddl_goal_equals  # noqa: E402
+from pypddl.pddl_goal_manipulations import convert_to_nnf, pddl_goal_equals  # noqa: E402
 from pypddl.pddl_goal_parser import lark_parse_pddl_goal  # noqa: E402
 from pypddl.pddl_goal_types import (  # noqa: E402
     Bool,
@@ -199,6 +200,28 @@ def sldp_value_matches_solution_formats(value: str, solution_formats: Any) -> bo
     return any(_sldp_ast_matches_format(parsed, str(item)) for item in formats)
 
 
+def _pddl_goal_dnf(goal: Any) -> Any:
+    """Distribute every alternative before invoking Heracles' DNF comparator.
+
+    The pinned pypddl distributor turns the tail of a disjunction into a
+    conjunction when there are three or more alternatives. Expand the NNF
+    directly here so that the dependency never receives an undistributed OR.
+    """
+    def terms(node: Any) -> list[list[Any]]:
+        if isinstance(node, Disjunction):
+            return [term for clause in node.clauses for term in terms(clause)]
+        if isinstance(node, Conjunction):
+            return [
+                [literal for term in combination for literal in term]
+                for combination in product(*(terms(clause) for clause in node.clauses))
+            ]
+        return [[node]]
+
+    expanded = terms(convert_to_nnf(goal))
+    clauses = [term[0] if len(term) == 1 else Conjunction(term) for term in expanded]
+    return clauses[0] if len(clauses) == 1 else Disjunction(clauses)
+
+
 def answer_matches_with_heracles(
     answer: str,
     solution: str,
@@ -260,7 +283,7 @@ def answer_matches_with_heracles(
     # those dependency-internal debug messages out of CLI progress output.
     captured_output = StringIO()
     with redirect_stdout(captured_output), redirect_stderr(captured_output):
-        matches = pddl_goal_equals(parsed_answer, parsed_solution)
+        matches = pddl_goal_equals(_pddl_goal_dnf(parsed_answer), _pddl_goal_dnf(parsed_solution))
     return True, matches
 
 

@@ -1,5 +1,6 @@
 import json
 from argparse import Namespace
+from pathlib import Path
 
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from cypher_3dsg_agent_distillation.reporting import workflow_report as workflow_report_module
@@ -485,6 +486,22 @@ def write_gguf_artifacts(tmp_path):
             "model_name": model_name,
         }
     }
+
+
+def test_dataset_only_report_omits_training_and_inference_even_when_artifacts_exist(tmp_path):
+    config = minimal_data_config(tmp_path)
+    write_minimal_artifacts(config)
+    data = collect_workflow_report_data(config, dataset_only=True)
+    html = render_workflow_report(data)
+
+    for tab in ("scene", "questions", "traces", "splits", "artifacts"):
+        assert f'data-tab="{tab}"' in html
+    for tab in ("train", "validation", "baseline", "deploy-quantization"):
+        assert f'data-tab="{tab}"' not in html
+    assert data["train"]["aggregate_eval_loss"] is None
+    assert all(report is None for report in data["validation"]["raw_generation_reports"].values())
+    assert all(Path(info["path"]).name in {"split.report.json", "revalidation.report.json"}
+               for info in data["artifacts"]["reports"])
 
 
 def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):

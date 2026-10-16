@@ -27,13 +27,14 @@ start: clause+
 match_clause: "MATCH"i pattern ("," pattern)*
 optional_match: "OPTIONAL"i "MATCH"i pattern ("," pattern)*
 pattern: node (edge node)* -> plain_pattern
-node: "(" NAME labels? props? ")"
+node: "(" NAME? labels? props? ")"
 labels: (":" layer)+
 ?layer: NAME | BINDING
 props: "{" entries? "}"
-edge: "-" "[" ":" layer bounds? "]" "->" -> outgoing
-    | "<-" "[" ":" layer bounds? "]" "-" -> incoming
-    | "-" "[" ":" layer bounds? "]" "-" -> undirected
+edge: "-" "[" edge_spec "]" "->" -> outgoing
+    | "<-" "[" edge_spec "]" "-" -> incoming
+    | "-" "[" edge_spec "]" "-" -> undirected
+edge_spec: NAME? ":" layer bounds?
 bounds: "*" bound ".." bound
       | "*" bound -> exact_bounds
 ?bound: INT | BINDING
@@ -57,9 +58,13 @@ unwind_clause: "UNWIND"i expr "AS"i NAME
 ?comparison: atom COMP atom -> comparison
            | atom "IN"i atom -> membership
            | atom "NOT"i "IN"i atom -> exclusion
+           | atom "CONTAINS"i atom -> contains
+           | atom "IS"i "NULL"i -> is_null
+           | atom "IS"i "NOT"i "NULL"i -> is_not_null
            | path ":" layer -> label_test
            | atom
-?atom: path "(" call_args? ")" -> call
+?atom: primary ("[" expr "]")* -> indexed
+?primary: path "(" call_args? ")" -> call
      | path -> reference
      | STRING -> string
      | SIGNED_NUMBER -> number
@@ -95,7 +100,20 @@ def literal(value: Any) -> dict[str, Any]:
 
 class _AST(Transformer):
     def start(self, items):
+        anonymous = {}
+        for clause in items:
+            for op in clause.get("operations", []):
+                for field in ("role", "source", "target"):
+                    value = op.get(field)
+                    if value is not None and not isinstance(value, str):
+                        op[field] = anonymous.setdefault(value, f"$anonymous_{len(anonymous)}")
         return items
+
+    def indexed(self, items):
+        value = items[0]
+        for index in items[1:]:
+            value = {"kind": "index", "value": value, "index": index}
+        return value
 
     def path(self, items):
         return ".".join(str(item) for item in items)
@@ -164,9 +182,10 @@ class _AST(Transformer):
         return [str(item) for item in items]
 
     def node(self, items):
-        labels = next((item for item in items[1:] if isinstance(item, list)), [])
-        props = next((item for item in items[1:] if isinstance(item, dict)), {})
-        return {"role": str(items[0]), "layers": labels, "properties": props}
+        role = next((str(item) for item in items if isinstance(item, str)), object())
+        labels = next((item for item in items if isinstance(item, list)), [])
+        props = next((item for item in items if isinstance(item, dict)), {})
+        return {"role": role, "layers": labels, "properties": props}
 
     def bounds(self, items):
         return [str(item) if str(item).startswith("{") else int(item) for item in items]
@@ -175,21 +194,24 @@ class _AST(Transformer):
         value = int(items[0])
         return [value, value]
 
-    def _edge(self, items, direction):
+    def edge_spec(self, items):
+        variable = str(items[0]) if len(items) > 1 and isinstance(items[1], str) else None
+        if variable is not None:
+            items = items[1:]
         return {
             "relationship": str(items[0]),
-            "direction": direction,
             "bounds": items[1] if len(items) > 1 else [1, 1],
+            **({"relationship_variable": variable} if variable else {}),
         }
 
     def outgoing(self, items):
-        return self._edge(items, "outgoing")
+        return {**items[0], "direction": "outgoing"}
 
     def incoming(self, items):
-        return self._edge(items, "incoming")
+        return {**items[0], "direction": "incoming"}
 
     def undirected(self, items):
-        return self._edge(items, "undirected")
+        return {**items[0], "direction": "undirected"}
 
     def plain_pattern(self, items):
         operations = [{"kind": "match", **items[0]}]
@@ -226,6 +248,15 @@ class _AST(Transformer):
 
     def exclusion(self, items):
         return {"kind": "compare", "left": items[0], "operator": "NOT IN", "right": items[1]}
+
+    def contains(self, items):
+        return {"kind": "compare", "left": items[0], "operator": "CONTAINS", "right": items[1]}
+
+    def is_null(self, items):
+        return {"kind": "compare", "left": items[0], "operator": "IS", "right": literal(None)}
+
+    def is_not_null(self, items):
+        return {"kind": "compare", "left": items[0], "operator": "IS NOT", "right": literal(None)}
 
     def label_test(self, items):
         return {"kind": "label", "role": items[0], "layer": str(items[1])}
@@ -287,6 +318,7 @@ class _AST(Transformer):
 
 
 SUPPORTED_FUNCTIONS = {
+    "labels",
     "point",
     "point.distance",
     "point.withinbbox",
@@ -297,6 +329,7 @@ SUPPORTED_FUNCTIONS = {
     "tointeger",
     "substring",
     "length",
+    "tolower",
 }
 
 
@@ -331,6 +364,7 @@ class RetrievalOperation(BaseModel):
     source: str | None = None
     target: str | None = None
     relationship: str | None = None
+    relationship_variable: str | None = None
     direction: Literal["outgoing", "incoming", "undirected"] | None = None
     bounds: list[int | str] | None = None
     expression: dict[str, Any] | None = None

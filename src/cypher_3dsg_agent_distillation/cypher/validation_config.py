@@ -112,7 +112,7 @@ class ResultSpec(StrictModel):
     )
     mapping: Literal["provenance_or_unique_type", "explicit"] = "provenance_or_unique_type"
     ambiguity: Literal["unresolved"] = "unresolved"
-    extra_columns: Literal["reject", "declared"] = "reject"
+    extra_columns: Literal["reject", "declared", "inferred"] = "inferred"
     auxiliary: dict[str, ValueSpec] = Field(default_factory=dict)
     symbol_case_sensitive: Literal[True] = True
     row_count: RowCount = Field(default_factory=RowCount)
@@ -125,8 +125,8 @@ class ResultSpec(StrictModel):
             raise ValueError("roles are required for role_sets/tuples")
         if self.unordered_tuple and self.kind != "tuples":
             raise ValueError("unordered_tuple only applies to tuples")
-        if self.auxiliary and self.extra_columns != "declared":
-            raise ValueError("auxiliary columns require extra_columns: declared")
+        if self.auxiliary and self.extra_columns not in {"declared", "inferred"}:
+            raise ValueError("auxiliary columns require extra_columns: declared or inferred")
         if (
             self.mapping == "explicit"
             and not self.roles
@@ -421,6 +421,9 @@ def implementation_fingerprint():
     for relative in [
         "agents/student_evaluation.py",
         "agents/openrouter_teacher.py",
+        "agents/trace_evidence.py",
+        "agents/teacher_optimizations.py",
+        "agents/agent_evaluation.py",
         "agents/agent_evaluation.py",
         "cypher/evaluation.py",
     ]:

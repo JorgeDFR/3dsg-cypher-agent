@@ -245,7 +245,6 @@ def test_complete_dataset_validation_replay(tmp_path, monkeypatch, reasoning_ena
             split_by_scene=False,
             report_output=None,
             force=False,
-            repair_invalid_final_answers=False,
             render_view="ollama_native",
         )
     )

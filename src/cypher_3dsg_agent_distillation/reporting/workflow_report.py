@@ -761,7 +761,15 @@ def collect_trainer_state(student_config: dict[str, Any] | None) -> dict[str, An
 def collect_workflow_report_data(
     data_config: dict[str, Any],
     student_config: dict[str, Any] | None = None,
+    *,
+    dataset_only: bool = False,
 ) -> dict[str, Any]:
+    if dataset_only:
+        student_config = None
+
+    def read_model_report(path):
+        return None if dataset_only else read_json_if_exists(path)
+
     scene_graphs = {}
     scene_artifacts = {}
     configured_scenes = data_config.get("scenes") or [
@@ -809,28 +817,28 @@ def collect_workflow_report_data(
         if (optimized := optimized_from_record(record, split)) is not None
     ]
     eval_loss_reports = {
-        split: read_json_if_exists(
+        split: read_model_report(
             selected_model_reports_dir / f"{split}.student.eval-loss.report.json"
         )
         for split in SPLITS
     }
     raw_generation_reports = {
-        split: read_json_if_exists(
+        split: read_model_report(
             selected_model_reports_dir / f"{split}.student.raw-generation.report.json"
         )
         for split in SPLITS
     }
     baseline_raw_generation_reports = {
-        split: read_json_if_exists(
+        split: read_model_report(
             baseline_reports_dir / f"{split}.baseline.raw-generation.report.json"
         )
         for split in SPLITS
     }
-    quantization_raw_generation_reports = collect_quantization_reports(
+    quantization_raw_generation_reports = {} if dataset_only else collect_quantization_reports(
         data_config, student_config
     )
     agent_reports = {
-        split: read_json_if_exists(report_path(data_config, f"{split}.agent.report.json"))
+        split: read_model_report(report_path(data_config, f"{split}.agent.report.json"))
         for split in SPLITS
     }
     tag_lookup = build_tag_lookup(
@@ -856,6 +864,7 @@ def collect_workflow_report_data(
             "scene_ids": [scene["scene_id"] for scene in configured_scenes],
             "dataset_version": data_config.get("dataset_version"),
             "model_version": (student_config or {}).get("model_version"),
+            "dataset_only": dataset_only,
             "data_config": relative_path(data_config.get("data_config_path")),
         },
         "artifacts": {
@@ -869,7 +878,12 @@ def collect_workflow_report_data(
             "teacher_traces": file_info(data_config["teacher_traces_jsonl_path"]),
             "accepted_traces": file_info(data_config["accepted_traces_path"]),
             "rejected_traces": file_info(data_config["rejected_traces_path"]),
-            "reports": collect_report_files(data_config),
+            "reports": [
+                info for info in collect_report_files(data_config)
+                if not dataset_only or Path(info["path"]).name in {
+                    "split.report.json", "revalidation.report.json",
+                }
+            ],
             "splits": {
                 split: file_info(data_config["splits"][split]) for split in SPLITS
             },
@@ -925,7 +939,7 @@ def collect_workflow_report_data(
         "train": {
             "student_config": student_config or {},
             "trainer_state": collect_trainer_state(student_config),
-            "aggregate_eval_loss": read_json_if_exists(
+            "aggregate_eval_loss": read_model_report(
                 selected_model_reports_dir / "student.eval-loss.report.json"
             ),
             "eval_loss_reports": eval_loss_reports,
@@ -2884,10 +2898,13 @@ def render_workflow_report(data: dict[str, Any]) -> str:
         ("questions", "Generated Questions", render_generated_questions_tab(data)),
         ("traces", "Traces", render_traces_tab(data)),
         ("splits", "Splits", render_splits_tab(data)),
-        ("train", "Train", render_train_tab(data)),
-        ("validation", "Validation", render_validation_tab(data)),
-        ("baseline", "Baseline", render_baseline_tab(data)),
     ]
+    if not data["metadata"].get("dataset_only"):
+        tabs.extend([
+            ("train", "Train", render_train_tab(data)),
+            ("validation", "Validation", render_validation_tab(data)),
+            ("baseline", "Baseline", render_baseline_tab(data)),
+        ])
     quantization_reports = data.get("deploy_quantization", {}).get(
         "raw_generation_reports"
     )
@@ -3464,8 +3481,10 @@ def write_workflow_report(
     data_config: dict[str, Any],
     student_config: dict[str, Any] | None,
     output: str | Path,
+    *,
+    dataset_only: bool = False,
 ) -> Path:
-    data = collect_workflow_report_data(data_config, student_config)
+    data = collect_workflow_report_data(data_config, student_config, dataset_only=dataset_only)
     output_path = ensure_parent(output)
     output_path.write_text(render_workflow_report(data), encoding="utf-8")
     return output_path
@@ -3476,7 +3495,8 @@ def command(args: argparse.Namespace) -> None:
         args.data_config, dataset_version=args.dataset_version
     )
     student_config = None
-    if args.student_config:
+    dataset_only = getattr(args, "dataset_only", False)
+    if args.student_config and not dataset_only:
         student_config = load_student_config(
             args.student_config, model_version=args.model_version
         )
@@ -3490,6 +3510,7 @@ def command(args: argparse.Namespace) -> None:
         data_config,
         student_config,
         workflow_report_output_path(data_config, args.output, student_config),
+        dataset_only=dataset_only,
     )
     print_summary(
         "Workflow report generated",
@@ -3511,6 +3532,10 @@ def main() -> None:
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
+    parser.add_argument(
+        "--dataset-only", action="store_true",
+        help="Include scene graphs, questions, teacher traces and splits only.",
+    )
     parser.add_argument(
         "--student-config",
         default="configs/students/student_qwen3.5_4b.yaml",

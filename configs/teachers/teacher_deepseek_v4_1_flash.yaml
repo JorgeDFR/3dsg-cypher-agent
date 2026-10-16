@@ -1,15 +1,17 @@
 provider: openrouter
 model: deepseek/deepseek-v4.1-flash
+traces_per_seed: 1
+max_tool_calls: 3
 temperature: 0.2
 max_tokens: 8192
 timeout: 180
-traces_per_seed: 1
-max_tool_calls: 3
 reasoning:
   enabled: true
-routing:
-  require_parameters: true
-  max_price:
-    prompt: 0.30
-    completion: 1.20
-#max_cost_usd: 1.0
+max_cost_usd: 2.0
+optimizations:
+  repair_invalid_final_answers: true
+  recover_earlier_retrievals: true
+  tuning_prompt: >-
+    Use at most one tool call per response.
+    Each query must retrieve the complete task result, with only the required output columns.
+    After a successful tool response, including empty rows, produce the final answer without further tool calls.

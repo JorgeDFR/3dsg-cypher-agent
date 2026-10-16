@@ -1,5 +1,5 @@
-import json
 from collections import Counter
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -12,12 +12,14 @@ from cypher_3dsg_agent_distillation.agents.agent_dataset import (
     grouped_split_records,
     read_student_trace_records,
     read_student_trace_records_with_counts,
-    repair_rejected_invalid_answer_trace,
     split_command,
     split_report_lines,
     split_report_payload,
 )
-from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
+from cypher_3dsg_agent_distillation.agents.agent_records import AgentMessage, AgentTraceRecord
+from cypher_3dsg_agent_distillation.agents.teacher_optimizations import (
+    repair_rejected_invalid_answer_trace,
+)
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from tests.helpers import answerable_trace
 
@@ -330,6 +332,48 @@ def test_grouped_split_balances_pddl_types_that_share_cypher_queries():
     assert_no_split_leakage({"train": train, "eval": eval_records, "test": test})
 
 
+def test_split_assignments_do_not_depend_on_teacher_query_wording():
+    synthetic = [
+        make_record(
+            f"{task}-{group}-{variant}", task,
+            f"MATCH (o:Object {{class: 'class{group}'}}) RETURN o.nodeSymbol AS object",
+        )
+        for task in ("lookup", "inspect")
+        for group in range(10)
+        for variant in range(2)
+    ]
+    real = [
+        record.model_copy(update={
+            "gold_cypher": f"MATCH (node:Object) WHERE node.class = 'class{index // 2 % 10}' "
+                           f"RETURN node.nodeSymbol AS answer{index}",
+            "metadata": {"seed_gold_cypher": record.gold_cypher},
+        })
+        for index, record in enumerate(synthetic)
+    ]
+
+    def assignments(records):
+        parts = grouped_split_records(
+            records, train_size=0.8, eval_size=0.1, test_size=0.1, seed=42,
+        )
+        assert_no_split_leakage(dict(zip(("train", "eval", "test"), parts[:3], strict=True)))
+        return [[record.uid for record in part] for part in parts]
+
+    assert assignments(real) == assignments(synthetic)
+
+
+def test_split_connects_both_explicit_groups_and_seed_query_identities():
+    from cypher_3dsg_agent_distillation.agents.agent_dataset import split_record_groups
+
+    one = make_record("one", "lookup", "RETURN 'O1'")
+    two = make_record("two", "lookup", "RETURN 'O2'").model_copy(
+        update={"split_group": one.split_group},
+    )
+    three = make_record("three", "inspect", two.gold_cypher)
+    assert [[record.uid for record in group] for group in split_record_groups(
+        [one, two, three],
+    )] == [["one", "two", "three"]]
+
+
 def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test():
     records = [
         make_record(f"inventory-{index}", "inventory", "MATCH (n) RETURN n") for index in range(4)
@@ -389,14 +433,80 @@ def test_grouped_split_breaks_minimum_groups_to_reach_exact_per_type_counts():
     [
         ("reasoning", "This malformed answer is the right format."),
         ("reasoning_content", "Use this answer."),
+        ("thinking", "Use this answer."),
+        ("reasoning_details", [{"type": "reasoning.summary", "summary": "Use this answer."}]),
         ("reasoning_details", [{"type": "reasoning.encrypted", "data": "opaque"}]),
         ("content", "<think>Use this answer.</think><answer>{O1}</answer>"),
         ("content", "<think>Unfinished reasoning"),
     ],
 )
-def test_answer_replacement_does_not_salvage_potentially_inconsistent_reasoning(field, value):
+def test_answer_replacement_preserves_reasoning(field, value):
     rejected = rejected_invalid_answer_trace()
     rejected["messages"][-1][field] = value
+    original = deepcopy(rejected)
+    repaired = repair_rejected_invalid_answer_trace(rejected)
+    assert repaired is not None
+    assert repaired.final_answer_text == "<answer>O1</answer>"
+    assert repaired.metadata["final_answer_repaired"]
+    if field == "content":
+        assert repaired.messages[-1].reasoning == (
+            "Unfinished reasoning" if "Unfinished" in value else "Use this answer."
+        )
+    else:
+        assert repaired.messages[-1].model_dump()[field] == value
+    assert rejected == original
+    assert [m.model_dump(exclude_none=True) for m in repaired.messages[:-1]] == [
+        AgentMessage.model_validate(m).model_dump(exclude_none=True)
+        for m in original["messages"][:-1]
+    ]
+
+
+def test_answer_replacement_preserves_tool_stage_reasoning():
+    rejected = rejected_invalid_answer_trace(two_tool_calls=True)
+    rejected["messages"][1]["reasoning"] = "Try a query."
+    repaired = repair_rejected_invalid_answer_trace(rejected)
+    assert repaired is not None
+    assert repaired.messages[1].reasoning == "Try a query."
+    assert len(repaired.tool_calls) == 2
+
+
+def contract_format_rejection():
+    rejected = rejected_invalid_answer_trace(cypher=None, cypher_solution=None)
+    rejected["validation_contract"] = {
+        "result": {"kind": "scalar", "type": "node_symbol", "layers": ["Object"]},
+        "answer": {"formats": ["str"]},
+    }
+    rejected["validation"].update({
+        "rows": [{"object": "O1"}], "columns": ["object"],
+        "final_answer_format_valid": False,
+        "answer_check": {"status": "invalid_answer_format", "format_valid": False, "match": False},
+    })
+    rejected["messages"][-1]["reasoning"] = "Return the retrieved object."
+    return rejected
+
+
+def test_answer_repair_uses_current_contract_evidence_and_refreshes_validation():
+    from cypher_3dsg_agent_distillation.agents.agent_evaluation import recompute_trace_validation
+
+    repaired = repair_rejected_invalid_answer_trace(contract_format_rejection())
+    assert repaired is not None
+    assert repaired.messages[-1].reasoning == "Return the retrieved object."
+    assert repaired.final_answer == "O1"
+    assert repaired.validation.final_answer_format_valid is True
+    assert repaired.validation.answer_check["status"] == "pass"
+    assert repaired.validation.grounding_check["match"] is True
+    assert recompute_trace_validation(repaired)["answer_grounded"] is True
+
+
+@pytest.mark.parametrize("broken", ["wrong_rows", "wrong_call_id", "truncated_rows"])
+def test_answer_repair_requires_verified_contract_evidence(broken):
+    rejected = contract_format_rejection()
+    if broken == "wrong_rows":
+        rejected["validation"]["rows"] = [{"object": "O2"}]
+    elif broken == "wrong_call_id":
+        rejected["messages"][-2]["tool_call_id"] = "different_call"
+    else:
+        rejected["validation"]["rows_truncated"] = True
     assert repair_rejected_invalid_answer_trace(rejected) is None
 
 
@@ -416,52 +526,45 @@ def test_repair_rejected_invalid_answer_trace_replaces_only_final_answer():
     assert repaired.metadata["original_final_answer"] == "{O1}"
 
 
-def test_repair_rejected_invalid_answer_trace_requires_verified_cypher_solution():
+@pytest.mark.parametrize("with_reasoning", [False, True])
+def test_repair_rejected_invalid_answer_trace_requires_verified_cypher_solution(with_reasoning):
+    rejected = rejected_invalid_answer_trace()
+    if with_reasoning:
+        rejected["messages"][-1]["reasoning"] = "Return the retrieved object."
     assert (
         repair_rejected_invalid_answer_trace(
-            rejected_invalid_answer_trace(reason="solution_mismatch")
+            {**rejected, "reason": "solution_mismatch"}
         )
         is None
     )
     assert (
-        repair_rejected_invalid_answer_trace(rejected_invalid_answer_trace(cypher_solution="O2"))
+        repair_rejected_invalid_answer_trace({**rejected, "cypher_solution": "O2"})
         is None
     )
 
 
-def test_student_trace_reader_can_include_repaired_invalid_answer_rejections(tmp_path):
+def test_student_trace_reader_loads_generation_repairs_without_scanning_rejections(tmp_path):
     accepted_path = tmp_path / "teacher_traces.jsonl"
     rejected_path = tmp_path / "rejected.json"
-    write_jsonl([answerable_trace(uid="accepted")], accepted_path)
-    rejected_path.write_text(
-        json.dumps([rejected_invalid_answer_trace(two_tool_calls=True)]),
-        encoding="utf-8",
+    repaired = repair_rejected_invalid_answer_trace(
+        rejected_invalid_answer_trace(two_tool_calls=True)
     )
+    assert repaired is not None
+    write_jsonl([answerable_trace(uid="accepted"), repaired.model_dump()], accepted_path)
+    # Splitting must not inspect or repair rejects, even if this artifact is unreadable.
+    rejected_path.write_text("invalid JSON", encoding="utf-8")
     config = {
         "teacher_traces_jsonl_path": str(accepted_path),
         "rejected_traces_path": str(rejected_path),
     }
-
-    accepted_only = read_student_trace_records(config, include_repaired_rejected=False)
-    with_repaired, source_counts = read_student_trace_records_with_counts(
-        config,
-        include_repaired_rejected=True,
-    )
-
-    assert [record.uid for record in accepted_only] == ["accepted"]
-    assert source_counts["accepted_teacher_traces"] == 1
-    assert source_counts["rejected_total"] == 1
-    assert source_counts["rejected_reason:invalid_answer_format"] == 1
+    records, source_counts = read_student_trace_records_with_counts(config)
+    assert [record.uid for record in read_student_trace_records(config)] == [
+        "accepted", "rejected_teacher_repaired",
+    ]
+    assert source_counts["accepted_teacher_traces"] == 2
     assert source_counts["repaired_invalid_answer_format"] == 1
-    assert {record.uid for record in with_repaired} == {
-        "accepted",
-        "rejected_teacher_repaired",
-    }
-    repaired = next(record for record in with_repaired if record.uid == "rejected_teacher_repaired")
-    assert len(repaired.messages) == 6
-    assert repaired.tool_calls[0].function.arguments["cypher_string"] == "MATCH broken"
-    assert repaired.tool_calls[1].function.arguments["cypher_string"].startswith("MATCH (o:Object)")
-    assert repaired.final_answer_text == "<answer>O1</answer>"
+    assert records[-1].metadata["final_answer_repaired"] is True
+    assert len(records[-1].tool_calls) == 2
 
 
 def test_split_report_lines_include_split_sizes_and_optimization_counts():
@@ -474,8 +577,6 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
         source_counts=Counter(
             {
                 "accepted_teacher_traces": 2,
-                "rejected_total": 3,
-                "rejected_reason:invalid_answer_format": 2,
                 "repaired_invalid_answer_format": 1,
             }
         ),
@@ -492,13 +593,12 @@ def test_split_report_lines_include_split_sizes_and_optimization_counts():
             "test": "test.jsonl",
             "challenge": "challenge.jsonl",
         },
-        repair_answers=True,
     )
     text = "\n".join(lines)
 
     assert "accepted teacher traces loaded: 2" in text
-    assert "rejected traces scanned: 3 (invalid_answer_format=2)" in text
-    assert "final answer repairs from invalid_answer_format rejects: 1" in text
+    assert "generation final-answer repairs included: 1" in text
+    assert "rejected traces scanned" not in text
     assert "dropped by max_per_task_type: count=1" in text
     assert "train: 1 traces -> train.jsonl" in text
     assert "test: 0 traces -> test.jsonl" in text
@@ -542,10 +642,9 @@ def test_split_report_payload_lists_optimized_questions():
             "test": "test.jsonl",
             "challenge": "challenge.jsonl",
         },
-        repair_answers=True,
     )
 
-    assert report["metadata"]["repair_invalid_final_answers"] is True
+    assert report["metadata"]["optimization_stage"] == "generation"
     assert report["splits"]["train"]["optimized_questions"] == 1
     assert report["splits"]["train"]["scene_counts"] == {"scene": 1}
     assert report["splits"]["train"]["scene_runs"] == 1
@@ -564,6 +663,9 @@ def test_split_report_payload_lists_optimized_questions():
             "final_answer": None,
             "optimization_kinds": ["repaired_invalid_answer_format"],
             "final_answer_repaired": True,
+            "earlier_retrieval_recovered": False,
+            "grounding_tool_call_index": None,
+            "diagnostic_tool_call_indices": None,
             "tool_call_count": 2,
             "successful_tool_call_index": None,
             "seed_uid": None,

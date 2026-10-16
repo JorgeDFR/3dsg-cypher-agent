@@ -28,7 +28,6 @@ For the directory and selection rules of generated artifacts, see
 | `question_sets` | One or more experiment profile and question-template pairs |
 | `max_per_task_type` | Optional cap on generated records per task type |
 | `split` | Train, evaluation, test, and challenge selection settings |
-| `repair_invalid_final_answers` | Salvage eligible format-only rejects that contain no reasoning |
 
 Multiple task families can share one dataset version:
 
@@ -195,6 +194,26 @@ docker/stack.sh main python scripts/agents/generate_traces.py preflight \
   --teacher-config configs/teachers/teacher_deepseek_v4_1_flash.yaml
 ```
 
+Teacher-specific optimizations belong in the teacher YAML:
+
+```yaml
+optimizations:
+  repair_invalid_final_answers: true
+  recover_earlier_retrievals: true
+  tuning_prompt: >-
+    Use at most one tool call per response.
+```
+
+All settings default to disabled (an empty string disables `tuning_prompt`).
+Synthetic teachers ignore enabled optimizations.
+The tuning prompt is appended to the last user message in a copy of every
+outbound request, including requests after tool results and repair feedback.
+It is excluded from saved conversation messages in training traces and debug
+artifacts. Its configured text remains in run metadata for reproducibility,
+and changing it prevents resuming a run with a different configuration.
+Guidance discourages unwanted behavior; validation and the tool-call limit
+still enforce correctness independently.
+
 Generate and validate OpenRouter traces:
 
 ```bash
@@ -241,6 +260,23 @@ messages. Each interaction is checked through these gates:
 4. Compare QA answers with the expected answer.
 5. Verify that PDDL queries satisfy their grounding contract and that the final
    goal is valid for the configured robot domain.
+
+Tool feedback reports only static safety/schema checks and database execution
+errors. Every successfully executed query returns `ok: true` with its rows,
+including empty results and exploratory projections. That success flag does
+not indicate agreement with a gold solution or grounding contract.
+
+Result decoding, required projections, grounding, and expected-answer comparisons
+are internal acceptance checks after the teacher produces its final answer. The
+last successfully executed query supplies the retrieval evidence; earlier
+exploration is retained but is not combined or selected using gold answers.
+Statuses such as `mapping_unresolved`, `invalid_result_shape`, and `mismatch`
+appear only in internal/debug reports, never in teacher tool feedback. These
+checks still reject incorrect or unresolved completed traces.
+
+The execution-only feedback policy is part of the generation run identity.
+Start a fresh generation run for datasets created under the older validation
+feedback policy; their journals cannot be resumed under the changed behavior.
 
 For a controlled-repair seed, synthetic trace generation first executes the mutated gold
 Cypher and requires Neo4j to return a syntax error. That failed assistant tool
@@ -300,8 +336,13 @@ docker/stack.sh main python scripts/agents/prepare_dataset.py split \
 ```
 
 Splitting is stratified by task family and query type. Task types that share
-normalized-equivalent Cypher are assigned together so an equivalent query
-cannot leak across splits.
+normalized-equivalent seed Cypher are assigned jointly. Grouping uses
+`metadata.seed_gold_cypher`, falling back to `gold_cypher` for synthetic or
+legacy records, and also connects records sharing an explicit `split_group`.
+Generated teacher queries, output aliases, and quote choices do not affect group
+identity. The same records follow the same split policy with synthetic and real
+teachers. Existing exact per-type count fallbacks still move the minimum
+necessary variants when intact groups cannot achieve those counts.
 
 `split.challenge_questions_per_task_type` controls how many records from each
 listed `challenge_task_types` entry are generated across all configured scenes,
@@ -320,21 +361,89 @@ future implementation and currently exits with
 `Scene-aware splitting is not implemented yet.` The default is `false`, so all
 configured scenes may contribute to every split.
 
-To include rejected `invalid_answer_format` traces that are repairable by
-replacing only the final answer and do not contain reasoning, use:
+Enable `optimizations.repair_invalid_final_answers` in the teacher YAML to repair
+eligible SLDP `invalid_answer_format` rejections during generation. A separate
+`teacher optimizations` progress bar scans completed rejected attempts after
+teacher conversations finish (including a clean budget stop). It replaces the
+final answer only when saved retrieval evidence verifies the correct result.
+Every tool attempt, its feedback, and recorded reasoning are preserved; inline
+thinking in the final message is retained in its separate reasoning field.
+
+Enable `optimizations.recover_earlier_retrievals` to recover a correct final
+answer grounded in an earlier task retrieval when subsequent calls only inspect
+diagnostic information. This preserves the complete conversation, including
+opaque reasoning and all diagnostic call/response pairs; it does not rewrite
+the final answer. Supported diagnostic suffixes are conservatively identified
+from query/schema types and public task constraints:
+
+- Projections that cannot represent the task output, such as inspecting classes
+  or counts when the task requires node symbols.
+- Inspection of a fixed input node that is not the task's output node.
+- Bounded, unfiltered node inventories when the task requires a constrained
+  retrieval. An inventory that is itself the task is not skipped.
+
+Selection walks backward past these diagnostics and stops at the first task
+query. It never searches older results for a gold match: a newer wrong,
+ambiguous, unparsed, or otherwise unsupported task query blocks recovery.
+Incomplete, truncated, failed, or mismatched tool feedback also blocks recovery.
+The selected retrieval must then pass correctness comparison, and the unchanged
+final answer must have valid formatting, be correct, and be grounded in that
+retrieval. There must be a completed final answer; exhausted tool budgets are
+not recovered. Explicit output adapters and semantic role names remain
+authoritative. Queries that cannot be proven diagnostic remain ineligible.
+
+Recovered traces record `retrieval_evidence_policy: earlier_retrievals_v1`, a
+one-based `grounding_tool_call_index`, and diagnostic call indices/reasons in
+metadata. Saved-trace evaluation and audits recompute the same selection and
+check the saved index; they do not blindly trust the marker or cached grade.
+Unmarked traces continue to use the latest successful execution. Model-visible
+tool responses remain execution-only under either setting.
+
+Repaired and recovered traces are marked in metadata, included in
+`teacher_traces.jsonl` and `accepted.json`, and removed from `rejected.json`.
+The generation summary shows accepted traces before optimization, final-answer
+repairs, earlier retrievals recovered, and final accepted/rejected totals.
+`traces/metadata.yaml` and `pilot_report.yaml` record
+before/after counts, `repaired` and `recovered` counts, and totals by kind.
+Token lengths, coverage, retained UIDs, and cost per accepted trace use the
+finalized accepted traces.
+
+The attempt journal keeps the original rejection under
+`optimization.raw_rejection`. Optimization commits are atomic; resuming a run
+reuses completed attempts, preserves existing optimizations, and does not repeat
+paid requests. Both pilot and full generation use this phase. Synthetic teachers
+continue to ignore enabled optimizations with a warning.
+
+Splitting only loads the accepted traces finalized during generation; it never
+scans or repairs rejected traces. The split flag `--repair-invalid-final-answers`
+has been removed. Existing datasets are not changed automatically. The split
+report still identifies generation-repaired and recovered records so their
+provenance can be reviewed. See [reasoning experiments](reasoning_traces.md) for teacher checks,
+the pilot, and reasoning configuration.
+
+## Revalidate saved teacher traces without generation
+
+After fixing validation, regrade a completed run using its saved database rows
+and teacher messages. This command never calls the teacher or executes Cypher:
 
 ```bash
-docker/stack.sh main python scripts/agents/prepare_dataset.py split \
-  --data-config configs/data.yaml \
-  --render-view ollama_native \
-  --repair-invalid-final-answers
+python scripts/agents/revalidate_dataset.py \
+  --dataset-version 2026-10-16-T-12-14-20-Z
 ```
 
-This optimization changes only split/render output and preserves every tool attempt.
-It skips traces containing readable reasoning or opaque reasoning blocks, so a
-replacement answer cannot contradict an existing rationale. See
-[reasoning experiments](reasoning_traces.md) for teacher checks, the pilot, and
-reasoning configuration.
+The default prints proposed grade changes. Add `--apply` to back up existing files
+under `revalidation_backups/` and refresh the seeds, questions, canonical traces,
+accepted/rejected debug files, attempt journal, token lengths, and coverage report.
+Contracts are refreshed only after the saved seed query matches the selected
+template. Original answers, grounding labels, and the request/billing journal are
+preserved. Incomplete generations and protocol failures remain rejected. Enabled
+generation optimizations run against the revalidated evidence. The command uses
+the original run's student tokenizer and stores changes in
+`reports/revalidation.report.json`; it does not rebuild splits automatically.
+
+Run `prepare_dataset.py split --dataset-version ...` afterwards, followed by
+`generate_workflow_report.py --dataset-version ... --dataset-only` to inspect the
+updated dataset without training or inference reports.
 
 ## Select reproducible inputs
 

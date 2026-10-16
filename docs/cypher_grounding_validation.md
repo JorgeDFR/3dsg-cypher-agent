@@ -176,7 +176,7 @@ All objects reject unknown keys. Version 1 has these fields:
 | Structured result | `roles: {}` maps role names to value specifications; required for `tuples`/`role_sets` |
 | Representations | `accepted_forms: [scalar_columns, collected_columns, nodes]`; add `maps` for declared structured layouts |
 | Mapping | `mapping: provenance_or_unique_type` or `explicit`; `ambiguity: unresolved`; no expected-value or implicit positional fallback |
-| Extra output | `extra_columns: reject`; `declared` permits only named, typed `auxiliary` columns |
+| Extra output | `extra_columns: inferred` permits typed diagnostics after answer mapping; `reject` forbids extras; `declared` permits only named, typed `auxiliary` columns |
 | Shape | `row_count: {min: 0, max: null}`; `unordered_tuple: false`; `symbol_case_sensitive: true` |
 | Value specification | `type`: `integer`, `number`, `string`, `node_symbol`, `point`; `layers: []`; `property: null`; `origin: {}`; `oracle_source: value` |
 | Value collections | `cardinality: set` or `list`/`multiset` for role sets; `nulls: reject` or explicit `empty_set`; `dimensions: 3` |
@@ -222,6 +222,22 @@ and property maps. Scalar columns and `collect` results use the same value rules
 Invalid collection members are errors; they are never filtered away. Configured
 auxiliary columns are validated too.
 
+With `extra_columns: inferred`, known property and expression types identify
+diagnostics without an alias allowlist. For example, `RETURN o.nodeSymbol AS id,
+point.distance(o.center, p.center) AS d` can decode just the object symbols while
+validating `d` as finite numbers. Types survive `WITH` and `min`/`max` aliases.
+Unknown auxiliary expressions still require a typed `auxiliary` declaration.
+All plausible answer mappings are considered before extras are excluded: two
+equally plausible symbol columns with different values remain unresolved.
+Empty rows use projection types to distinguish answer columns from diagnostics.
+
+The default applies to newly generated contracts. Saved seeds and traces retain
+their explicit policies, including the previous `extra_columns: reject` default.
+Regenerate raw questions and prepared seeds in a new dataset version to adopt
+the new default before generating teacher traces. Forking an existing dataset
+for another teacher copies its saved contracts unchanged. Historical replay with
+the new policy must explicitly apply it to copies; it does not rewrite old grades.
+
 PDDL goals accept `fact`, `arguments` (`result` or `literal`), `multiple: and|or`,
 and optional `negate_each`; compound goals accept `operator: and|or|not` and
 `clauses`. Role and predicate types are checked. Missing alternatives can be
@@ -247,12 +263,30 @@ and backtick identifiers.
 Decoding takes the actual query, original rows/column metadata, and resolved
 contract. Expected solutions are not decoder inputs. Projection analysis tracks
 supported MATCH/WHERE constraints, WITH, RETURN, maps, `collect`, and UNWIND.
+Node identity survives aliases so same-node symbol, class, native node properties,
+and `labels(n)` observations can establish a role. Equality and literal `IN`
+constraints can describe a pooled source. For `role_sets`, a shared symbol or
+native node column can be partitioned by those public origin constraints; tuple
+relations retain their original row associations. Every pooled row must belong
+to exactly one assigned role, and invalid values are never filtered away.
+An absent pooled role needs a complete source covering its constraints; `LIMIT`
+prevents that inference. Collected parallel arrays are not implicitly zipped.
+
+Top-level `UNION`/`UNION ALL` branches retain separate provenance. Actual symbol
+layers, explicit IDs, and same-node observations can distinguish branches. When
+several branches remain possible, they must agree on a role's provenance before
+that row can be assigned. A simple typed set can still decode when branch
+identity has no effect on its interpretation. Keywords inside literals or
+comments do not create branches. These rules never consult expected answers,
+expected grounding sets, or the generated final answer to choose a mapping.
+
 Unsupported syntax can still produce an unambiguous typed scalar; it cannot
 supply missing provenance needed to distinguish same-type roles. At most 256
 assignments are considered; more remain unresolved.
 
 Reports retain original rows and aliases, canonical actual values, chosen
-bindings, shape issues, and missing/extra role values. Checks have separate
+bindings, `auxiliary_columns`, partitioned `role_rows` (zero-based indices), shape
+issues, and missing/extra role values. Checks have separate
 outcomes:
 
 - `result_validation`: `pass`, `mismatch`, `invalid_result_shape`,
@@ -316,12 +350,49 @@ not accepted as validated training examples. Historical records retain their
 legacy behavior until explicitly migrated. Saved contract-backed trace audits
 recompute from saved successful tool evidence; missing evidence is not checked.
 
+During teacher generation, tool responses expose only safety/schema or execution
+failures and successful database rows. They never expose decoding, grounding, or
+expected-result validation statuses, and rows are not withheld because a result
+differs from gold. Internal retrieval grading uses the latest successful execution
+after the final answer is generated. Earlier exploratory executions do not need
+to satisfy the complete retrieval contract, and passing intermediate evidence is
+not selected using the expected solution.
+
+The optional teacher optimization `recover_earlier_retrievals` runs after
+generation. It can retain an earlier complete retrieval when every subsequent
+call is demonstrably diagnostic from public query/schema constraints. It keeps
+all messages, selects the latest non-diagnostic task retrieval without consulting
+expected values or the final answer, and only then checks correctness and final
+grounding. A newer conflicting or unresolved task retrieval blocks recovery.
+Unsupported syntax and incomplete feedback cannot establish recovery evidence.
+Recovered traces record `retrieval_evidence_policy: earlier_retrievals_v1` and
+`grounding_tool_call_index`; saved-trace evaluation and rescoring recompute that
+selection and reject inconsistent markers. Unmarked traces retain the latest
+successful-execution policy. See [dataset generation](dataset_generation.md) for
+the supported diagnostics and reporting.
+
 Student reports expose result status counts and coverage alongside accuracy.
 Unresolved/not-checked records stay in total denominators. End-to-end reports
 separate final-answer accuracy, retrieval match, and grounded-answer rate. The
 workflow HTML detail view includes those statuses and semantic evidence.
 
 ## Audit, migration, and rescoring
+
+The decoder supports typed mixed-layer UNION columns even when their alias
+matches one role; explicit configured column selectors remain authoritative.
+Literal list projections retain tuple positions, indexed collections retain
+target lineage, and relationship variables preserve auxiliary aggregate types.
+Class equalities joined by OR establish the same coverage as an IN filter.
+Known `toLower`/`CONTAINS` searches can prove an empty role from public constraints;
+positive LIMITs preserve empty-result evidence, while LIMIT 0 and incomplete
+nonempty results cannot establish full pooled-role coverage. Unknown syntax and
+ambiguous same-type outputs remain unresolved. QA target origins belong in the
+validation contract so source and target columns can be distinguished without
+consulting expected answers.
+
+For a completed teacher dataset, use the saved-evidence revalidation command in
+[dataset generation](dataset_generation.md#revalidate-saved-teacher-traces-without-generation)
+to update finalized generation files without additional teacher requests.
 
 These commands do not call model APIs:
 

@@ -214,7 +214,9 @@ def test_trace_token_length_report_uses_training_rendering_and_nearest_rank():
     assert nearest_rank_percentile(list(range(1, 101)), 95) == 95
 
 
-def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static_only=False):
+def run_interaction(
+    seed, responses, *, validator=None, max_tool_calls=3, static_only=False, tuning_prompt="",
+):
     client = FakeConversationClient(responses)
     profile_name = (
         "cypher_pddl_template.yaml"
@@ -232,8 +234,48 @@ def run_interaction(seed, responses, *, validator=None, max_tool_calls=3, static
         policy=None,
         max_tool_calls=max_tool_calls,
         static_only=static_only,
+        tuning_prompt=tuning_prompt,
     )
     return decision, client
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_tuning_prompt_persists_across_retries_but_is_not_saved(accepted):
+    prompt = "Only one tool call per response."
+    responses = [
+        tool_assistant("MATCH (o:Object) DELETE o"),
+        tool_assistant(),
+        final_assistant("3" if accepted else "999"),
+    ]
+    decision, client = run_interaction(seed_record(), responses, tuning_prompt=prompt)
+    assert decision.accepted is accepted
+    assert len(client.calls) == 3
+    for call in client.calls:
+        user = next(message for message in reversed(call["messages"]) if message["role"] == "user")
+        assert user["content"].endswith("\n\n" + prompt)
+        assert user["content"].count(prompt) == 1
+    assert prompt not in json.dumps(decision.payload)
+    if decision.record is not None:
+        assert prompt not in decision.record.model_dump_json()
+
+
+def test_teacher_does_not_execute_a_new_query_after_success_at_tool_limit():
+    validator = FakeValidator()
+    decision, client = run_interaction(
+        seed_record(), [tool_assistant(), tool_assistant()],
+        validator=validator, max_tool_calls=1,
+    )
+    assert decision.reason == "max_tool_calls_exceeded"
+    assert len(validator.cyphers) == 1
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize("status", [
+    "invalid_result_shape", "mapping_unresolved", "mismatch", "grounding_mismatch",
+])
+def test_internal_validation_status_cannot_be_sent_as_tool_feedback(status):
+    with pytest.raises(ValueError, match="only safety or execution"):
+        openrouter_teacher.tool_error_content(status, ["internal issue"])
 
 
 def test_teacher_provider_requires_supported_explicit_type():
@@ -727,6 +769,7 @@ def test_openrouter_chat_uses_sdk_without_json_response_format():
     assert calls[0]["tool_choice"] == "auto"
     assert calls[0]["timeout_ms"] == 120000
     assert "response_format" not in calls[0]
+    assert "provider" not in calls[0]
     assert "models" not in calls[0]
 
 
@@ -1093,14 +1136,19 @@ def test_teacher_interaction_requires_pddl_cypher_grounding_when_declared():
             solution="(visited-object O1)",
             grounding=grounding,
         ),
-        [tool_assistant("MATCH (o:Object) RETURN o.nodeSymbol AS object")],
+        [
+            tool_assistant("MATCH (o:Object) RETURN o.nodeSymbol AS object"),
+            final_assistant("(visited-object O1)"),
+        ],
         validator=validator,
         max_tool_calls=1,
     )
 
     assert not decision.accepted
-    assert decision.reason == "max_tool_calls_exceeded"
-    assert decision.payload["last_failure_reason"] == "grounding_mismatch"
+    assert decision.reason == "grounding_mismatch"
+    assert json.loads(decision.payload["messages"][-2]["content"]) == {
+        "ok": True, "rows": [{"object": "O2"}],
+    }
 
 
 def test_teacher_interaction_rejects_invalid_pddl_final_answer():
@@ -1165,12 +1213,142 @@ def test_contract_teacher_accepts_alias_and_retains_recomputable_evidence():
         validator=FakeValidator([{"executable": True, "rows": [{"total": 3}], "error": None}]),
     )
     assert decision.accepted
+    assert decision.record.validation.static_valid is True
+    assert decision.record.validation.static_issues == []
     assert decision.record.validation.result_validation["status"] == "pass"
     assert decision.record.validation.answer_grounded
+    assert decision.record.metadata["cypher_solution"] == "3"
     from cypher_3dsg_agent_distillation.agents.agent_evaluation import recompute_trace_validation
 
     assert recompute_trace_validation(decision.record)["result_validation"]["match"]
     assert "validation_contract" not in json.dumps(client.calls)
+
+
+def scalar_contract_seed(**overrides):
+    return seed_record(
+        validation_contract={
+            "result": {"kind": "scalar", "type": "integer"},
+            "answer": {"formats": ["int"], "empty": "0"},
+        },
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("case", ["mismatch", "shape", "mapping", "grounding", "invalid_gold"])
+def test_internal_validation_failures_receive_raw_rows_even_at_tool_limit(case):
+    seed = scalar_contract_seed()
+    query = "MATCH (o:Object) RETURN count(o) AS count"
+    rows = [{"count": 2}]
+    expected_status = "mismatch"
+    answer = "3"
+    if case == "shape":
+        rows = [{"count": 3, "diagnostic": 42}]
+        expected_status = "invalid_result_shape"
+    elif case == "invalid_gold":
+        seed["solution"] = "not_an_integer"
+        rows = [{"count": 3}]
+        expected_status = "invalid_expected_solution"
+    elif case in {"mapping", "grounding"}:
+        seed = seed_record(
+            task_family="cypher_pddl", output_type="PDDL",
+            solution="(visited-object O1)",
+            grounding={"expected": {"object": ["O1"]}},
+            validation_contract={
+                "result": {"kind": "role_sets", "roles": {"object": {
+                    "type": "node_symbol", "layers": ["Object"], "property": "nodeSymbol",
+                    "origin": {"class": "chair"} if case == "mapping" else {},
+                }}},
+                "goal": {"fact": "visited-object", "arguments": [{"result": "object"}]},
+            },
+        )
+        query = (
+            "MATCH (n:Object) RETURN n.nodeSymbol AS sym "
+            "UNION MATCH (m:Object) RETURN m.nodeSymbol AS sym"
+            if case == "mapping" else "MATCH (o:Object) RETURN o.nodeSymbol AS object"
+        )
+        rows = [{"sym": "O1"}] if case == "mapping" else [{"object": "O2"}]
+        expected_status = "mapping_unresolved" if case == "mapping" else "mismatch"
+        answer = "(visited-object O1)"
+    decision, client = run_interaction(
+        seed, [tool_assistant(query), final_assistant(answer)],
+        validator=FakeValidator([{"executable": True, "rows": rows, "error": None}]),
+        max_tool_calls=1,
+    )
+    assert len(client.calls) == 2
+    assert json.loads(client.calls[1]["messages"][-1]["content"]) == {"ok": True, "rows": rows}
+    assert decision.accepted is False
+    assert decision.reason == expected_status
+    assert decision.record.validation.result_validation["status"] == expected_status
+    assert "error_type" not in json.dumps(client.calls)
+    assert "validation_contract" not in json.dumps(client.calls)
+
+
+def test_tool_feedback_is_identical_when_only_the_expected_answer_changes():
+    requests = []
+    for expected in (3, 4):
+        decision, client = run_interaction(
+            scalar_contract_seed(solution=expected), [tool_assistant(), final_assistant()],
+            max_tool_calls=1,
+        )
+        assert decision.accepted is (expected == 3)
+        requests.append(client.calls)
+    assert requests[0] == requests[1]
+
+
+def test_exploratory_queries_are_ungraded_until_the_final_answer(monkeypatch):
+    from cypher_3dsg_agent_distillation.cypher import result_validation
+
+    original = result_validation.validate_record_result
+    graded_queries = []
+
+    def grade(record, rows, query, columns=None):
+        graded_queries.append(query)
+        return original(record, rows, query, columns)
+
+    monkeypatch.setattr(result_validation, "validate_record_result", grade)
+    queries = [
+        "MATCH (o:Object) RETURN o.class AS class",
+        "MATCH (o:Object) RETURN o.nodeSymbol AS id, o.class AS class",
+        "MATCH (o:Object) RETURN count(o) AS count",
+    ]
+    rows = [[{"class": "chair"}], [{"id": "O1", "class": "chair"}], [{"count": 3}]]
+    decision, client = run_interaction(
+        scalar_contract_seed(), [*(tool_assistant(query) for query in queries), final_assistant()],
+        validator=FakeValidator([{"executable": True, "rows": value} for value in rows]),
+    )
+    assert decision.accepted
+    assert graded_queries == [queries[-1]]
+    for call, expected_rows in zip(client.calls[1:], rows, strict=True):
+        assert json.loads(call["messages"][-1]["content"]) == {"ok": True, "rows": expected_rows}
+    assert decision.record.metadata["successful_tool_call_index"] == 3
+
+
+def test_final_grading_uses_latest_execution_without_selecting_by_gold():
+    decision, client = run_interaction(
+        scalar_contract_seed(), [tool_assistant(), tool_assistant(), final_assistant()],
+        validator=FakeValidator([
+            {"executable": True, "rows": [{"count": 3}]},
+            {"executable": True, "rows": [{"count": 2}]},
+        ]),
+    )
+    assert len(client.calls) == 3
+    assert decision.reason == "mismatch"
+    assert decision.record.validation.rows == [{"count": 2}]
+    assert decision.record.metadata["successful_tool_call_index"] == 2
+
+
+def test_legacy_result_shape_failure_is_internal_after_final_answer(monkeypatch):
+    def decode(*args, **kwargs):
+        raise openrouter_teacher.ResultShapeError("Unsupported internal result shape")
+
+    monkeypatch.setattr(openrouter_teacher, "rows_to_solution_text", decode)
+    decision, client = run_interaction(seed_record(), [tool_assistant(), final_assistant()])
+    assert len(client.calls) == 2
+    assert json.loads(client.calls[-1]["messages"][-1]["content"]) == {
+        "ok": True, "rows": [{"count": 3}],
+    }
+    assert decision.reason == "result_shape_error"
+    assert "Unsupported internal result shape" not in json.dumps(client.calls)
 
 
 @pytest.mark.parametrize(
@@ -1231,3 +1409,51 @@ def test_real_pddl_aliases_use_top_level_contract_without_legacy_field_hints():
         "destination": "finish",
     }
     assert "validation_contract" not in json.dumps(client.calls)
+
+
+def test_teacher_accepts_typed_diagnostic_columns_without_changing_tool_feedback():
+    seed = scalar_contract_seed()
+    query = "MATCH (o:Object) RETURN count(o) AS total, 'diagnostic' AS note"
+    rows = [{"total": 3, "note": "diagnostic"}]
+    decision, client = run_interaction(
+        seed, [tool_assistant(query), final_assistant("3")],
+        validator=FakeValidator([{"executable": True, "rows": rows, "error": None}]),
+        max_tool_calls=1,
+    )
+    assert decision.accepted
+    result = decision.record.validation.result_validation
+    assert result["actual"] == 3
+    assert result["auxiliary_columns"] == ["note"]
+    assert json.loads(client.calls[1]["messages"][-1]["content"]) == {"ok": True, "rows": rows}
+
+
+def test_teacher_accepts_pooled_roles_without_exposing_internal_mappings():
+    contract = {
+        "result": {"kind": "role_sets", "roles": {
+            name: {"type": "node_symbol", "layers": ["Object"], "property": "nodeSymbol",
+                   "origin": {"nodeSymbol": symbol}}
+            for name, symbol in [("first", "O1"), ("second", "O2")]
+        }},
+        "goal": {"operator": "and", "clauses": [
+            {"fact": "visited-object", "arguments": [{"result": "first"}], "multiple": "and"},
+            {"fact": "at-object", "arguments": [{"result": "second"}], "multiple": "and"},
+        ]},
+    }
+    goal = "(and (visited-object O1) (at-object O2))"
+    seed = seed_record(
+        task_family="cypher_pddl", output_type="PDDL", solution=goal,
+        grounding={"expected": {"first": ["O1"], "second": ["O2"]}},
+        validation_contract=contract,
+    )
+    query = "MATCH (o:Object) WHERE o.nodeSymbol IN ['O1','O2'] RETURN o.nodeSymbol AS id"
+    rows = [{"id": "O1"}, {"id": "O2"}]
+    decision, client = run_interaction(
+        seed, [tool_assistant(query), final_assistant(goal)],
+        validator=FakeValidator([{"executable": True, "rows": rows, "error": None}]),
+        max_tool_calls=1,
+    )
+    assert decision.accepted
+    assert decision.record.validation.result_validation["role_rows"] == {
+        "first": [0], "second": [1],
+    }
+    assert json.loads(client.calls[1]["messages"][-1]["content"]) == {"ok": True, "rows": rows}

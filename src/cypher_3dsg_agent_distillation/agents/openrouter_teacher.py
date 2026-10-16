@@ -53,6 +53,12 @@ from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
     add_synthetic_reasoning,
     sentence_cap,
 )
+from cypher_3dsg_agent_distillation.agents.teacher_optimizations import (
+    configured_teacher_optimizations,
+    recover_rejected_earlier_retrieval,
+    repair_rejected_invalid_answer_trace,
+    teacher_request_messages,
+)
 from cypher_3dsg_agent_distillation.agents.teacher_pilot import (
     TeacherRunJournal,
     attempt_payload,
@@ -108,6 +114,7 @@ from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
 DEFAULT_MAX_TOOL_CALLS = 3
 TeacherProvider = Literal["openrouter", "synthetic"]
 SUPPORTED_TEACHER_PROVIDERS: tuple[str, ...] = ("openrouter", "synthetic")
+TOOL_FEEDBACK_POLICY = "execution_only_v1"
 TOOL_REPAIR_MESSAGE = "The query could not be executed safely. Revise the Cypher query."
 
 
@@ -120,7 +127,7 @@ class TraceDecision:
 
 
 class TeacherBudgetExceeded(RuntimeError):
-    """Stop before another request would exceed the reserved API budget."""
+    """Stop when billed cost and the next-request estimate exceed the API budget."""
 
 
 class OpenRouterTeacherClient:
@@ -134,7 +141,6 @@ class OpenRouterTeacherClient:
         max_tokens: int = 2048,
         sdk_client: Any | None = None,
         reasoning: dict[str, Any] | None = None,
-        provider: dict[str, Any] | None = None,
         max_cost_usd: float | None = None,
         on_response: Callable[[dict[str, Any]], None] | None = None,
         request_sender: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
@@ -157,7 +163,6 @@ class OpenRouterTeacherClient:
         ):
             raise ValueError("Set reasoning.effort or reasoning.max_tokens, not both.")
         self.include_reasoning = self.reasoning.get("enabled", False)
-        self.provider = provider
         self.max_cost_usd = max_cost_usd
         self.on_response = on_response
         self.request_sender = request_sender
@@ -254,17 +259,19 @@ class OpenRouterTeacherClient:
             return
         if any(item.get("cost_usd") is None for item in self.requests):
             raise TeacherBudgetExceeded("Cannot continue: a previous request has unknown cost.")
-        limits = (self.provider or {}).get("max_price") or {}
-        if "prompt" not in limits or "completion" not in limits:
-            raise ValueError("A spend limit requires provider.max_price.prompt and completion "
-                             "in USD per million tokens.")
-        if any(not math.isfinite(float(limits[key])) or float(limits[key]) < 0
-               for key in ("prompt", "completion")):
-            raise ValueError("Provider price ceilings must be finite nonnegative values.")
+        pricing = self.model_info.get("pricing") or {}
+        try:
+            prices = {key: float(pricing[key]) for key in ("prompt", "completion")}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "A spend limit requires catalog prompt and completion pricing."
+            ) from exc
+        if any(not math.isfinite(price) or price < 0 for price in prices.values()):
+            raise ValueError("Catalog prices must be finite nonnegative values.")
         # Byte length conservatively bounds tokens for these text-only teacher inputs.
+        # Catalog prices estimate cost locally; they do not constrain provider routing.
         prompt_bytes = len(json.dumps(request, ensure_ascii=False).encode("utf-8"))
-        reserved = (prompt_bytes * float(limits["prompt"])
-                    + self.max_tokens * float(limits["completion"])) / 1_000_000
+        reserved = prompt_bytes * prices["prompt"] + self.max_tokens * prices["completion"]
         spent = sum(float(item["cost_usd"]) for item in self.requests)
         if spent + reserved > self.max_cost_usd:
             raise TeacherBudgetExceeded(
@@ -303,14 +310,14 @@ class OpenRouterTeacherClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.max_cost_usd is not None and not self.model_info:
+            self.preflight()
         request = {
             "model": self.model, "messages": sdk_outbound_messages(messages),
             "tools": tools, "tool_choice": tool_choice, "parallel_tool_calls": False,
             "temperature": self.temperature, "max_tokens": self.max_tokens, "stream": False,
         }
         request["reasoning"] = self.api_reasoning()
-        if self.provider is not None:
-            request["provider"] = self.provider
         if self.model_info and "parallel_tool_calls" not in (
             self.model_info.get("supported_parameters") or []
         ):
@@ -479,6 +486,8 @@ def answer_inner_text(content: str | None) -> str | None:
 
 
 def tool_error_content(error_type: str, issues: list[str]) -> str:
+    if error_type not in {"static_issues", "execution_failed"}:
+        raise ValueError("Tool feedback must describe only safety or execution failures.")
     return json.dumps(
         {
             "ok": False,
@@ -669,6 +678,7 @@ def configured_trace_decision(seed, record, candidate, execution):
     grounded = final_grounding_check(seed, final, outcome)
     accepted = outcome["status"] == "pass" and answer["match"] is True and grounded["match"] is True
     record.cypher_solution = outcome.get("solution")
+    record.metadata["cypher_solution"] = record.cypher_solution
     record.validation = TraceValidation(
         **{
             **record.validation.model_dump(),
@@ -697,7 +707,11 @@ def configured_trace_decision(seed, record, candidate, execution):
         else "final_answer_cypher_mismatch"
     )
     return TraceDecision(
-        accepted, record, reason, {**candidate, "validation": record.validation.model_dump()}
+        accepted, record, reason, {
+            **candidate, "cypher": query, "cypher_solution": record.cypher_solution,
+            "final_answer": final_answer_from_messages(candidate.get("messages") or []),
+            "validation": record.validation.model_dump(),
+        }
     )
 
 
@@ -1018,12 +1032,13 @@ def run_teacher_interaction(
     policy: dict[str, Any] | None,
     max_tool_calls: int,
     static_only: bool,
+    tuning_prompt: str = "",
 ) -> TraceDecision:
     """Keep provider replay intact internally; apply inclusion when saving the trace."""
     decision = _run_teacher_interaction(
         without_controlled_repair(seed), profile=profile, tool_interface=tool_interface,
         client=client, teacher_model=teacher_model, validator=validator, policy=policy,
-        max_tool_calls=max_tool_calls, static_only=static_only,
+        max_tool_calls=max_tool_calls, static_only=static_only, tuning_prompt=tuning_prompt,
     )
     if getattr(client, "include_reasoning", True):
         return decision
@@ -1049,6 +1064,7 @@ def _run_teacher_interaction(
     policy: dict[str, Any] | None,
     max_tool_calls: int,
     static_only: bool,
+    tuning_prompt: str = "",
 ) -> TraceDecision:
     if max_tool_calls < 1:
         raise ValueError("max_tool_calls must be >= 1.")
@@ -1061,14 +1077,14 @@ def _run_teacher_interaction(
     expected_refusal = is_safe_refusal(seed_cypher)
     tool_call_count = 0
     successful_tool_call_index: int | None = None
-    final_successful_cypher: str | None = None
-    final_validation: dict[str, Any] | None = None
+    last_executed_cypher: str | None = None
+    last_execution: dict[str, Any] | None = None
     cypher_solution: str | None = None
     last_failure_reason: str | None = None
 
     while True:
         assistant = client.chat(
-            messages,
+            teacher_request_messages(messages, tuning_prompt),
             tools=[run_cypher_tool_schema()],
             tool_choice="auto",
         )
@@ -1111,6 +1127,8 @@ def _run_teacher_interaction(
         if tool_calls:
             if len(tool_calls) > 1:
                 return rejected("multiple_tool_calls", messages=messages)
+            if tool_call_count >= max_tool_calls:
+                return rejected("max_tool_calls_exceeded", messages=messages)
             tool_call_count += 1
             try:
                 cypher, tool_call_id, tool_call = extract_single_cypher_tool_call(assistant)
@@ -1175,6 +1193,7 @@ def _run_teacher_interaction(
                 return rejected("execution_failed", messages=messages, cypher=cypher)
 
             validation = validator.validate(cypher, execute=True)
+            validation = {**validation, "static_valid": True, "static_issues": []}
             if not validation.get("executable"):
                 last_failure_reason = "execution_failed"
                 if tool_call_count >= max_tool_calls:
@@ -1196,113 +1215,19 @@ def _run_teacher_interaction(
                 )
                 continue
 
-            if seed.get("validation_contract"):
-                from cypher_3dsg_agent_distillation.cypher.result_validation import (
-                    validate_record_result,
-                )
-
-                outcome = validate_record_result(
-                    seed, validation.get("rows", []), cypher, validation.get("columns")
-                )
-                validation = {**validation, "result_validation": outcome}
-                if outcome["status"] != "pass":
-                    if (
-                        outcome["status"] in {"invalid_expected_solution", "not_checked"}
-                        or tool_call_count >= max_tool_calls
-                    ):
-                        return rejected(
-                            outcome["status"],
-                            messages=messages,
-                            cypher=cypher,
-                            validation=validation,
-                            cypher_solution=outcome.get("solution"),
-                        )
-                    last_failure_reason = outcome["status"]
-                    messages.append(
-                        build_tool_result_message(
-                            tool_call_id,
-                            tool_error_content(
-                                outcome["status"],
-                                outcome.get("issues")
-                                or ["Returned result does not satisfy the task contract."],
-                            ),
-                        )
-                    )
-                    continue
-                final_successful_cypher = cypher
-                final_validation = validation
-                successful_tool_call_index = tool_call_count
-                cypher_solution = outcome["solution"]
-                messages.append(
-                    build_tool_result_message(
-                        tool_call_id, tool_success_content(validation.get("rows", []))
-                    )
-                )
-                continue
-
-            final_successful_cypher = cypher
-            final_validation = validation
+            # Execution success is the only success signal returned to the teacher.
+            # Do not decode, compare with gold, or choose evidence by correctness here.
+            last_executed_cypher = cypher
+            last_execution = validation
             successful_tool_call_index = tool_call_count
-            if task_family == "cypher_qa":
-                try:
-                    cypher_solution = rows_to_solution_text(
-                        {**seed, "_validation_query": cypher}, validation.get("rows", [])
-                    )
-                except ResultShapeError as exc:
-                    last_failure_reason = "result_shape_error"
-                    validation = {**validation, "result_shape_error": str(exc)}
-                    if tool_call_count >= max_tool_calls:
-                        return rejected(
-                            "max_tool_calls_exceeded",
-                            messages=messages,
-                            cypher=cypher,
-                            validation=validation,
-                            extra={"last_failure_reason": last_failure_reason},
-                        )
-                    messages.append(
-                        build_tool_result_message(
-                            tool_call_id,
-                            tool_error_content("result_shape_error", [str(exc)]),
-                        )
-                    )
-                    continue
-            elif task_family == "cypher_pddl":
-                grounding_match, cypher_solution, _actual_grounding = validate_grounding_rows(
-                    validation.get("rows", []), seed.get("grounding"), query=cypher
-                )
-                if not grounding_match:
-                    last_failure_reason = "grounding_mismatch"
-                    validation = {**validation, "grounding_mismatch": True}
-                    if tool_call_count >= max_tool_calls:
-                        return rejected(
-                            "max_tool_calls_exceeded",
-                            messages=messages,
-                            cypher=cypher,
-                            validation=validation_with_solution_checks(
-                                validation, cypher_solution_match=False
-                            ),
-                            cypher_solution=cypher_solution,
-                            extra={"last_failure_reason": last_failure_reason},
-                        )
-                    messages.append(
-                        build_tool_result_message(
-                            tool_call_id,
-                            tool_error_content(
-                                "grounding_mismatch",
-                                ["The query did not retrieve the required grounded entities."],
-                            ),
-                        )
-                    )
-                    continue
             messages.append(
                 build_tool_result_message(
-                    tool_call_id,
-                    tool_success_content(validation.get("rows", [])),
+                    tool_call_id, tool_success_content(validation.get("rows", []))
                 )
             )
             continue
 
-        if final_successful_cypher is None:
+        if last_executed_cypher is None:
             if last_failure_reason:
                 return rejected(last_failure_reason, messages=messages, final_answer=final_answer)
             return rejected("missing_required_tool", messages=messages, final_answer=final_answer)
@@ -1317,16 +1242,45 @@ def _run_teacher_interaction(
                 seed,
                 messages=messages,
                 teacher_model=teacher_model,
-                cypher=final_successful_cypher,
-                validation=final_validation or {},
+                cypher=last_executed_cypher,
+                validation=last_execution or {},
                 max_tool_calls=max_tool_calls,
                 tool_call_count=tool_call_count,
                 successful_tool_call_index=successful_tool_call_index,
                 cypher_solution=cypher_solution,
             )
             return configured_trace_decision(
-                seed, record, {"messages": messages}, final_validation or {}
+                seed, record, {"messages": messages}, last_execution or {}
             )
+
+        # Legacy seeds without a validation contract are also graded only after
+        # the final answer; their decoding/grounding errors never become tool feedback.
+        if task_family == "cypher_qa":
+            try:
+                cypher_solution = rows_to_solution_text(
+                    {**seed, "_validation_query": last_executed_cypher},
+                    (last_execution or {}).get("rows", []),
+                )
+            except ResultShapeError as exc:
+                return rejected(
+                    "result_shape_error", messages=messages, cypher=last_executed_cypher,
+                    validation={**(last_execution or {}), "result_shape_error": str(exc)},
+                    final_answer=final_answer,
+                )
+        elif task_family == "cypher_pddl":
+            grounding_match, cypher_solution, _actual_grounding = validate_grounding_rows(
+                (last_execution or {}).get("rows", []), seed.get("grounding"),
+                query=last_executed_cypher,
+            )
+            if not grounding_match:
+                return rejected(
+                    "grounding_mismatch", messages=messages, cypher=last_executed_cypher,
+                    validation=validation_with_solution_checks(
+                        {**(last_execution or {}), "grounding_mismatch": True},
+                        cypher_solution_match=False,
+                    ),
+                    cypher_solution=cypher_solution, final_answer=final_answer,
+                )
 
         cypher_solution_match: bool | None = None
         final_answer_cypher_match: bool | None = None
@@ -1339,14 +1293,14 @@ def _run_teacher_interaction(
                 solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
             )
             cypher_checked_validation = validation_with_solution_checks(
-                final_validation or {},
+                last_execution or {},
                 cypher_solution_match=cypher_solution_match,
             )
             if not valid_cypher_format:
                 return rejected(
                     "invalid_answer_format",
                     messages=messages,
-                    cypher=final_successful_cypher,
+                    cypher=last_executed_cypher,
                     validation=cypher_checked_validation,
                     cypher_solution=cypher_solution,
                     final_answer=final_answer,
@@ -1355,7 +1309,7 @@ def _run_teacher_interaction(
                 return rejected(
                     "solution_mismatch",
                     messages=messages,
-                    cypher=final_successful_cypher,
+                    cypher=last_executed_cypher,
                     validation=cypher_checked_validation,
                     cypher_solution=cypher_solution,
                     final_answer=final_answer,
@@ -1370,9 +1324,9 @@ def _run_teacher_interaction(
                 return rejected(
                     "invalid_answer_format",
                     messages=messages,
-                    cypher=final_successful_cypher,
+                    cypher=last_executed_cypher,
                     validation=validation_with_solution_checks(
-                        final_validation or {},
+                        last_execution or {},
                         cypher_solution_match=cypher_solution_match,
                         final_answer_cypher_match=final_answer_cypher_match,
                     ),
@@ -1380,8 +1334,7 @@ def _run_teacher_interaction(
                     final_answer=final_answer,
                 )
         elif task_family == "cypher_pddl":
-            # The successful tool call was already checked against the seed's
-            # grounding contract before its rows were added to the conversation.
+            # Grounding was checked internally after the teacher's final answer.
             cypher_solution_match = True
             final_answer_cypher_match = None
         valid_final_format, final_matches = answer_matches_with_heracles(
@@ -1392,7 +1345,7 @@ def _run_teacher_interaction(
             solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
         )
         checked_validation = validation_with_solution_checks(
-            final_validation or {},
+            last_execution or {},
             cypher_solution_match=cypher_solution_match,
             final_answer_match=final_matches,
             final_answer_cypher_match=final_answer_cypher_match,
@@ -1409,7 +1362,7 @@ def _run_teacher_interaction(
             return rejected(
                 "invalid_answer_format",
                 messages=messages,
-                cypher=final_successful_cypher,
+                cypher=last_executed_cypher,
                 validation=checked_validation,
                 cypher_solution=cypher_solution,
                 final_answer=final_answer,
@@ -1418,7 +1371,7 @@ def _run_teacher_interaction(
             return rejected(
                 "final_answer_mismatch",
                 messages=messages,
-                cypher=final_successful_cypher,
+                cypher=last_executed_cypher,
                 validation=checked_validation,
                 cypher_solution=cypher_solution,
                 final_answer=final_answer,
@@ -1427,7 +1380,7 @@ def _run_teacher_interaction(
             return rejected(
                 "final_answer_cypher_mismatch",
                 messages=messages,
-                cypher=final_successful_cypher,
+                cypher=last_executed_cypher,
                 validation=checked_validation,
                 cypher_solution=cypher_solution,
                 final_answer=final_answer,
@@ -1437,7 +1390,7 @@ def _run_teacher_interaction(
             seed,
             messages=messages,
             teacher_model=teacher_model,
-            cypher=final_successful_cypher,
+            cypher=last_executed_cypher,
             validation={
                 **checked_validation,
                 "static_valid": True,
@@ -1898,6 +1851,8 @@ def debug_trace_record(
     }
     if not decision.accepted:
         debug_record["reason"] = decision.reason
+    if metadata.get("earlier_retrieval_recovered"):
+        debug_record["metadata"] = metadata
     return debug_record
 
 
@@ -1938,11 +1893,110 @@ def prepare_synthetic_reasoning(population, question_sets, teacher_config):
     return semantics_paths
 
 
+def optimize_teacher_attempts(
+    journal: TeacherRunJournal,
+    *,
+    seeds: list[dict[str, Any]],
+    optimizations: dict[str, Any],
+    tokenizer: Any,
+    max_length: int,
+    teacher_model: str,
+) -> None:
+    """Finalize rejected attempts before publishing generation outputs and reports."""
+    if not any(optimizations.get(name) for name in (
+        "repair_invalid_final_answers", "recover_earlier_retrievals",
+    )):
+        return
+    rejected = sum(not item["accepted"] for item in journal.attempts)
+    if not rejected:
+        return
+    seeds_by_uid = {seed["uid"]: seed for seed in seeds}
+    updated = []
+    repaired_count = sum(
+        (item.get("optimization") or {}).get("kind") == "repair_invalid_final_answers"
+        for item in journal.attempts
+    )
+    recovered_count = sum(
+        (item.get("optimization") or {}).get("kind") == "recover_earlier_retrievals"
+        for item in journal.attempts
+    )
+    changed = False
+    with Progress(
+        TextColumn("[progress.description]{task.description}"), BarColumn(),
+        MofNCompleteColumn(), TimeElapsedColumn(), TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task(
+            f"teacher optimizations repaired={repaired_count} recovered={recovered_count}",
+            total=rejected,
+        )
+        for item in journal.attempts:
+            if item["accepted"]:
+                updated.append(item)
+                continue
+            seed = without_controlled_repair(seeds_by_uid[item["seed_uid"]])
+            original = item["debug_record"]
+            source = {
+                **seed,
+                **original,
+                "teacher_model": teacher_model,
+                "metadata": {
+                    **(seed.get("metadata") or {}),
+                    "seed_gold_cypher": seed.get("cypher") or seed.get("gold_cypher"),
+                    **(original.get("metadata") or {}),
+                },
+            }
+            record = None
+            if optimizations.get("recover_earlier_retrievals"):
+                record = recover_rejected_earlier_retrieval(source)
+            if record is not None:
+                optimization = {
+                    "kind": "recover_earlier_retrievals",
+                    "original_reason": item["reason"],
+                    "grounding_tool_call_index": record.metadata["grounding_tool_call_index"],
+                    "diagnostic_tool_call_indices": record.metadata["diagnostic_tool_call_indices"],
+                    "diagnostic_tool_call_reasons": record.metadata["diagnostic_tool_call_reasons"],
+                }
+                reason = "accepted_recovered_earlier_retrieval"
+                recovered_count += 1
+            elif optimizations.get("repair_invalid_final_answers"):
+                record = repair_rejected_invalid_answer_trace(source)
+                if record is not None:
+                    optimization = {
+                        "kind": "repair_invalid_final_answers",
+                        "original_reason": item["reason"],
+                        "original_final_answer": record.metadata["original_final_answer"],
+                    }
+                    reason = "accepted_repaired_invalid_answer_format"
+                    repaired_count += 1
+            if record is not None:
+                record_json = record.model_dump(by_alias=True, exclude_none=True)
+                decision = TraceDecision(
+                    True, record, reason,
+                    {"messages": record_json["messages"], "optimization": optimization},
+                )
+                item = attempt_payload(
+                    seed, decision, attempt_id=item["attempt_id"], tokenizer=tokenizer,
+                    max_length=max_length,
+                )
+                item["debug_record"] = debug_trace_record(seed, decision, record_json=record_json)
+                item["optimization"] = {**optimization, "raw_rejection": original}
+                changed = True
+            updated.append(item)
+            progress.update(
+                task, advance=1, description=(
+                    f"teacher optimizations repaired={repaired_count} recovered={recovered_count}"
+                ),
+            )
+    if changed:
+        journal.replace_attempts(updated)
+
+
 def generate_command(args: argparse.Namespace) -> None:
     configure_model_library_output()
     suppress_neo4j_notification_logs()
     teacher_config = load_yaml(args.teacher_config)
     provider = configured_teacher_provider(teacher_config)
+    teacher_config["optimizations"] = configured_teacher_optimizations(teacher_config)
     if provider != "synthetic":
         teacher_config.pop("inject_controlled_repair", None)
     if provider == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
@@ -1986,6 +2040,11 @@ def generate_command(args: argparse.Namespace) -> None:
         previous = load_yaml(data_config["teacher_metadata_path"])
         if previous.get("teacher_name") != teacher_name:
             raise ValueError("The resumed dataset belongs to a different teacher.")
+        if (previous.get("effective") or {}).get("tool_feedback_policy") != TOOL_FEEDBACK_POLICY:
+            raise ValueError(
+                "The saved run uses a different tool-feedback policy. "
+                "Start a fresh generation run instead of resuming."
+            )
         data_config["teacher_name"] = teacher_name
     else:
         data_config = prepare_teacher_dataset(data_config, teacher_name=teacher_name)
@@ -2038,6 +2097,7 @@ def generate_command(args: argparse.Namespace) -> None:
     identity = mapping_fingerprint(
         {
             "validation": validation_identity(data_config),
+            "tool_feedback_policy": TOOL_FEEDBACK_POLICY,
             "teacher": effective_teacher_config,
             "student": student_config["model"],
             "training_max_length": training_max_length,
@@ -2082,6 +2142,7 @@ def generate_command(args: argparse.Namespace) -> None:
                 "provider": provider,
                 "model": model,
                 "teacher_config": effective_teacher_config,
+                "tool_feedback_policy": TOOL_FEEDBACK_POLICY,
                 "arguments": serializable_arguments(args),
             },
             "input_seed_records": file_fingerprint(
@@ -2099,7 +2160,6 @@ def generate_command(args: argparse.Namespace) -> None:
             temperature=float(teacher_config.get("temperature", 0.2)),
             max_tokens=int(teacher_config.get("max_tokens", 2048)),
             reasoning=teacher_config.get("reasoning"),
-            provider=teacher_config.get("routing"),
             max_cost_usd=(getattr(args, "max_cost_usd", None)
                           if getattr(args, "max_cost_usd", None) is not None
                           else teacher_config.get("max_cost_usd")),
@@ -2113,8 +2173,9 @@ def generate_command(args: argparse.Namespace) -> None:
             client.requests = list(journal.requests)
             if resume:
                 client.model_info = previous.get("model_catalog_snapshot") or {}
-        if args.preflight and provider == "openrouter":
-            assert client is not None
+        if client is not None and (
+            args.preflight or (client.max_cost_usd is not None and not client.model_info)
+        ):
             client.preflight()
             metadata = load_yaml(data_config["teacher_metadata_path"])
             metadata["model_catalog_snapshot"] = client.model_info
@@ -2216,6 +2277,7 @@ def generate_command(args: argparse.Namespace) -> None:
                                     client=client, teacher_model=model, validator=validator,
                                     policy=policy, max_tool_calls=max_tool_calls,
                                     static_only=args.static_only,
+                                    tuning_prompt=teacher_config["optimizations"]["tuning_prompt"],
                                 )
                             except TeacherBudgetExceeded as exc:
                                 stop_reason = str(exc)
@@ -2265,11 +2327,20 @@ def generate_command(args: argparse.Namespace) -> None:
                                 len(rejected_debug_records),
                             ),
                         )
+            optimize_teacher_attempts(
+                journal, seeds=seeds, optimizations=teacher_config["optimizations"],
+                tokenizer=tokenizer, max_length=training_max_length,
+                teacher_model=str(model or provider),
+            )
         finally:
             if validator is not None:
                 validator.close()
             report = pilot_report(
                 population, journal.attempts, journal.requests, traces_per_seed=traces_per_seed,
+            )
+            report["optimizations"]["enabled"] = bool(
+                teacher_config["optimizations"]["repair_invalid_final_answers"]
+                or teacher_config["optimizations"]["recover_earlier_retrievals"]
             )
             report["pending_request"] = journal.pending_path.exists()
             if report["pending_request"]:
@@ -2282,6 +2353,13 @@ def generate_command(args: argparse.Namespace) -> None:
                 json.dumps(report["matched_retained_uids"], indent=2) + "\n", encoding="utf-8",
             )
 
+    teacher_records = [item["record"] for item in journal.attempts if item["accepted"]]
+    accepted_debug_records = [
+        item["debug_record"] for item in journal.attempts if item["accepted"]
+    ]
+    rejected_debug_records = [
+        item["debug_record"] for item in journal.attempts if not item["accepted"]
+    ]
     teacher_traces_path = data_config.get("teacher_traces_jsonl_path")
     ensure_parent(teacher_traces_path).write_text(
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in teacher_records),
@@ -2328,12 +2406,17 @@ def generate_command(args: argparse.Namespace) -> None:
                 "budget_limited" if stop_reason else "pilot_complete" if pilot else "complete"
             ),
             "stop_reason": stop_reason,
+            "optimizations": report["optimizations"],
             "counts": {
                 "seeds": len(seeds),
                 "attempts": len(journal.attempts),
                 "planned_attempts": total_attempts,
                 "accepted": len(teacher_records),
                 "rejected": len(rejected_debug_records),
+                "accepted_before_optimizations": report["optimizations"]["accepted_before"],
+                "rejected_before_optimizations": report["optimizations"]["rejected_before"],
+                "repaired": report["optimizations"]["repaired"],
+                "recovered": report["optimizations"]["recovered"],
                 "scene_database_reloads": scene_database_reloads,
             },
             "outputs": {
@@ -2377,6 +2460,9 @@ def generate_command(args: argparse.Namespace) -> None:
             ("Dataset version", data_config["dataset_version"]),
             ("Teacher", data_config["teacher_name"]),
             ("Seeds", len(seeds)),
+            ("Accepted before optimizations", report["optimizations"]["accepted_before"]),
+            ("Final-answer repairs", report["optimizations"]["repaired"]),
+            ("Earlier retrievals recovered", report["optimizations"]["recovered"]),
             ("Accepted", len(teacher_records)),
             ("Rejected", len(rejected_debug_records)),
             ("Acceptance rate", f"{acceptance_rate:.1%}"),
@@ -2433,7 +2519,7 @@ def preflight_command(args: argparse.Namespace) -> None:
         return
     with OpenRouterTeacherClient(
         model=args.teacher_model or config.get("model", DEFAULT_TEACHER_MODEL),
-        reasoning=config.get("reasoning"), provider=config.get("routing"),
+        reasoning=config.get("reasoning"),
         timeout=int(config.get("timeout", 120)),
     ) as client:
         client.preflight()

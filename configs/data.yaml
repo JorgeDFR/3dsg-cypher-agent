@@ -14,7 +14,6 @@ question_sets:
     experiment_profile_path: cypher_pddl_template.yaml
     question_templates_path: cypher_pddl_3dsg.yaml
 max_per_task_type: null
-repair_invalid_final_answers: false
 
 split:
   train_size: 0.8

@@ -533,6 +533,9 @@ templates:
       kind: scalar
       type: node_symbol
       property: nodeSymbol
+      origin:
+        class:
+          binding: target_class
       layers:
       - Object
   farthest_object_of_class:
