@@ -25,7 +25,8 @@ and SLDP/PDDL answer validation. A recursive clone fetches each dependency once.
 - All top-level and nested submodules initialized
 
 Prepare the submodules, virtual environment, and development dependencies using
-the centralized [Native setup](../../docs/setup.md). The benchmark launcher uses
+the centralized [Native host setup](../../docs/native_setup.md). The benchmark
+launcher uses
 that environment for its small host-side manifest adapter.
 
 ## Prepare models

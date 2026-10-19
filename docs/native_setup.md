@@ -1,7 +1,7 @@
-# Native Setup
+# Native Host Setup
 
 This guide prepares a Linux host to run the project without the development
-Docker stack. It is the source of truth for native system packages, Python,
+Docker stack. It covers system packages, Python,
 PyTorch, Neo4j, llama.cpp, Ollama, and environment variables.
 
 ## What to install
@@ -45,12 +45,8 @@ Use equivalent packages on another Linux distribution.
 
 ## 2. Clone the repository and submodules
 
-For a new checkout:
-
-```bash
-git clone --recursive https://github.com/JorgeDFR/3dsg-cypher-agent.git
-cd 3dsg-cypher-agent
-```
+Follow the root [Quick start](../README.md#quick-start) to clone the repository
+with its submodules. Run the remaining commands from the project root.
 
 For an existing checkout:
 
@@ -58,20 +54,12 @@ For an existing checkout:
 git submodule update --init --recursive
 ```
 
-The recursive update is required because the pinned Heracles Benchmark
-submodule contains the Heracles and Heracles Agents revisions used by the main
-project.
-
-If a nested submodule uses an SSH URL and the host has no GitHub SSH access,
-initialize it through HTTPS without changing the recorded URL:
+If a nested submodule uses SSH and the host has no GitHub SSH access:
 
 ```bash
 git -c url.https://github.com/.insteadOf=git@github.com: \
   submodule update --init --recursive
 ```
-
-Detached HEADs inside submodules are expected. They preserve the revisions
-recorded by their parent repositories.
 
 ## 3. Create the Python environment
 
@@ -150,18 +138,8 @@ export OPENROUTER_API_KEY=your-key
 Add the variable to a private shell environment file if it must persist across
 sessions. Do not add credentials to tracked configuration files.
 
-Verify the configured teacher's availability before generating traces:
-
-```bash
-python scripts/agents/generate_traces.py preflight \
-  --teacher-config configs/teachers/teacher_deepseek_v4_1_flash.yaml
-```
-
-The preflight checks catalog declarations without generating tokens. To verify
-readable reasoning and answer correctness, run `generate_traces.py check` with one
-dataset conversation and live Neo4j. See
-[teacher capability checks](reasoning_traces.md#cheap-teacher-capability-checks)
-for request/budget limits, formatted metrics, and generated-answer inspection.
+Use [Teacher checks and pilots](teacher_checks.md) to verify a remote
+teacher before generating data.
 
 ## 7. Install and configure Neo4j
 

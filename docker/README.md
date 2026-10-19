@@ -60,11 +60,24 @@ docker/stack.sh demo-train
 docker/stack.sh demo-validate
 ```
 
-These commands independently prepare a new dataset, train on existing splits,
-and validate the selected student model plus baseline. Validation reuses matching
-completed reports. Database-backed stages load each configured scene when needed.
-For their stages and overrides, see
-[Student training](../docs/training.md#automated-training-workflow).
+| Command | Stages |
+| --- | --- |
+| `demo-dataset` | Extract scene values, generate questions, prepare seeds, generate teacher traces, and create splits |
+| `demo-train` | Train a new student on existing splits |
+| `demo-validate` | Evaluate held-out loss, test/challenge generation for student and baseline, and generate the HTML report |
+
+Run each command independently. Validation reuses matching completed reports.
+Database-backed stages load each configured scene when needed.
+
+Override the workflow inputs with environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `DEMO_DATA_CONFIG` | `configs/data.yaml` |
+| `DEMO_TEACHER_CONFIG` | `configs/teachers/teacher_synthetic.yaml` |
+| `DEMO_STUDENT_CONFIG` | `configs/students/student_qwen3.5_4b.yaml` |
+
+Run `docker/stack.sh help` for additional stage-specific overrides.
 
 ### Export and deploy
 

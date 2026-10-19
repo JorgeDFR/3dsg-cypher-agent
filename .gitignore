@@ -21,4 +21,4 @@ outputs/lora/*
 !outputs/lora/.gitkeep
 
 TODO.md
-temp/
+AGENTS.md

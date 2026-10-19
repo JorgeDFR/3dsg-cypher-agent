@@ -41,15 +41,7 @@ data configuration's `scenes` list explicitly pairs `scene_id` with
 Teacher generation never replaces an existing trace set. If `traces/` or
 `splits/` already contains artifacts (including a partial teacher run), it creates
 a new dataset version, copies prepared questions, seed records, scene values,
-and other input files, and generates fresh traces there. It does not copy
-splits or validation reports. The summary prints the new version. Pass that
-version to `prepare_dataset.py split` when using a pinned data configuration.
-The source dataset and models trained from it remain unchanged.
-
-Each dataset uses flat `traces/` and `reports/` directories with current teacher
-metadata. Record readers require current schemas and top-level validation
-contracts. Regenerate unsupported datasets and models into new version directories;
-existing artifact files are never converted automatically.
+and other input files, and generates fresh traces there.
 
 ## Inspect and select versions
 

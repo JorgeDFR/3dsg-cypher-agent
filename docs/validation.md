@@ -1,185 +1,123 @@
 # Validation
 
-Validation operates at three levels: dataset trace checks, student eval-loss,
-and end-to-end raw generation. Raw generation can use either Transformers or a
-GGUF model registered in Ollama.
+Check stored traces, measure held-out loss, or evaluate complete tool
+interactions. Commands use the [Docker stack](../docker/README.md).
 
-Cypher-result and PDDL grounding checks use typed, versioned contracts, including
-alias-independent decoding, explicit unresolved outcomes, and separate final-answer
-grounding checks. See [Cypher and grounding validation](cypher_grounding_validation.md)
-for configuration, semantic evidence, and current saved-output rescoring.
+## Choose a validation mode
 
-Use the IDs printed by artifact generation wherever an example shows
-`DATASET_VERSION` or `MODEL_VERSION`.
+| Target | Command or mode | Purpose |
+| --- | --- | --- |
+| Teacher traces | `evaluate_traces.py` | Check stored calls and answers |
+| Fine-tuned model | `eval-loss` / Transformers | Measure held-out loss and perplexity |
+| Base or fine-tuned model | `raw-generation` / Transformers | Test complete tool interactions |
+| Exported GGUF | `raw-generation` / Ollama | Check deployed behavior |
+| External model sweep | [Heracles Benchmark](../examples/herables_benchmark/README.md) | Use benchmark-owned scenes, questions, and metrics |
+
+Query results, answer formats, and PDDL goals follow
+[Validation contracts](validation_contracts.md). For offline regrading, see
+[Dataset audits](dataset_audits.md).
 
 ## Automated validation and reuse
 
-Run `docker/stack.sh demo-validate` after training. It evaluates loss, validates
-test/challenge generation for both the student model and baseline, and generates the
-HTML report. It does not create data or train a student model.
+Run `docker/stack.sh demo-validate` after training. It evaluates the student and
+baseline and generates the HTML report. See
+[Docker automated workflows](../docker/README.md#automated-workflows).
 
-`evaluate_student.py` automatically skips a completed report when the dataset,
-split contents, model, runtime, and evaluation settings match. Baseline reuse
-is independent of fine-tuned model versions and training hyperparameters. Ollama
-validation also checks the registered model digest. Changed inputs, incomplete
-reports, or unreadable reports trigger evaluation again. Pass `--force` to
-explicitly repeat a validation. Reports without a current validation fingerprint
-cannot be reused. For remotely hosted HF
-models, reuse identifies the configured model/revision. Use `--force` if its
-upstream contents change under the same identifier.
+Completed student reports are reused when data, split contents, model, runtime,
+and evaluation settings match. Baseline reuse is independent of the trained
+model version. Ollama reuse also checks the registered model digest.
 
-## Validation matrix
-
-| Target | Mode/runtime | Main question answered |
-| --- | --- | --- |
-| Teacher traces | `evaluate_traces.py` | Are stored tool calls and answers valid? |
-| Student model | `eval-loss` / Transformers | How well does the model fit held-out rendered traces? |
-| Base or fine-tuned model | `raw-generation` / Transformers | Can the model complete the full tool interaction? |
-| Exported GGUF | `raw-generation` / Ollama | Does the deployed artifact preserve behavior? |
-| External model sweep | Heracles Benchmark | How does the model perform on benchmark-owned questions and metrics? |
+Changed inputs or incomplete reports trigger evaluation again. Use `--force`
+to repeat a completed run, including when a remote model changes under the
+same identifier or revision.
 
 ## Trace validation
 
-Evaluate stored traces from one split:
-
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_traces.py \
-  --data-config configs/data.yaml \
-  --split train
+  --data-config configs/data.yaml --split train
 ```
 
-Trace checks cover static safety, Cypher execution, output parsing, QA answer
-matching, and PDDL grounding and goal validity where applicable.
+Checks cover query safety, execution, answer matching, and PDDL grounding where
+applicable.
 
-The standalone `scripts/cypher/validate_cypher_heracles.py` accepts current prepared
-seed records. Both `--input` and `--output` are required, and validation is read-only.
-Inputs are checked before starting Docker or loading a database scene.
+For prepared seeds, `scripts/cypher/validate_cypher_heracles.py` provides
+read-only standalone validation. Both `--input` and `--output` are required.
 
 ## Student validation
 
 ### Eval-loss
 
-Compute held-out loss and perplexity for the fine-tuned model:
-
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/students/student_qwen3.5_4b.yaml \
-  --split all \
-  --mode eval-loss
+  --split all --mode eval-loss
 ```
 
-Eval-loss uses Transformers only. Its token labels default to
-`training.loss_mode` in the student config. Override them with
-`--loss-mode full` or `--loss-mode assistant-only`.
+Eval-loss uses Transformers. Labels default to `training.loss_mode`.
+Override with `--loss-mode full` or `--loss-mode assistant-only`.
 
 ### Raw generation with Transformers
 
-Evaluate the fine-tuned model end to end:
-
 ```bash
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/students/student_qwen3.5_4b.yaml \
-  --split test \
-  --mode raw-generation \
-  --max-new-tokens 1024
+  --split test --mode raw-generation --max-new-tokens 1024
 ```
 
-Evaluate the configured base model with the same split and generation settings:
+Add `--baseline` to evaluate the configured base model. Keep the split and
+generation settings identical when comparing it with the fine-tuned model.
 
-```bash
-docker/stack.sh main python scripts/agents/evaluate_student.py \
-  --data-config configs/data.yaml \
-  --student-config configs/students/student_qwen3.5_4b.yaml \
-  --split test \
-  --mode raw-generation \
-  --baseline \
-  --max-new-tokens 1024
-```
+Raw generation runs bounded tool interactions and loads each required scene
+into Neo4j. This replaces the active database scene.
 
-Raw-generation validation runs a bounded query/tool/final-answer interaction
-and reuses the dataset's tool schema, Neo4j checks, retry policy, and task
-validators. Records are grouped by `scene_id` before execution, and Neo4j is
-cleared and loaded only when that scene changes. A complete validation pass
-therefore performs one database load per represented scene.
-
-For controlled-repair records, the standalone Cypher generation and end-to-end
-checks start after the stored mutated call and Neo4j syntax-error response, so
-the first generated query must be a correction. The final-answer check receives
-that same repair context plus the corrected Cypher call and successful tool
-response. Reports include `controlled_repair` and `repair_template` fields for
-filtering these cases.
+For controlled-repair examples, evaluation provides the stored faulty call and
+syntax-error feedback before asking the model for a correction. Reports mark
+these cases with `controlled_repair` and `repair_template`.
 
 ### Raw generation with Ollama
 
-First [export and register](ollama_export.md#register-models-in-the-project-stack)
-the desired GGUF. Then start the optional service and evaluate it:
+[Export and register](ollama_export.md#register-models-in-the-project-stack)
+the GGUF, then evaluate it:
 
 ```bash
 docker/stack.sh ollama-up
-docker/stack.sh load-neo4j data/scenes/uhumans2_office.json
 
 docker/stack.sh main python scripts/agents/evaluate_student.py \
   --data-config configs/data.yaml \
   --student-config configs/students/student_qwen3.5_4b.yaml \
-  --split challenge \
-  --mode raw-generation \
-  --runtime ollama \
-  --ollama-model qwen3.5-4b-finetune-q4_k_m \
-  --max-new-tokens 1024
+  --split challenge --mode raw-generation --runtime ollama \
+  --ollama-model qwen3.5-4b-finetune-q4_k_m --max-new-tokens 1024
 ```
 
-Ollama evaluation uses non-streaming native tool calls. Defaults are
-deterministic (`temperature=0`, `seed=42`) with a context length of `16384`.
-Relevant overrides include:
-
-- `--ollama-temperature`
-- `--ollama-seed`
-- `--ollama-timeout`
-- `--ollama-context-length`
-- `--ollama-keep-alive`
-
-The report name includes the runtime and model name, so multiple GGUF variants
-can be compared without overwriting one another.
-
-## Compare BF16 and quantized exports
-
-Register each GGUF under a distinct Ollama model name, then repeat the same
-raw-generation command with only `--ollama-model` changed. For example:
-
-| GGUF | Suggested model name |
+| Option | Default or purpose |
 | --- | --- |
-| BF16 | `qwen3.5-4b-finetune-bf16` |
-| Q8_0 | `qwen3.5-4b-finetune-q8_0` |
-| Q4_K_M | `qwen3.5-4b-finetune-q4_k_m` |
+| `--ollama-temperature` | `0` |
+| `--ollama-seed` | `42` |
+| `--ollama-context-length` | `16384` |
+| `--ollama-timeout` | Request timeout |
+| `--ollama-keep-alive` | Model retention in Ollama |
 
-`docker/stack.sh demo-deploy` automates export, registration, challenge
-validation of all three variants, and report regeneration.
+Reports include the runtime and model name, allowing multiple GGUF variants
+to be compared. See [Reasoning experiments](reasoning.md#compare-inference-modes)
+for thinking controls.
 
-## Dataset lineage checks
+## Compare quantized exports
 
-Model metadata records the dataset version and exact split hashes used during
-training. Evaluation against different data behaves as follows:
+Register each GGUF under a distinct name. Repeat the same Ollama evaluation
+with only `--ollama-model` changed.
 
-- Interactive execution displays a warning and asks for confirmation.
-- Non-interactive execution stops unless `--allow-dataset-mismatch` is passed.
-- `--model-version` and `--dataset-version` select exact artifacts instead of
-  the latest completed versions.
+`docker/stack.sh demo-deploy` exports, registers, and validates the base GGUF
+and quantizations configured in the student YAML. See
+[GGUF registration](ollama_export.md#register-models-in-the-project-stack).
 
-Treat `--allow-dataset-mismatch` as an explicit experimental choice and record
-the compared versions with the results.
+## Select versions and inspect results
 
-## Workflow report
+Use `--dataset-version` and `--model-version` for reproducible evaluation.
+[Artifact versioning](artifact_versioning.md#recorded-lineage) explains mismatch
+warnings and `--allow-dataset-mismatch`.
 
-After completing the desired validation modes, generate the
-[HTML workflow report](workflow_report.md) to inspect fine-tuned and baseline
-results, per-example details, and optional quantization comparisons together.
-
-## External benchmark
-
-Project-split validation and Heracles Benchmark answer different questions:
-
-- Use this guide for generated splits and the matching local Neo4j scene.
-- Use the [Heracles Benchmark integration](../examples/herables_benchmark/README.md)
-  for benchmark-owned scenes, questions, manifests, metrics, and reports.
+Generate the [HTML workflow report](workflow_report.md) to compare student,
+baseline, and deployment results with per-example details.

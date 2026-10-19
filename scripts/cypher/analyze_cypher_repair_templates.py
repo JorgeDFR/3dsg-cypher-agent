@@ -200,7 +200,7 @@ def main() -> None:
     parser.add_argument("--validation-glob", default=DEFAULT_VALIDATION_GLOB)
     parser.add_argument(
         "--output",
-        default="docs/cypher_repair_supervision.md",
+        default="outputs/reports/cypher_repair_supervision.md",
     )
     args = parser.parse_args()
 

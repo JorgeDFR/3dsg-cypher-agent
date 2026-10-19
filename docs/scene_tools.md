@@ -1,12 +1,11 @@
 # Scene Utilities
 
-Utilities in this repository help prepare 3DSG inputs before dataset
-generation. They do not modify the source scene unless an output path explicitly
-targets it.
+Prepare source scenes before [dataset generation](dataset_generation.md).
+By default, these tools write new files beside the source.
 
 ## Label room regions
 
-Interactively add or update room classifications in a Spark DSG scene:
+Add or update room classifications in a Spark DSG scene:
 
 ```bash
 docker/stack.sh main python scripts/graph/edit_3dsg_room_labels.py \
@@ -15,63 +14,44 @@ docker/stack.sh main python scripts/graph/edit_3dsg_room_labels.py \
   --figure-output data/scenes/uhumans2_office_rooms.png
 ```
 
-The editor presents a top-down view with:
+The editor shows room boxes, symbols, and object markers. It visits rooms in
+symbol order and lists contained objects by class.
 
-- red room bounding boxes.
-- room symbols.
-- blue object triangles.
-
-It visits rooms in symbol order, prints contained-object counts by class, and
-accepts either a listed label (including names such as `conference room` and
-`living room`) or its number. Types cover indoor rooms and outdoor regions, such
-as `garden`, `courtyard`, `sidewalk`, `park`, and `parking lot`.
-
-Only the listed canonical names are accepted.
-Input ignores case and extra whitespace.
-Existing room label IDs are retained.
-Enter keeps a current canonical type.
-
-### Output behavior
+Enter a listed label or its number. Input ignores case and extra whitespace.
+Press Enter to keep a current canonical label. Only listed labels are accepted.
 
 | Option | Behavior |
 | --- | --- |
-| No `--output` | Preserve the source and write `*.room_labels.json` beside it |
+| No `--output` | Write `*.room_labels.json` beside the source |
 | `--output PATH` | Write the updated scene to `PATH` |
 | `--figure-output PATH` | Save the room visualization |
-| `--no-show` | Run without opening the graphical window |
-| `--list-labels` | Print the controlled room vocabulary |
+| `--no-show` | Skip the graphical window |
+| `--list-labels` | Print the room vocabulary |
 | `--force` | Allow replacing an existing output, including the source |
 
-## Repair missing object-to-place connections
+## Repair object-to-place connections
 
-Connect objects to their nearest mesh place:
+Connect objects without a connection to their nearest mesh place:
 
 ```bash
 docker/stack.sh main python scripts/graph/fix_3dsg_object_place_edges.py \
   data/scenes/uhumans2_office.json \
   --target-layer mesh-place \
-  --output data/scenes/mit_courtyard_ade20k_full.connected.json
+  --output data/scenes/uhumans2_office.connected.json
 ```
 
-Use `--target-layer place` to select the place layer instead. The script respects
-the scene's named layer and partition mapping. In the MIT courtyard scene,
-`PLACES` and `MESH_PLACES` alias the same layer, so both choices select the same
-nodes.
+Use `--target-layer place` for the place layer. Selection uses the scene's
+layer mapping.
 
-For each object without an edge to the chosen layer, it adds one standard Spark
-DSG edge from the nearest place to the object. Nearest means Euclidean distance
-between node positions in XYZ; equal distances are resolved by node ID. Existing
-connections in either orientation are kept, including connections to other
-layers. Repeating the repair adds no duplicate edges. Objects with missing or
-nonfinite positions are skipped and reported; a target layer with no usable
-positions causes an error.
+The tool keeps existing connections and adds missing edges from place to
+object using distance between node positions. This is a geometric approximation.
+Nearby nodes can lie across a wall or region boundary.
 
-Without `--output`, the script writes `*.object_place_edges.json` beside the
-source. Use `--dry-run` to report changes without writing or `--force` to replace
-an existing output. Nodes, metadata, mesh data (when present), and existing edges
-are preserved. This is a geometric approximation of containment; nearby nodes
-can lie across a wall or region boundary.
+Objects with unusable positions are skipped and reported. A target layer with
+no usable positions causes an error. Repeating the repair adds no duplicates.
 
-After changing the scene used by `configs/data.yaml`, reload it into Neo4j and
-start a new dataset version. See
-[Prepare a dataset version](dataset_generation.md#prepare-a-dataset-version).
+Without `--output`, the tool writes `*.object_place_edges.json` beside the
+source. Use `--dry-run` to preview changes or `--force` to replace an output.
+
+After updating a configured source scene, reload it into Neo4j and
+[prepare a new dataset version](dataset_generation.md#prepare-a-dataset-version).

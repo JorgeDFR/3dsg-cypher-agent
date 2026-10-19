@@ -46,7 +46,7 @@ docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
 | --- | --- |
 | `--data-config` | Select the scenes, dataset family, and artifact roots |
 | `--dataset-version` | Select an exact dataset version instead of the latest |
-| `--dataset-only` | Include only scene graphs, questions, teacher traces, splits, and dataset artifacts; ignore model selection and training/inference reports |
+| `--dataset-only` | Include dataset artifacts without model selection or training/inference reports |
 | `--student-config` | Include the selected model's training and evaluation data |
 | `--model-version` | Select an exact completed model version |
 | `--allow-dataset-mismatch` | Permit an intentional mismatch between model lineage and selected data |
@@ -63,7 +63,7 @@ data/datasets/{dataset_id}/{dataset_version}/reports/
 For a dataset report without model artifacts:
 
 ```bash
-python scripts/reporting/generate_workflow_report.py \
+docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --dataset-version DATASET_VERSION --dataset-only
 ```
 
@@ -124,9 +124,6 @@ JSONL, YAML, or GGUF files change.
 
 ## Lineage safety
 
-When a student model is included, the generator verifies that its recorded
-dataset and split hashes match the selected data. Interactive runs warn before
-continuing. Non-interactive runs require `--allow-dataset-mismatch`.
-
-Use that flag only for an intentional cross-version comparison, and keep the
-selected dataset and model versions with the resulting report.
+Model-aware reports check the selected dataset against the model's recorded
+lineage. See [Artifact versioning](artifact_versioning.md#recorded-lineage)
+for mismatch handling and `--allow-dataset-mismatch`.

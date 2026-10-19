@@ -15,7 +15,7 @@ The repository covers the complete distillation workflow:
 - **[3DSG data extraction and question generation](docs/dataset_generation.md#prepare-a-dataset-version)** —
   extract 3D scene graph data, render question templates, and prepare validated
   seed records.
-- **[Teacher trace generation](docs/dataset_generation.md#generate-teacher-traces)** —
+- **[Teacher trace generation](docs/teacher_generation.md)** —
   collect tool-using traces, execute Cypher against Neo4j, and retain
   interactions that pass safety and task checks.
 - **[Dataset splitting](docs/dataset_generation.md#create-student-splits)** —
@@ -49,8 +49,9 @@ The project supports two execution environments:
 - **[Docker (recommended)](docker/README.md)** provides the project Python environment, Neo4j,
   CUDA-enabled PyTorch, llama.cpp, and an optional Ollama service. It is the
   supported path for the complete GPU training and deployment workflow.
-- **[Native setup](docs/setup.md)** installs the Python package and dependencies directly on the
-  host. Use it when Docker is unavailable or for host-side development. CUDA,
+- **[Native host setup](docs/native_setup.md)** installs the Python package and
+  dependencies directly on the host. Use it when Docker is unavailable or for
+  host-side development. CUDA,
   PyTorch, Neo4j, and llama.cpp may require separate setup.
 
 Both approaches use the same YAML configuration and versioned artifacts. The
@@ -154,6 +155,9 @@ commands.
 
 ## Additional tools and reports
 
+- **[Documentation index](docs/README.md)** — find focused workflow and
+  configuration guides, including teacher checks, reasoning experiments, and
+  dataset audits.
 - **[HTML workflow report](docs/workflow_report.md)** — browse the 3DSG,
   generated questions, trace outcomes, dataset splits, training state,
   validation results, baseline comparisons, deployment comparisons, and
