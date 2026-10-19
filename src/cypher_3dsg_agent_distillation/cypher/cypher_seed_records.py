@@ -4,18 +4,41 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cypher_3dsg_agent_distillation.core.config import data_paths_from_config, load_yaml
 
 
-class CypherSeedRecord(BaseModel):
+class SeedRecord(BaseModel):
+    validation_contract: dict[str, Any]
+    metadata: dict[str, Any] = Field(default_factory=dict, validate_default=True)
+
+    @field_validator("validation_contract")
+    @classmethod
+    def valid_contract(cls, value):
+        from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+        return contract_for_record({"validation_contract": value})
+
+    @field_validator("metadata")
+    @classmethod
+    def require_template_provenance(cls, value):
+        if not isinstance(value.get("template_bindings"), dict) or not value.get(
+            "template_identity"
+        ):
+            raise ValueError(
+                "Current template identity and explicit bindings are required; regenerate seeds."
+            )
+        return value
+
+
+class CypherSeedRecord(SeedRecord):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     uid: str
     question: str
     cypher: str = Field(alias="gold_cypher")
-    query_type: str = "unknown"
+    query_type: str
     task_family: str | None = None
     output_type: str | None = None
     experiment_profile: str | None = None
@@ -23,36 +46,30 @@ class CypherSeedRecord(BaseModel):
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
-    answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
-    validation_contract: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     labelspace_description: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class PreparedCypherSeedRecord(BaseModel):
+class PreparedCypherSeedRecord(SeedRecord):
     model_config = ConfigDict(populate_by_name=True)
 
     uid: str
     question: str
     cypher: str
     query_type: str
-    task_family: str = "cypher_qa"
-    output_type: str = "SLDP"
+    task_family: str
+    output_type: str
     experiment_profile: str | None = None
-    read_only: bool
+    read_only: bool = True
     expected_result_hash: str | None = None
     solution: Any | None = None
     solution_formats: list[str] = Field(default_factory=list)
-    answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
-    validation_contract: dict[str, Any] | None = None
-    tags: list[str]
+    tags: list[str] = Field(default_factory=list)
     scene_id: str | None = None
     labelspace_description: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def load_raw_seed_records(path: str | Path) -> list[CypherSeedRecord]:
@@ -94,14 +111,11 @@ def prepare_seed_records(
                 query_type=record.query_type,
                 task_family=record.task_family or task_family,
                 output_type=record.output_type or output_type,
-                experiment_profile=(
-                    record.experiment_profile or metadata.get("experiment_profile")
-                ),
+                experiment_profile=record.experiment_profile,
                 read_only=record.read_only,
                 expected_result_hash=record.expected_result_hash,
                 solution=record.solution,
                 solution_formats=record.solution_formats,
-                answer_validation=record.answer_validation,
                 grounding=record.grounding,
                 validation_contract=record.validation_contract,
                 tags=record.tags,
@@ -111,3 +125,12 @@ def prepare_seed_records(
             )
         )
     return prepared
+
+
+def load_prepared_seed_records(path):
+    from cypher_3dsg_agent_distillation.core.io import read_jsonl
+
+    return [
+        PreparedCypherSeedRecord.model_validate(record).model_dump(exclude_none=True)
+        for record in read_jsonl(path)
+    ]

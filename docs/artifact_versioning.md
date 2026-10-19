@@ -46,10 +46,10 @@ splits or validation reports. The summary prints the new version. Pass that
 version to `prepare_dataset.py split` when using a pinned data configuration.
 The source dataset and models trained from it remain unchanged.
 
-Historical datasets with nested teacher versions remain readable through their
-recorded active teacher. New generation always uses the single-teacher layout.
-Historical reports are also readable from `reports/dataset` and `reports/models`.
-New reports use the flattened layout below.
+Each dataset uses flat `traces/` and `reports/` directories with current teacher
+metadata. Record readers require current schemas and top-level validation
+contracts. Regenerate unsupported datasets and models into new version directories;
+existing artifact files are never converted automatically.
 
 ## Inspect and select versions
 
@@ -109,18 +109,3 @@ model-version report directory.
 
 Preserve or copy an export before switching source versions if both sets of
 GGUF files must remain available simultaneously.
-
-## Migrate legacy flat artifacts
-
-For a checkout that still uses the former flat directories, preview the
-one-time migration:
-
-```bash
-docker/stack.sh main python scripts/core/migrate_versioned_artifacts.py
-```
-
-Apply it only after reviewing the proposed changes:
-
-```bash
-docker/stack.sh main python scripts/core/migrate_versioned_artifacts.py --apply
-```

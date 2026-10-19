@@ -38,10 +38,7 @@ def version_id(moment: datetime | None = None) -> str:
 def validate_version(value: str) -> str:
     normalized = str(value).strip()
     if not VERSION_PATTERN.fullmatch(normalized):
-        raise ValueError(
-            "Version must use UTC format YYYY-MM-DD-T-HH-MM-SS-Z; "
-            f"got `{value}`."
-        )
+        raise ValueError(f"Version must use UTC format YYYY-MM-DD-T-HH-MM-SS-Z; got `{value}`.")
     try:
         datetime.strptime(normalized, VERSION_FORMAT).replace(tzinfo=UTC)
     except ValueError as exc:
@@ -323,18 +320,15 @@ def split_fingerprints(
     return records, mapping_fingerprint(hashes)
 
 
-def lineage_difference(
-    model_metadata: dict[str, Any], data_config: dict[str, Any]
-) -> list[str]:
+def lineage_difference(model_metadata: dict[str, Any], data_config: dict[str, Any]) -> list[str]:
     training_dataset = model_metadata.get("dataset") or {}
     differences = []
-    expected_dataset = training_dataset.get("dataset_id", training_dataset.get("scene_id"))
+    expected_dataset = training_dataset.get("dataset_id")
     expected_version = training_dataset.get("version")
     if expected_dataset != data_config.get("dataset_id"):
         selected_dataset = data_config.get("dataset_id")
         differences.append(
-            "dataset differs "
-            f"(trained on {expected_dataset!r}, selected {selected_dataset!r})"
+            f"dataset differs (trained on {expected_dataset!r}, selected {selected_dataset!r})"
         )
     if expected_version != data_config.get("dataset_version"):
         differences.append(

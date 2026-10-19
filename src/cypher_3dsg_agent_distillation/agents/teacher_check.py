@@ -34,8 +34,8 @@ from cypher_3dsg_agent_distillation.agents.teacher_check_reporting import (
     reasoning_stage_report,
 )
 from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config, load_yaml
-from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.versioning import require_new_outputs
+from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import load_prepared_seed_records
 from cypher_3dsg_agent_distillation.graph.load_neo4j import load_scene
 from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
@@ -302,6 +302,7 @@ def check_command(args: argparse.Namespace) -> None:
     ) as client:
         client.require_api_key()
         client.preflight()
+
         # Preserve all response fields locally, including provider-specific metrics.
         def capture(entry):
             requests.append(deepcopy(entry))
@@ -309,7 +310,7 @@ def check_command(args: argparse.Namespace) -> None:
 
         client.on_response = capture
         data = load_data_config(args.data_config, dataset_version=args.dataset_version)
-        population = read_jsonl(data["seed_records_jsonl_path"])
+        population = load_prepared_seed_records(data["seed_records_jsonl_path"])
         seed = select_check_seed(population, args.seed_uid)
         profile = experiment_profile_for_seed(seed, load_experiment_profiles_from_config(data))
         count = args.dataset_size if args.dataset_size is not None else len(population)

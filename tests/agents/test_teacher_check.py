@@ -9,6 +9,7 @@ from cypher_3dsg_agent_distillation.agents.openrouter_teacher import OpenRouterT
 from cypher_3dsg_agent_distillation.core.config import PROJECT_ROOT
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
 from cypher_3dsg_agent_distillation.core.versioning import atomic_write_yaml
+from tests.helpers import qa_contract
 
 
 def response(*, tool=False, reasoning=True, cost=0.001, finish=None):
@@ -131,6 +132,7 @@ class Validator:
 def setup_dataset(tmp_path, monkeypatch):
     seeds = [
         {
+            "validation_contract": qa_contract(["int"]),
             "uid": f"seed-{i}",
             "scene_id": "scene",
             "question": "How many objects?",
@@ -144,6 +146,18 @@ def setup_dataset(tmp_path, monkeypatch):
         }
         for i in range(3)
     ]
+    from cypher_3dsg_agent_distillation.cypher.validation_config import load_question_catalog
+    from tests.helpers import source_metadata
+
+    template = next(
+        t
+        for t in load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")[
+            "templates"
+        ]
+        if t["query_type"] == "object_total"
+    )
+    for seed in seeds:
+        seed["metadata"].update(source_metadata(template))
     write_jsonl(seeds, tmp_path / "seeds.jsonl")
     data = {
         "dataset_id": "check-test",

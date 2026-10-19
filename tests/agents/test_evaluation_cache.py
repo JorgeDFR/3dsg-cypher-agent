@@ -21,16 +21,34 @@ def evaluation(tmp_path):
     adapter.mkdir()
     (adapter / "adapter_model.safetensors").write_bytes(b"weights")
     data = {
-        "dataset_dir": str(tmp_path), "dataset_id": "demo", "dataset_version": "one",
+        "dataset_dir": str(tmp_path),
+        "dataset_id": "demo",
+        "question_sets": [
+            {
+                "name": "qa",
+                "question_templates_path": "configs/question_templates/cypher_qa_3dsg.yaml",
+                "experiment_profile_path": "configs/experiment_profiles/cypher_qa_template.yaml",
+            }
+        ],
+        "dataset_version": "one",
         "splits": {"test": str(split)},
     }
     student = {
-        "model": {"base_model": "base"}, "model_family": "student", "model_version": "one",
-        "model_family_root": str(tmp_path), "training": {"output_dir": str(adapter)},
+        "model": {"base_model": "base"},
+        "model_family": "student",
+        "model_version": "one",
+        "model_family_root": str(tmp_path),
+        "training": {"output_dir": str(adapter)},
     }
     args = argparse.Namespace(
-        split="test", mode="raw-generation", baseline=True, tokenizer=None,
-        max_new_tokens=1024, no_progress=False, force=False, output=None,
+        split="test",
+        mode="raw-generation",
+        baseline=True,
+        tokenizer=None,
+        max_new_tokens=1024,
+        no_progress=False,
+        force=False,
+        output=None,
     )
     return args, data, student, str(adapter)
 
@@ -79,14 +97,25 @@ def test_incomplete_or_corrupt_reports_are_not_reused(tmp_path, content):
 
 
 def test_command_skips_before_loading_baseline_and_force_bypasses_cache(
-    evaluation, monkeypatch, tmp_path,
+    evaluation,
+    monkeypatch,
+    tmp_path,
 ):
     _, data, student, adapter = evaluation
     captured = []
     with monkeypatch.context() as parser_patch:
-        parser_patch.setattr(sys, "argv", [
-            "evaluate_student", "--baseline", "--mode", "raw-generation", "--split", "test",
-        ])
+        parser_patch.setattr(
+            sys,
+            "argv",
+            [
+                "evaluate_student",
+                "--baseline",
+                "--mode",
+                "raw-generation",
+                "--split",
+                "test",
+            ],
+        )
         parser_patch.setattr(student_evaluation, "command", captured.append)
         student_evaluation.main()
     args = captured[0]
@@ -96,10 +125,17 @@ def test_command_skips_before_loading_baseline_and_force_bypasses_cache(
         tmp_path / "reports" / "student" / "baseline" / "test.baseline.raw-generation.report.json"
     )
     report.parent.mkdir(parents=True)
-    report.write_text(json.dumps({"summary": {}, "metadata": {
-        "evaluation_status": "complete",
-        "evaluation_identity": evaluation_identity(args, data, student, adapter),
-    }}))
+    report.write_text(
+        json.dumps(
+            {
+                "summary": {},
+                "metadata": {
+                    "evaluation_status": "complete",
+                    "evaluation_identity": evaluation_identity(args, data, student, adapter),
+                },
+            }
+        )
+    )
 
     def model_load(*args, **kwargs):
         raise RuntimeError("model load reached")

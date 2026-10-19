@@ -21,7 +21,7 @@ from cypher_3dsg_agent_distillation.agents.teacher_optimizations import (
     repair_rejected_invalid_answer_trace,
 )
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
-from tests.helpers import answerable_trace
+from tests.helpers import answerable_trace, qa_contract
 
 
 def make_record(uid: str, task_type: str, cypher: str) -> AgentTraceRecord:
@@ -119,16 +119,21 @@ def rejected_invalid_answer_trace(*, two_tool_calls: bool = False, **overrides):
         ]
     )
     payload = {
+        "validation_contract": qa_contract(),
         "uid": "rejected_teacher",
         "seed_uid": "seed_rejected",
         "scene_id": "scene",
         "query_type": "objects_in_place_symbol",
+        "task_family": "cypher_qa",
+        "output_type": "SLDP",
         "question": "Which object is in place p1?",
         "cypher": cypher,
-        "real_solution": "O1",
+        "expected_solution": "O1",
         "cypher_solution": "O1",
         "final_answer": "{O1}",
         "validation": {
+            "rows": [{"object": "O1"}],
+            "columns": ["object"],
             "executable": True,
             "solution_match": False,
             "cypher_solution_match": True,
@@ -335,7 +340,8 @@ def test_grouped_split_balances_pddl_types_that_share_cypher_queries():
 def test_split_assignments_do_not_depend_on_teacher_query_wording():
     synthetic = [
         make_record(
-            f"{task}-{group}-{variant}", task,
+            f"{task}-{group}-{variant}",
+            task,
             f"MATCH (o:Object {{class: 'class{group}'}}) RETURN o.nodeSymbol AS object",
         )
         for task in ("lookup", "inspect")
@@ -343,17 +349,23 @@ def test_split_assignments_do_not_depend_on_teacher_query_wording():
         for variant in range(2)
     ]
     real = [
-        record.model_copy(update={
-            "gold_cypher": f"MATCH (node:Object) WHERE node.class = 'class{index // 2 % 10}' "
-                           f"RETURN node.nodeSymbol AS answer{index}",
-            "metadata": {"seed_gold_cypher": record.gold_cypher},
-        })
+        record.model_copy(
+            update={
+                "gold_cypher": f"MATCH (node:Object) WHERE node.class = 'class{index // 2 % 10}' "
+                f"RETURN node.nodeSymbol AS answer{index}",
+                "metadata": {"seed_gold_cypher": record.gold_cypher},
+            }
+        )
         for index, record in enumerate(synthetic)
     ]
 
     def assignments(records):
         parts = grouped_split_records(
-            records, train_size=0.8, eval_size=0.1, test_size=0.1, seed=42,
+            records,
+            train_size=0.8,
+            eval_size=0.1,
+            test_size=0.1,
+            seed=42,
         )
         assert_no_split_leakage(dict(zip(("train", "eval", "test"), parts[:3], strict=True)))
         return [[record.uid for record in part] for part in parts]
@@ -369,9 +381,12 @@ def test_split_connects_both_explicit_groups_and_seed_query_identities():
         update={"split_group": one.split_group},
     )
     three = make_record("three", "inspect", two.gold_cypher)
-    assert [[record.uid for record in group] for group in split_record_groups(
-        [one, two, three],
-    )] == [["one", "two", "three"]]
+    assert [
+        [record.uid for record in group]
+        for group in split_record_groups(
+            [one, two, three],
+        )
+    ] == [["one", "two", "three"]]
 
 
 def test_grouped_split_represents_low_count_single_group_task_in_eval_and_test():
@@ -471,16 +486,23 @@ def test_answer_replacement_preserves_tool_stage_reasoning():
 
 
 def contract_format_rejection():
-    rejected = rejected_invalid_answer_trace(cypher=None, cypher_solution=None)
+    rejected = rejected_invalid_answer_trace(cypher_solution=None)
     rejected["validation_contract"] = {
         "result": {"kind": "scalar", "type": "node_symbol", "layers": ["Object"]},
         "answer": {"formats": ["str"]},
     }
-    rejected["validation"].update({
-        "rows": [{"object": "O1"}], "columns": ["object"],
-        "final_answer_format_valid": False,
-        "answer_check": {"status": "invalid_answer_format", "format_valid": False, "match": False},
-    })
+    rejected["validation"].update(
+        {
+            "rows": [{"object": "O1"}],
+            "columns": ["object"],
+            "final_answer_format_valid": False,
+            "answer_check": {
+                "status": "invalid_answer_format",
+                "format_valid": False,
+                "match": False,
+            },
+        }
+    )
     rejected["messages"][-1]["reasoning"] = "Return the retrieved object."
     return rejected
 
@@ -515,7 +537,7 @@ def test_repair_rejected_invalid_answer_trace_replaces_only_final_answer():
 
     assert repaired is not None
     assert repaired.uid == "rejected_teacher_repaired"
-    assert repaired.real_solution == "O1"
+    assert repaired.expected_solution == "O1"
     assert repaired.cypher_solution == "O1"
     assert repaired.final_answer == "O1"
     assert repaired.final_answer_text == "<answer>O1</answer>"
@@ -531,16 +553,10 @@ def test_repair_rejected_invalid_answer_trace_requires_verified_cypher_solution(
     rejected = rejected_invalid_answer_trace()
     if with_reasoning:
         rejected["messages"][-1]["reasoning"] = "Return the retrieved object."
-    assert (
-        repair_rejected_invalid_answer_trace(
-            {**rejected, "reason": "solution_mismatch"}
-        )
-        is None
-    )
-    assert (
-        repair_rejected_invalid_answer_trace({**rejected, "cypher_solution": "O2"})
-        is None
-    )
+    assert repair_rejected_invalid_answer_trace({**rejected, "reason": "solution_mismatch"}) is None
+    repaired = repair_rejected_invalid_answer_trace({**rejected, "cypher_solution": "O2"})
+    assert repaired is not None
+    assert repaired.cypher_solution == "O1"
 
 
 def test_student_trace_reader_loads_generation_repairs_without_scanning_rejections(tmp_path):
@@ -559,7 +575,8 @@ def test_student_trace_reader_loads_generation_repairs_without_scanning_rejectio
     }
     records, source_counts = read_student_trace_records_with_counts(config)
     assert [record.uid for record in read_student_trace_records(config)] == [
-        "accepted", "rejected_teacher_repaired",
+        "accepted",
+        "rejected_teacher_repaired",
     ]
     assert source_counts["accepted_teacher_traces"] == 2
     assert source_counts["repaired_invalid_answer_format"] == 1

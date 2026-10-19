@@ -128,9 +128,7 @@ def example_report(messages: list[dict[str, Any]], seed: dict[str, Any] | None) 
         )
     return {
         "question": seed.get("question"),
-        "expected_answer": seed.get(
-            "real_solution", seed.get("solution", seed.get("expected_solution"))
-        ),
+        "expected_answer": seed.get("solution"),
         "reference_cypher": seed.get("cypher") or seed.get("gold_cypher"),
         "turns": turns,
     }

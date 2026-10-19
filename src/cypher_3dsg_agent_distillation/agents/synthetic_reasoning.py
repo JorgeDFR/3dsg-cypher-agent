@@ -8,14 +8,10 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
-from cypher_3dsg_agent_distillation.cypher.pddl_goals import grounding_from_rows, render_goal_spec
+from cypher_3dsg_agent_distillation.cypher.pddl_goals import render_goal_spec
 from cypher_3dsg_agent_distillation.cypher.task_semantics import (
     REASONING_RENDERER_VERSION,
-    build_semantic_context,
-    parse_query,
-    semantic_fingerprint,
-    validate_goal_semantics,
-    validate_query_semantics,
+    validate_semantic_context,
     walk_expression,
 )
 
@@ -61,24 +57,10 @@ def select_sentences(candidates: list[Sentence], *, cap: int | None):
     }
 
 
-def semantic_context(variables, template, cypher):
-    """Compatibility entry point used by question generation."""
-    return build_semantic_context(variables, template, cypher)
-
-
 def _context(seed):
     context = (seed.get("metadata") or {}).get("reasoning_context") or {}
     query = str(seed.get("cypher") or seed.get("gold_cypher") or "")
-    if "retrieval" not in context:
-        # A legacy query supplies retrieval facts, never unseen goal semantics.
-        validate_goal_semantics(context.get("goal"), context.get("grounding_fields", {}))
-        return {**context, "retrieval": parse_query(query)}
-    validate_query_semantics(context["retrieval"], query)
-    if context.get("fingerprint") != semantic_fingerprint(
-        context["retrieval"], context.get("goal"), context.get("grounding_fields")
-    ):
-        raise ValueError("Stored semantic context fingerprint does not match its content")
-    validate_goal_semantics(context.get("goal"), context.get("grounding_fields", {}))
+    validate_semantic_context(context, query)
     return context
 
 
@@ -559,7 +541,7 @@ def _answer_format(formats):
 
 
 def _final_sentences(seed, context, view, rows):
-    formats = seed.get("solution_formats") or seed.get("solution_format") or []
+    formats = seed["validation_contract"]["answer"]["formats"] or []
     formats = [formats] if isinstance(formats, str) else formats
     if any(op["kind"] == "refusal" for op in view.operations):
         return [
@@ -573,8 +555,16 @@ def _final_sentences(seed, context, view, rows):
         ]
     if seed.get("task_family") == "cypher_pddl":
         goal = context.get("goal")
-        fields = context.get("grounding_fields") or (seed.get("grounding") or {}).get("fields", {})
-        grounding = grounding_from_rows(rows or [], {"fields": fields})
+        from cypher_3dsg_agent_distillation.cypher.result_validation import decode_result
+
+        decoded = decode_result(
+            query=str(seed.get("cypher") or seed.get("gold_cypher")),
+            rows=rows or [],
+            contract=seed["validation_contract"],
+        )
+        if decoded.status != "pass":
+            raise ValueError("Cannot narrate unresolved PDDL result grounding")
+        grounding = decoded.actual
         available = _available_goal(goal, grounding) if goal and rows is not None else None
         if rows is not None and (not any(grounding.values()) or goal and available is None):
             missing = (

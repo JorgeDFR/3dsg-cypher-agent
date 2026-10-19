@@ -6,8 +6,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from neo4j.exceptions import DatabaseError
-
 from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import load_data_config
 from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
@@ -145,11 +143,7 @@ def initialize_database(driver, database: str, clear: bool) -> None:
     if clear:
         run_query(driver, database, "MATCH (n) DETACH DELETE n")
     for query in INDEXES.values():
-        try:
-            run_query(driver, database, query)
-        except DatabaseError:
-            # Older Neo4j versions may not support IF NOT EXISTS for every index form.
-            pass
+        run_query(driver, database, query)
 
 
 def insert_nodes(driver, database: str, label: str, nodes: list[dict[str, Any]]) -> None:
@@ -223,9 +217,7 @@ def command(args: argparse.Namespace) -> None:
     uri = args.uri or os.environ.get("NEO4J_URI")
     scene = args.scene
     if scene is None:
-        data_config = load_data_config(
-            args.data_config, dataset_version=args.dataset_version
-        )
+        data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
         scenes = data_config["scenes"]
         if args.scene_id:
             matches = [item for item in scenes if item["scene_id"] == args.scene_id]
@@ -235,9 +227,7 @@ def command(args: argparse.Namespace) -> None:
         elif len(scenes) == 1:
             scene = scenes[0]["scene_path"]
         else:
-            raise ValueError(
-                "The dataset contains multiple scenes; pass --scene-id or --scene."
-            )
+            raise ValueError("The dataset contains multiple scenes; pass --scene-id or --scene.")
     summary = load_scene(
         scene_path=scene,
         uri=neo4j_uri_candidates(uri),

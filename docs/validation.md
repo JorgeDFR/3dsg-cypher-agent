@@ -7,7 +7,10 @@ GGUF model registered in Ollama.
 Cypher-result and PDDL grounding checks use typed, versioned contracts, including
 alias-independent decoding, explicit unresolved outcomes, and separate final-answer
 grounding checks. See [Cypher and grounding validation](cypher_grounding_validation.md)
-for configuration, semantic evidence, migration, and saved-output rescoring.
+for configuration, semantic evidence, and current saved-output rescoring.
+
+Use the IDs printed by artifact generation wherever an example shows
+`DATASET_VERSION` or `MODEL_VERSION`.
 
 ## Automated validation and reuse
 
@@ -20,8 +23,8 @@ split contents, model, runtime, and evaluation settings match. Baseline reuse
 is independent of fine-tuned model versions and training hyperparameters. Ollama
 validation also checks the registered model digest. Changed inputs, incomplete
 reports, or unreadable reports trigger evaluation again. Pass `--force` to
-explicitly repeat a validation. Older reports without a validation fingerprint
-are evaluated once to establish that fingerprint. For remotely hosted HF
+explicitly repeat a validation. Reports without a current validation fingerprint
+cannot be reused. For remotely hosted HF
 models, reuse identifies the configured model/revision. Use `--force` if its
 upstream contents change under the same identifier.
 
@@ -47,6 +50,10 @@ docker/stack.sh main python scripts/agents/evaluate_traces.py \
 
 Trace checks cover static safety, Cypher execution, output parsing, QA answer
 matching, and PDDL grounding and goal validity where applicable.
+
+The standalone `scripts/cypher/validate_cypher_heracles.py` accepts current prepared
+seed records. Both `--input` and `--output` are required, and validation is read-only.
+Inputs are checked before starting Docker or loading a database scene.
 
 ## Student validation
 

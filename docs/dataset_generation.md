@@ -100,8 +100,10 @@ and tied spatial extrema. The PDDL set covers
 and disjunctions, per-object negation, hierarchy-restricted destinations, and
 ordered waypoints. Every type provides at least five natural-language variants.
 
-The legacy singular `experiment_profile_path` and `question_templates_path`
-keys are still interpreted as one question set.
+Data configuration requires `dataset_id`, a nonempty `scenes` list and explicit
+`question_sets`. Scene paths belong to their scene entries; profile, question and
+validation paths belong to each question set. Single-scene datasets use a
+one-element `scenes` list.
 
 ## Prepare a dataset version
 
@@ -337,8 +339,8 @@ docker/stack.sh main python scripts/agents/prepare_dataset.py split \
 
 Splitting is stratified by task family and query type. Task types that share
 normalized-equivalent seed Cypher are assigned jointly. Grouping uses
-`metadata.seed_gold_cypher`, falling back to `gold_cypher` for synthetic or
-legacy records, and also connects records sharing an explicit `split_group`.
+the task query in `metadata.seed_gold_cypher` (or the executed `gold_cypher`
+when they are identical), and also connects records sharing an explicit `split_group`.
 Generated teacher queries, output aliases, and quote choices do not affect group
 identity. The same records follow the same split policy with synthetic and real
 teachers. Existing exact per-type count fallbacks still move the minimum
@@ -415,21 +417,25 @@ paid requests. Both pilot and full generation use this phase. Synthetic teachers
 continue to ignore enabled optimizations with a warning.
 
 Splitting only loads the accepted traces finalized during generation; it never
-scans or repairs rejected traces. The split flag `--repair-invalid-final-answers`
-has been removed. Existing datasets are not changed automatically. The split
+scans or repairs rejected traces. Existing datasets are not changed automatically. The split
 report still identifies generation-repaired and recovered records so their
 provenance can be reviewed. See [reasoning experiments](reasoning_traces.md) for teacher checks,
 the pilot, and reasoning configuration.
 
 ## Revalidate saved teacher traces without generation
 
-After fixing validation, regrade a completed run using its saved database rows
+After fixing validation, regrade a completed current-format run using its saved database rows
 and teacher messages. This command never calls the teacher or executes Cypher:
 
 ```bash
 python scripts/agents/revalidate_dataset.py \
-  --dataset-version 2026-10-16-T-12-14-20-Z
+  --dataset-version DATASET_VERSION
 ```
+
+Current records must retain top-level validation contracts, explicit
+`metadata.template_bindings`, and `metadata.template_identity`. Contract refresh
+verifies those bindings against the selected template and trusted source query;
+it does not reconstruct missing provenance. Regenerate incompatible datasets.
 
 The default prints proposed grade changes. Add `--apply` to back up existing files
 under `revalidation_backups/` and refresh the seeds, questions, canonical traces,
@@ -452,7 +458,7 @@ Use explicit selectors when a command must not use the latest artifacts:
 ```bash
 docker/stack.sh main python scripts/agents/prepare_dataset.py split \
   --data-config configs/data.yaml \
-  --dataset-version 2026-09-08-T-12-05-47-Z
+  --dataset-version DATASET_VERSION
 ```
 
 List valid version identifiers with

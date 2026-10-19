@@ -198,10 +198,10 @@ def prepare_gemma4_effective_model_for_kbit_training(
 
     for name, param in model.named_parameters():
         param.requires_grad = False
-        if (
-            should_upcast_gemma4_effective_param(name, param)
-            and param.dtype in {torch.float16, torch.bfloat16}
-        ):
+        if should_upcast_gemma4_effective_param(name, param) and param.dtype in {
+            torch.float16,
+            torch.bfloat16,
+        }:
             param.data = param.data.to(torch.float32)
 
     if use_gradient_checkpointing and (
@@ -308,7 +308,7 @@ def message_to_plain_text(message: dict[str, Any]) -> str:
     role = message.get("role", "unknown")
     if message.get("tool_calls"):
         content = message.get("content") or ""
-        calls = json.dumps(message['tool_calls'], ensure_ascii=False, sort_keys=True)
+        calls = json.dumps(message["tool_calls"], ensure_ascii=False, sort_keys=True)
         return f"{role}: {content + chr(10) if content else ''}{calls}"
     return f"{role}: {message.get('content', '')}"
 
@@ -323,7 +323,9 @@ def training_tool_schemas(record: dict[str, Any]) -> list[dict[str, Any]]:
         schema = (
             declared_tool
             if isinstance(declared_tool, dict)
-            else native_schema if declared_tool == native_name else None
+            else native_schema
+            if declared_tool == native_name
+            else None
         )
         if not isinstance(schema, dict):
             continue
@@ -348,7 +350,9 @@ def to_chat_text(
     )
 
     messages = student_messages(
-        normalize_chat_messages(messages), tokenizer, include_reasoning=include_reasoning,
+        normalize_chat_messages(messages),
+        tokenizer,
+        include_reasoning=include_reasoning,
     )
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
         kwargs = {
@@ -388,13 +392,18 @@ def message_token_span(
 ) -> tuple[int, int]:
     before_ids = tokenize_rendered_text(
         tokenizer,
-        to_chat_text(tokenizer, messages[:message_index], tools=tools,
-                     include_reasoning=include_reasoning),
+        to_chat_text(
+            tokenizer, messages[:message_index], tools=tools, include_reasoning=include_reasoning
+        ),
     )
     after_ids = tokenize_rendered_text(
         tokenizer,
-        to_chat_text(tokenizer, messages[: message_index + 1], tools=tools,
-                     include_reasoning=include_reasoning),
+        to_chat_text(
+            tokenizer,
+            messages[: message_index + 1],
+            tools=tools,
+            include_reasoning=include_reasoning,
+        ),
     )
     start = common_prefix_length(input_ids, before_ids)
     end = common_prefix_length(input_ids, after_ids)
@@ -555,9 +564,7 @@ def build_training_example(
         )
     else:
         if not messages:
-            raise ValueError(
-                "Assistant-only training requires records with structured `messages`."
-            )
+            raise ValueError("Assistant-only training requires records with structured `messages`.")
         text = to_chat_text(tokenizer, messages, tools=tools, include_reasoning=include_reasoning)
     input_ids = tokenize_rendered_text(tokenizer, text)
     validate_training_length(
@@ -590,7 +597,10 @@ def build_training_example(
 
 
 def rendered_record_text(
-    record: dict[str, Any], tokenizer, *, include_reasoning: bool = False,
+    record: dict[str, Any],
+    tokenizer,
+    *,
+    include_reasoning: bool = False,
 ) -> str:
     return (
         to_chat_text(
@@ -605,11 +615,15 @@ def rendered_record_text(
 
 
 def build_dataset(
-    path: str, tokenizer, *, max_length: int | None = None, include_reasoning: bool = False,
+    path: str,
+    tokenizer,
+    *,
+    max_length: int | None = None,
+    include_reasoning: bool = False,
 ):
     from datasets import Dataset
 
-    records = read_jsonl(path)
+    records = load_training_records(path)
     examples = []
     rejected_count = 0
     for record in records:
@@ -651,7 +665,7 @@ def build_training_dataset(
 ):
     from datasets import Dataset
 
-    records = read_jsonl(path)
+    records = load_training_records(path)
     examples = []
     rejected_count = 0
     if retained_uids is not None:
@@ -766,26 +780,23 @@ def training_arguments_kwargs(
     training_config: dict[str, Any],
     has_eval_dataset: bool,
 ) -> dict[str, Any]:
-    configured_warmup = training_config.get(
-        "warmup_steps",
-        training_config.get("warmup_ratio", 0.05),
-    )
+    if "warmup_ratio" in training_config:
+        raise ValueError("Use training.warmup_steps; warmup_ratio is unsupported.")
+    configured_warmup = training_config.get("warmup_steps", 0.05)
     if isinstance(configured_warmup, bool):
         raise ValueError(
-            "training.warmup_steps must be a non-negative integer step count "
-            "or a float in [0, 1)."
+            "training.warmup_steps must be a non-negative integer step count or a float in [0, 1)."
         )
     warmup_steps = float(configured_warmup)
-    if not math.isfinite(warmup_steps) or warmup_steps < 0 or (
-        warmup_steps >= 1 and not warmup_steps.is_integer()
+    if (
+        not math.isfinite(warmup_steps)
+        or warmup_steps < 0
+        or (warmup_steps >= 1 and not warmup_steps.is_integer())
     ):
         raise ValueError(
-            "training.warmup_steps must be a non-negative integer step count "
-            "or a float in [0, 1)."
+            "training.warmup_steps must be a non-negative integer step count or a float in [0, 1)."
         )
-    normalized_warmup_steps: int | float = (
-        warmup_steps if warmup_steps < 1 else int(warmup_steps)
-    )
+    normalized_warmup_steps: int | float = warmup_steps if warmup_steps < 1 else int(warmup_steps)
     kwargs = {
         "output_dir": training_config["output_dir"],
         "per_device_train_batch_size": int(training_config.get("per_device_train_batch_size", 1)),
@@ -812,12 +823,8 @@ def training_arguments_kwargs(
                 "load_best_model_at_end": bool(
                     training_config.get("load_best_model_at_end", False)
                 ),
-                "metric_for_best_model": training_config.get(
-                    "metric_for_best_model", "eval_loss"
-                ),
-                "greater_is_better": bool(
-                    training_config.get("greater_is_better", False)
-                ),
+                "metric_for_best_model": training_config.get("metric_for_best_model", "eval_loss"),
+                "greater_is_better": bool(training_config.get("greater_is_better", False)),
             }
         )
     return kwargs
@@ -833,9 +840,7 @@ def sft_config_kwargs(
     if loss_type is None:
         loss_type = "chunked_nll"
     if loss_type not in ("nll", "chunked_nll", "dft"):
-        raise ValueError(
-            "training.loss_type must be one of: nll, chunked_nll, dft."
-        )
+        raise ValueError("training.loss_type must be one of: nll, chunked_nll, dft.")
     kwargs["loss_type"] = loss_type
     kwargs["max_length"] = int(training_config.get("max_length", 4096))
     dataset_kwargs = dict(training_config.get("dataset_kwargs") or {})
@@ -883,9 +888,7 @@ def early_stopping_callback(training_config: dict[str, Any], *, has_eval_dataset
 
     return EarlyStoppingCallback(
         early_stopping_patience=patience,
-        early_stopping_threshold=float(
-            training_config.get("early_stopping_threshold", 0.0)
-        ),
+        early_stopping_threshold=float(training_config.get("early_stopping_threshold", 0.0)),
     )
 
 
@@ -935,9 +938,7 @@ def command(args: argparse.Namespace) -> None:
     LoraConfig, prepare_model_for_kbit_training, SFTConfig, SFTTrainer = (
         require_training_dependencies()
     )
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     config = load_student_config(
         args.student_config,
         model_version=args.model_version,
@@ -1146,8 +1147,12 @@ def main() -> None:
     )
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
-    parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=None,
-                        help="Override training.include_reasoning for a matched ablation.")
+    parser.add_argument(
+        "--include-reasoning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override training.include_reasoning for a matched ablation.",
+    )
     parser.add_argument(
         "--model-version",
         default=None,
@@ -1155,6 +1160,19 @@ def main() -> None:
     )
     args = parser.parse_args()
     command(args)
+
+
+def load_training_records(path):
+    """Load current agent traces or explicit text-only SFT examples."""
+    from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
+
+    records = []
+    for record in read_jsonl(path):
+        if set(record) <= {"uid", "text"} and isinstance(record.get("text"), str):
+            records.append(record)
+        else:
+            records.append(AgentTraceRecord.model_validate(record).model_dump(exclude_none=True))
+    return records
 
 
 if __name__ == "__main__":

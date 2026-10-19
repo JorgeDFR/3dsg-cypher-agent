@@ -10,50 +10,34 @@ from cypher_3dsg_agent_distillation.agents.agent_records import DEFAULT_AGENT_TO
 from cypher_3dsg_agent_distillation.core.cli_output import print_breakdown, print_summary
 from cypher_3dsg_agent_distillation.core.config import ensure_parent, load_data_config
 from cypher_3dsg_agent_distillation.core.io import read_jsonl
-from cypher_3dsg_agent_distillation.cypher.evaluation import build_summary as build_cypher_summary
 
 
 def saved_execution(record):
-    """Return saved evidence under the trace's verified selection policy."""
+    """Select complete paired execution evidence under the current trace policy."""
     from cypher_3dsg_agent_distillation.agents.trace_evidence import (
         marked_earlier_execution,
+        tool_executions,
         uses_earlier_retrieval,
     )
 
-    payload = record.model_dump()
+    payload = record.model_dump(exclude_none=True)
     if uses_earlier_retrieval(payload):
         return marked_earlier_execution(payload)
-    query = None
-    latest = None
-    for message in record.messages:
-        if message.tool_calls:
-            query = None
-            for call in message.tool_calls:
-                if call.function.name == DEFAULT_AGENT_TOOL:
-                    query = call.function.arguments.get("cypher_string")
-        if message.role == "tool" and query:
-            try:
-                payload = json.loads(message.content or "")
-            except (ValueError, TypeError):
-                continue
-            if isinstance(payload, dict) and payload.get("ok") is not False:
-                rows = payload.get("rows", payload.get("result"))
-                if isinstance(rows, list):
-                    latest = (query, rows, payload.get("columns"))
-            elif isinstance(payload, list):
-                latest = (query, payload, None)
-    # Only reuse saved execution when its exact query is recorded or is the
-    # validated successful query retained on a generated trace.
-    extras = record.validation.model_dump()
+    validation = payload["validation"]
+    if validation.get("rows_truncated") or validation.get("rows_omitted"):
+        return None
+    executions = tool_executions(payload["messages"])
+    if not executions or not executions[-1].complete:
+        return None
+    execution = executions[-1]
+    columns = execution.columns
     if (
-        latest is not None and latest[2] is None
-        and latest[0] == record.gold_cypher and latest[1] == extras.get("rows")
-        and not extras.get("rows_truncated") and not extras.get("rows_omitted")
+        columns is None
+        and execution.query == record.gold_cypher
+        and validation.get("rows") == execution.rows
     ):
-        latest = (latest[0], latest[1], extras.get("columns"))
-    if latest is None and extras.get("executable") and isinstance(extras.get("rows"), list):
-        latest = (record.gold_cypher, extras["rows"], extras.get("columns"))
-    return latest
+        columns = validation.get("columns")
+    return execution.query, execution.rows, columns
 
 
 def recompute_trace_validation(record):
@@ -102,13 +86,13 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         refusal_correct = "WRITE_QUERY_NOT_ALLOWED" in final_answer
     else:
         refusal_correct = "WRITE_QUERY_NOT_ALLOWED" not in final_answer
-    final_answer_match = (
-        record.validation.final_answer_match
-        if record.validation.final_answer_match is not None
-        else record.validation.solution_match
+    recomputed = (
+        recompute_trace_validation(record)
+        if not record.is_refusal
+        else {
+            "final_answer_match": refusal_correct,
+        }
     )
-
-    recomputed = recompute_trace_validation(record) if record.validation_contract else {}
     return {
         **recomputed,
         "uid": record.uid,
@@ -121,7 +105,7 @@ def evaluate_trace_record(record: AgentTraceRecord) -> dict[str, Any]:
         "valid_cypher_argument": valid_cypher_argument,
         "static_read_only_safe": bool(record.validation.static_valid),
         "cypher_execution_success": bool(record.validation.executable),
-        "final_answer_match": recomputed.get("final_answer_match", bool(final_answer_match)),
+        "final_answer_match": recomputed["final_answer_match"],
         "n_tool_calls": len(tool_calls),
         "hallucinated_tool": hallucinated_tool,
         "refusal": record.is_refusal,
@@ -207,18 +191,6 @@ def evaluate_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def write_report(evaluated: list[dict[str, Any]], output: str | Path) -> None:
     report = {
         "summary": build_agent_summary(evaluated),
-        "cypher_summary_compatible": build_cypher_summary(
-            [
-                {
-                    "query_type": record["task_type"],
-                    "static_valid": record["static_read_only_safe"],
-                    "executable": record["cypher_execution_success"],
-                    "solution_match": record["final_answer_match"],
-                    "status": "pass" if record["final_answer_match"] else "agent_failure",
-                }
-                for record in evaluated
-            ]
-        ),
         "records": evaluated,
     }
     output_path = ensure_parent(output)
@@ -229,13 +201,9 @@ def write_report(evaluated: list[dict[str, Any]], output: str | Path) -> None:
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     split_path = data_config["splits"][args.split]
-    report_path = Path(data_config["test_report_path"]).with_name(
-        f"{args.split}.agent.report.json"
-    )
+    report_path = Path(data_config["test_report_path"]).with_name(f"{args.split}.agent.report.json")
     evaluated = evaluate_records(read_jsonl(split_path))
     write_report(evaluated, report_path)
     summary = build_agent_summary(evaluated)

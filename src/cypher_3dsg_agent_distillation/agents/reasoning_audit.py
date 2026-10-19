@@ -1,4 +1,4 @@
-"""Offline compilation, migration and coverage inspection for synthetic reasoning."""
+"""Offline compilation and coverage inspection for synthetic reasoning."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
 from cypher_3dsg_agent_distillation.cypher.task_semantics import (
     REASONING_RENDERER_VERSION,
     SEMANTICS_VERSION,
-    enrich_seed_semantics,
     parse_query,
+    prepare_seed_semantics,
 )
 
 
@@ -56,36 +56,18 @@ def compile_templates(
     return result
 
 
-def migrate_seeds(seeds, catalog, template_mapping=None):
-    by_type = {template["query_type"]: template for template in catalog}
-    if len(by_type) != len(catalog):
-        raise ValueError("Migration requires unique query_type names")
-    mapping = template_mapping or {}
-    migrated = []
+def audit_seeds(seeds, catalog, *, traces=None, caps=(None, 1, 2, 4), tokenizer=None):
+    seeds = deepcopy(seeds)
+    templates = {template["query_type"]: template for template in catalog}
+    if len(templates) != len(catalog):
+        raise ValueError("Reasoning audit requires unique query types")
     diagnostics = []
-    for original in seeds:
-        seed = deepcopy(original)
-        metadata = seed.setdefault("metadata", {})
-        context = metadata.get("reasoning_context") or {}
-        query_type = mapping.get(seed["query_type"], seed["query_type"])
-        template = by_type.get(query_type)
+    for seed in seeds:
         try:
-            if template is None and not context.get("retrieval"):
-                raise ValueError("No unambiguous source template; supply a template mapping")
-            enrich_seed_semantics(seed, template)
-        except ValueError as exc:
-            metadata["reasoning_migration"] = {"status": "unresolved", "error": str(exc)}
-            diagnostics.append(
-                {"uid": seed["uid"], "query_type": seed["query_type"], "error": str(exc)}
-            )
-        migrated.append(seed)
-    return migrated, diagnostics
-
-
-def audit_seeds(
-    seeds, catalog, *, traces=None, caps=(None, 1, 2, 4), template_mapping=None, tokenizer=None
-):
-    seeds, diagnostics = migrate_seeds(seeds, catalog, template_mapping)
+            prepare_seed_semantics(seed, templates[seed["query_type"]])
+        except (ValueError, KeyError) as exc:
+            diagnostics.append({"uid": seed["uid"], "error": str(exc)})
+    invalid = {item["uid"] for item in diagnostics}
     trace_map = {str(trace["uid"]).removesuffix("_teacher"): trace for trace in traces or []}
     report: dict[str, Any] = {
         "semantics_version": SEMANTICS_VERSION,
@@ -110,7 +92,7 @@ def audit_seeds(
             seed["query_type"], {"seeds": 0, "verified": 0, "tool_rules": [], "final_rules": []}
         )
         entry["seeds"] += 1
-        if seed["metadata"].get("reasoning_migration", {}).get("status") == "unresolved":
+        if seed["uid"] in invalid:
             continue
         entry["verified"] += 1
         trace = trace_map.get(seed["uid"])
@@ -229,7 +211,7 @@ def _write_new(path, text):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["compile", "audit", "migrate"])
+    parser.add_argument("command", choices=["compile", "audit"])
     parser.add_argument("--templates", nargs="+", default=DEFAULT_TEMPLATES)
     parser.add_argument(
         "--semantics", nargs="+", help="Separate reasoning files, in the same order as --templates"
@@ -239,10 +221,7 @@ def main(argv=None):
     )
     parser.add_argument("--seeds")
     parser.add_argument("--traces")
-    parser.add_argument(
-        "--template-mapping", help="JSON mapping from legacy query_type names to current names"
-    )
-    parser.add_argument("--output", help="New JSON audit report or migrated JSONL file")
+    parser.add_argument("--output", help="New JSON audit report")
     parser.add_argument(
         "--tokenizer", help="Optional local tokenizer directory for exact reasoning lengths"
     )
@@ -261,11 +240,8 @@ def main(argv=None):
         return
     catalog = load_catalog(args.templates, args.semantics)
     if not args.seeds:
-        if args.command == "migrate":
-            parser.error("migrate requires --seeds and --output")
         print(f"Validated {len(catalog)} semantic template declarations.")
         return
-    mapping = json.loads(Path(args.template_mapping).read_text()) if args.template_mapping else None
     tokenizer = None
     if args.tokenizer:
         from transformers import AutoTokenizer
@@ -275,18 +251,13 @@ def main(argv=None):
         _read_jsonl(args.seeds),
         catalog,
         traces=_read_jsonl(args.traces) if args.traces else None,
-        template_mapping=mapping,
         tokenizer=tokenizer,
     )
-    if args.command == "migrate":
-        if not args.output:
-            parser.error("migrate requires --output; input datasets are never overwritten")
-        _write_new(args.output, "".join(json.dumps(seed) + "\n" for seed in seeds))
-    elif args.output:
+    if args.output:
         _write_new(args.output, json.dumps(report, indent=2) + "\n")
     print(
         f"Templates: {len(catalog)}; verified seeds: {report['verified_seeds']}/{len(seeds)}; "
-        f"migration diagnostics: {len(report['diagnostics'])}."
+        f"semantic diagnostics: {len(report['diagnostics'])}."
     )
     for diagnostic in report["diagnostics"][:5]:
         print(f"{diagnostic['uid']}: {diagnostic['error']}")

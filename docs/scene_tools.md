@@ -48,7 +48,7 @@ Connect objects to their nearest mesh place:
 
 ```bash
 docker/stack.sh main python scripts/graph/fix_3dsg_object_place_edges.py \
-  data/scenes/mit_courtyard_ade20k_full.json \
+  data/scenes/uhumans2_office.json \
   --target-layer mesh-place \
   --output data/scenes/mit_courtyard_ade20k_full.connected.json
 ```

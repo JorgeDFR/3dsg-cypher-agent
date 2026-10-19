@@ -79,7 +79,7 @@ Each dataset owns one teacher trace set. Generating traces again forks a new
 dataset version with the prepared inputs. Downstream commands select the latest
 version by default and accept explicit dataset or model selectors for
 reproducible experiments. See [Artifact versioning](docs/artifact_versioning.md)
-for the directory layout, selection rules, lineage checks, and legacy migration.
+for the directory layout, selection rules, lineage checks, and current artifact schemas.
 
 The data configuration gives the combined dataset a `dataset_id` and lists one
 or more explicit `scene_id`/`scene_path` pairs. Trace generation loads the

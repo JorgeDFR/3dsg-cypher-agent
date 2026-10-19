@@ -5,10 +5,12 @@ from cypher_3dsg_agent_distillation.agents.experiment_profiles import (
     load_experiment_profiles_from_config,
     render_profile_messages,
 )
+from tests.helpers import qa_contract
 
 
 def seed_record(**overrides):
     payload = {
+        "validation_contract": qa_contract(["set[str]"]),
         "uid": "seed",
         "question": "Which object classes exist?",
         "query_type": "object_class_inventory",
@@ -25,6 +27,7 @@ def seed_record(**overrides):
         ),
     }
     payload.update(overrides)
+    payload["validation_contract"] = qa_contract(payload["solution_formats"])
     return payload
 
 
@@ -46,9 +49,9 @@ def test_native_qa_seed_prompt_rendering_excludes_gold_and_solution():
     assert messages[0]["role"] == "system"
     assert all(message["role"] == "user" for message in messages[1:])
     assert "mapping from natural language queries to Cypher queries" in messages[0]["content"]
-    assert text.index(
-        "mapping from natural language queries to Cypher queries"
-    ) < text.index("<Scene Graph Description>")
+    assert text.index("mapping from natural language queries to Cypher queries") < text.index(
+        "<Scene Graph Description>"
+    )
     assert text.index("<Scene Graph Description>") < text.index("<Labelspace Description>")
     assert text.index("<Labelspace Description>") < text.index("Labels in Database:")
     assert "Which object classes exist?" in text
@@ -131,9 +134,8 @@ def test_native_qa_seed_prompt_rendering_uses_solution_formats_for_hint():
 
     assert "Your answer should be an SLDP set of points" in rendered_text(point_messages)
     assert "Your answer should be an SLDP primitive number" in rendered_text(count_messages)
-    assert (
-        "Your answer should be an SLDP set of strings or a primitive string"
-        in rendered_text(scalar_or_set_messages)
+    assert "Your answer should be an SLDP set of strings or a primitive string" in rendered_text(
+        scalar_or_set_messages
     )
 
 
@@ -152,8 +154,8 @@ def test_profile_rejects_unconfigured_tool_interface():
 def test_mixed_config_resolves_profile_per_seed():
     profiles = load_experiment_profiles_from_config(
         {
-            "scene_id": "scene",
-            "scene_path": "scene.json",
+            "dataset_id": "scene",
+            "scenes": [{"scene_id": "scene", "scene_path": "scene.json"}],
             "question_sets": [
                 {
                     "name": "qa",
@@ -189,8 +191,8 @@ def test_mixed_config_resolves_profile_per_seed():
 def test_multiple_question_sets_may_share_one_profile():
     profiles = load_experiment_profiles_from_config(
         {
-            "scene_id": "scene",
-            "scene_path": "scene.json",
+            "dataset_id": "scene",
+            "scenes": [{"scene_id": "scene", "scene_path": "scene.json"}],
             "question_sets": [
                 {
                     "name": name,

@@ -9,6 +9,7 @@ from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
     repair_template_coverage,
     validate_repair_cypher_ratio,
 )
+from tests.helpers import qa_contract
 
 
 def test_each_repair_template_mutates_an_applicable_query():
@@ -24,9 +25,7 @@ def test_each_repair_template_mutates_an_applicable_query():
 
     mutations = {
         template.name: next(
-            mutated
-            for query in queries
-            if (mutated := template.apply(query)) is not None
+            mutated for query in queries if (mutated := template.apply(query)) is not None
         )
         for template in CYPHER_SYNTAX_ERROR_TEMPLATES
     }
@@ -44,6 +43,7 @@ def test_repair_ratio_must_be_between_zero_and_one(ratio):
 def test_controlled_repair_sampling_marks_exact_ratio_and_balances_templates():
     records = [
         {
+            "validation_contract": qa_contract(),
             "uid": f"record-{index}",
             "query_type": "lookup",
             "gold_cypher": (
@@ -74,6 +74,7 @@ def test_controlled_repair_sampling_marks_exact_ratio_and_balances_templates():
 def test_controlled_repair_sampling_excludes_empty_questions():
     records = [
         {
+            "validation_contract": qa_contract(),
             "uid": f"record-{index}",
             "query_type": "lookup",
             "gold_cypher": "MATCH (o:Object) RETURN o.nodeSymbol AS object",
@@ -94,8 +95,7 @@ def test_controlled_repair_sampling_excludes_empty_questions():
     assert len(repairs) == 5
     assert all("invalid_input" not in record["tags"] for record in repairs)
     assert not any(
-        {"invalid_input", "controlled_repair"}.issubset(record["tags"])
-        for record in sampled
+        {"invalid_input", "controlled_repair"}.issubset(record["tags"]) for record in sampled
     )
 
 
@@ -110,9 +110,7 @@ def test_configured_repair_templates_have_broad_question_type_coverage():
         question_templates.extend(config["templates"])
 
     write_refusal = next(
-        template
-        for template in question_templates
-        if template["query_type"] == "write_refusal"
+        template for template in question_templates if template["query_type"] == "write_refusal"
     )
     assert write_refusal["repair_cypher_ratio"] == 0.0
 

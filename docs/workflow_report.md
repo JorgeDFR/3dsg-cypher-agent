@@ -37,9 +37,9 @@ Use version selectors to reproduce a particular report:
 ```bash
 docker/stack.sh main python scripts/reporting/generate_workflow_report.py \
   --data-config configs/data.yaml \
-  --dataset-version 2026-09-08-T-12-05-47-Z \
+  --dataset-version DATASET_VERSION \
   --student-config configs/students/student_qwen3.5_4b.yaml \
-  --model-version 2026-09-08-T-13-00-00-Z
+  --model-version MODEL_VERSION
 ```
 
 | Option | Purpose |
@@ -64,7 +64,7 @@ For a dataset report without model artifacts:
 
 ```bash
 python scripts/reporting/generate_workflow_report.py \
-  --dataset-version 2026-10-16-T-12-14-20-Z --dataset-only
+  --dataset-version DATASET_VERSION --dataset-only
 ```
 
 The output is written to the dataset's `reports/workflow_report.html`.

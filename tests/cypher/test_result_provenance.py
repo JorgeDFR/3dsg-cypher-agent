@@ -316,8 +316,9 @@ def test_mixed_layer_union_uses_branch_provenance_even_with_a_role_named_alias()
 
 
 def test_or_equalities_establish_the_same_role_domain_as_in():
-    query = POOLED.replace("o.class IN ['sofa', 'painting']",
-                           "o.class = 'sofa' OR o.class = 'painting'")
+    query = POOLED.replace(
+        "o.class IN ['sofa', 'painting']", "o.class = 'sofa' OR o.class = 'painting'"
+    )
     result = decode_result(query, POOLED_ROWS, class_roles())
     assert result.actual == {"first": ["O1"], "second": ["O2"]}
     # An unrelated OR branch does not prove a constrained class domain.
@@ -353,9 +354,14 @@ def test_indexed_collect_preserves_target_class_provenance(index):
 
 @pytest.mark.parametrize("rows", [[], [{"pair": ["O1", "O2"]}]])
 def test_literal_list_projection_retains_independent_tuple_positions(rows):
-    contract = {"result": {"kind": "tuples", "roles": {
-        name: {"type": "node_symbol", "layers": ["Object"]} for name in ("item_0", "item_1")
-    }}}
+    contract = {
+        "result": {
+            "kind": "tuples",
+            "roles": {
+                name: {"type": "node_symbol", "layers": ["Object"]} for name in ("item_0", "item_1")
+            },
+        }
+    }
     query = "MATCH (a:Object), (b:Object) RETURN [a.nodeSymbol,b.nodeSymbol] AS pair"
     result = decode_result(query, rows, contract)
     assert result.status == "pass"
@@ -363,11 +369,14 @@ def test_literal_list_projection_retains_independent_tuple_positions(rows):
     assert decode_result(query, [{"pair": ["O1", "R1"]}], contract).status != "pass"
 
 
-@pytest.mark.parametrize("condition", [
-    "toLower(o.class) CONTAINS 'paint'",
-    "toLower(o.class) = 'painting'",
-    "toLower(o.class) CONTAINS 'paint' OR toLower(o.class) CONTAINS 'art'",
-])
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "toLower(o.class) CONTAINS 'paint'",
+        "toLower(o.class) = 'painting'",
+        "toLower(o.class) CONTAINS 'paint' OR toLower(o.class) CONTAINS 'art'",
+    ],
+)
 def test_empty_string_search_can_establish_a_public_role(condition):
     contract = class_roles()
     contract["result"]["roles"] = {"target": contract["result"]["roles"]["second"]}
@@ -384,14 +393,14 @@ def test_unexplained_column_cannot_displace_the_known_answer_projection():
     assert result.status == "invalid_result_shape"
 
 
-def test_legacy_renamed_rows_retain_unique_type_decoding_without_provenance():
+def test_saved_renamed_rows_are_rejected_when_query_projection_is_known():
     result = decode_result(
         "MATCH (o:Object) RETURN o.nodeSymbol AS object",
         [{"renamed": "O999"}],
         SYMBOL_SET,
     )
-    assert result.status == "pass"
-    assert result.actual == ["O999"]
+    assert result.status == "invalid_result_shape"
+    assert "columns disagree" in result.issues[0]
 
 
 def test_union_branch_identity_is_not_required_for_an_unambiguous_simple_set():

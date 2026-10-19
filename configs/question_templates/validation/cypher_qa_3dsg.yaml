@@ -97,13 +97,12 @@ templates:
   object_place_lookup:
     answer:
       formats:
-      - str
       - set[str]
       comparison:
         mode: exact
       empty: <>
     result:
-      kind: flexible
+      kind: set
       type: node_symbol
       property: nodeSymbol
       layers: []

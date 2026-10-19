@@ -1,4 +1,4 @@
-"""Validated retrieval operations shared by templates, migration and reasoning.
+"""Validated retrieval operations shared by templates and reasoning.
 
 The parser deliberately supports a read-only Cypher subset, not arbitrary Cypher.
 Unsupported syntax raises a diagnostic rather than yielding a partial explanation.
@@ -18,6 +18,7 @@ from lark import Lark, Transformer, UnexpectedInput
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SEMANTICS_VERSION = 1
+REASONING_CONTEXT_VERSION = 2
 REASONING_RENDERER_VERSION = 3
 
 GRAMMAR = r"""
@@ -539,110 +540,58 @@ def semantic_fingerprint(spec: dict[str, Any], goal: Any = None, fields: Any = N
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def recover_bindings(template_query: str, query: str) -> dict[str, Any]:
-    """Recover only bindings that reproduce a legacy query's parsed operations."""
-    template_query = template_query.strip()
-    fields = []
-    pieces = []
-    cursor = 0
-    for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_.]*)\}", template_query):
-        # Normalize whitespace in fixed query text; do not normalize string values.
-        pieces.append(
-            re.sub(r"(?:\\\s)+", r"\\s+", re.escape(template_query[cursor : match.start()]))
-        )
-        fields.append(match.group(1))
-        pieces.append("(.+?)")
-        cursor = match.end()
-    pieces.append(re.sub(r"(?:\\\s)+", r"\\s+", re.escape(template_query[cursor:])))
-    match = re.fullmatch("".join(pieces).strip(), query.strip(), re.DOTALL)
-    if not match:
-        if not fields and _canonical(parse_query(template_query)) == _canonical(parse_query(query)):
-            return {}
-        raise ValueError("Legacy query no longer matches the source template; regenerate this seed")
-    recovered = {}
-    for field, raw in zip(fields, match.groups(), strict=True):
-        try:
-            value = json.loads(raw)
-        except (ValueError, TypeError):
-            value = raw
-        if field in recovered and recovered[field] != value:
-            raise ValueError(f"Conflicting legacy binding: {field}")
-        recovered[field] = value
-    nested = {}
-    for field, value in recovered.items():
-        target = nested
-        parts = field.split(".")
-        for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        target[parts[-1]] = value
-    validate_query_semantics(resolve_semantics(parse_query(template_query), nested), query)
-    return nested
-
-
 def build_semantic_context(variables, template, query):
-    spec = template.get("semantics") or parse_query(template.get("cypher") or query)
+    from cypher_3dsg_agent_distillation.cypher.validation_config import resolve_contract
+
+    spec = template.get("semantics") or parse_query(template["cypher"])
     resolved = resolve_semantics(spec, variables)
     validate_query_semantics(resolved, query)
-    # Store only grounding roles/types; expected values are never reasoning inputs.
-    fields = {
-        name: {
-            key: value
-            for key, value in field.items()
-            if key in {"aliases", "symbol_type", "cardinality"}
-        }
-        for name, field in (template.get("grounding", {}).get("fields", {})).items()
-    }
-    validate_goal_semantics(template.get("goal"), fields)
+    contract = resolve_contract(template["validation_contract"], variables)
+    fields = contract["result"]["roles"]
+    goal = contract["goal"]
+    validate_goal_semantics(goal, fields)
     return {
-        "version": SEMANTICS_VERSION,
+        "version": REASONING_CONTEXT_VERSION,
         "renderer_version": REASONING_RENDERER_VERSION,
         "retrieval": resolved,
-        "goal": deepcopy(template.get("goal")),
-        "grounding_fields": fields,
+        "goal": deepcopy(goal),
+        "grounding_fields": deepcopy(fields),
         "variables": deepcopy(variables),
-        "fingerprint": semantic_fingerprint(resolved, template.get("goal"), fields),
+        "fingerprint": semantic_fingerprint(resolved, goal, fields),
     }
 
 
-def enrich_seed_semantics(seed: dict[str, Any], template: dict[str, Any] | None = None):
-    metadata = seed.setdefault("metadata", {})
-    query = str(seed.get("cypher") or seed.get("gold_cypher") or "")
-    existing = metadata.get("reasoning_context") or {}
-    if existing.get("version") == SEMANTICS_VERSION:
-        validate_query_semantics(existing["retrieval"], query)
-        if existing.get("fingerprint") != semantic_fingerprint(
-            existing["retrieval"], existing.get("goal"), existing.get("grounding_fields")
-        ):
-            raise ValueError("Stored semantic context fingerprint does not match its content")
-        validate_goal_semantics(existing.get("goal"), existing.get("grounding_fields", {}))
-        metadata.pop("reasoning_migration", None)
-        return existing
-    if template is None:
-        if seed.get("task_family") == "cypher_pddl" and not existing.get("goal"):
-            raise ValueError("Legacy PDDL seed requires a verified template with goal semantics")
-        template = {"cypher": query, "goal": existing.get("goal")}
-    variables = recover_bindings(template.get("cypher") or query, query)
-    if existing.get("goal") and existing["goal"] != template.get("goal"):
-        raise ValueError("Legacy goal differs from the source template; regenerate this seed")
-    context = build_semantic_context(variables, template, query)
-    if seed.get("task_family") == "cypher_pddl" and not context.get("goal"):
-        raise ValueError("Legacy PDDL seed requires a verified template with goal semantics")
-    # Golden data may validate provenance, but is never copied into sentence inputs.
-    if seed.get("task_family") == "cypher_pddl" and "expected" in (seed.get("grounding") or {}):
-        from cypher_3dsg_agent_distillation.cypher.pddl_goals import render_goal_spec
-        from cypher_3dsg_agent_distillation.graph.heracles_validation import (
-            answer_matches_with_heracles,
-        )
+def prepare_seed_semantics(seed, template):
+    """Prepare a current synthetic context from explicit generation bindings."""
+    from cypher_3dsg_agent_distillation.cypher.validation_config import (
+        ValidationContract,
+        resolve_contract,
+        template_bindings,
+    )
 
-        saved_solution = seed.get("solution", seed.get("real_solution"))
-        if saved_solution is not None:
-            rendered = render_goal_spec(context["goal"], seed["grounding"]["expected"]) or ""
-            if not all(answer_matches_with_heracles(rendered, str(saved_solution), "PDDL")):
-                raise ValueError(
-                    "Template goal does not reproduce the saved PDDL goal; regenerate this seed"
-                )
-    metadata["reasoning_context"] = context
-    metadata["reasoning_migration"] = {"status": "verified", "version": SEMANTICS_VERSION}
+    variables = template_bindings(seed, template)
+    saved = ValidationContract.model_validate(seed["validation_contract"]).model_dump(mode="json")
+    selected = resolve_contract(template["validation_contract"], variables)
+    # Scene scores are observations; all declarative role, goal and comparison
+    # rules must still agree before creating narration from the selected catalog.
+    for section in ("result", "answer"):
+        saved[section]["comparison"].pop("scores", None)
+        selected[section]["comparison"].pop("scores", None)
+    if saved != selected:
+        raise ValueError(
+            "Saved validation contract differs from the selected catalog; "
+            "refresh current contracts or regenerate seeds."
+        )
+    query = seed.get("cypher") or seed["gold_cypher"]
+    context = build_semantic_context(variables, template, query)
+    existing = seed["metadata"].get("reasoning_context")
+    if existing is not None:
+        validate_semantic_context(existing, query)
+        if existing["fingerprint"] != context["fingerprint"]:
+            raise ValueError(
+                "Synthetic context disagrees with the current contract/catalog; regenerate seeds."
+            )
+    seed["metadata"]["reasoning_context"] = context
     return context
 
 
@@ -671,7 +620,11 @@ def validate_goal_semantics(goal, fields):
                     field = argument["result"]
                     if fields and field not in fields:
                         raise ValueError(f"Goal refers to undeclared grounding field: {field}")
-                    actual_type = fields.get(field, {}).get("symbol_type")
+                    from cypher_3dsg_agent_distillation.cypher.validation_config import (
+                        symbol_type as role_symbol_type,
+                    )
+
+                    actual_type = role_symbol_type(fields.get(field, {}).get("layers", []))
                     allowed = {symbol_type} | (
                         {"Place", "MeshPlace"} if symbol_type == "PlaceOrMeshPlace" else set()
                     )
@@ -694,3 +647,16 @@ def validate_goal_semantics(goal, fields):
                 visit(child)
 
     visit(goal)
+
+
+def validate_semantic_context(context, query):
+    if context.get("version") != REASONING_CONTEXT_VERSION or "retrieval" not in context:
+        raise ValueError(
+            "A current verified synthetic reasoning context is required; regenerate seeds."
+        )
+    validate_query_semantics(context["retrieval"], query)
+    if context.get("fingerprint") != semantic_fingerprint(
+        context["retrieval"], context.get("goal"), context.get("grounding_fields")
+    ):
+        raise ValueError("Stored semantic context fingerprint does not match its content")
+    validate_goal_semantics(context.get("goal"), context.get("grounding_fields", {}))

@@ -16,6 +16,7 @@ from cypher_3dsg_agent_distillation.cypher.templates import (
     stable_uid,
 )
 from cypher_3dsg_agent_distillation.cypher.validation_config import load_question_catalog
+from tests.helpers import qa_contract
 
 
 def test_generate_records_expands_nested_values():
@@ -28,6 +29,7 @@ def test_generate_records_expands_nested_values():
             },
             "templates": [
                 {
+                    "validation_contract": qa_contract(["int"]),
                     "query_type": "radius",
                     "solution_formats": ["int"],
                     "variables": {"class": "classes", "point": "points"},
@@ -51,12 +53,14 @@ def test_generation_skips_templates_for_missing_scene_layers():
             "values": {"symbols": ["O1"]},
             "templates": [
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "room_lookup",
                     "variables": {"symbol": "symbols"},
                     "cypher": "MATCH (r:Room) RETURN r",
                     "questions": ["Find the room for {symbol}."],
                 },
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "object_lookup",
                     "variables": {"symbol": "symbols"},
                     "cypher": "MATCH (o:Object) RETURN o",
@@ -77,6 +81,7 @@ def test_any_layer_requirement_does_not_require_every_label_mentioned_in_cypher(
             "values": {"cases": [{"object": "O1"}]},
             "templates": [
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "parent_lookup",
                     "requires_any_layers": [["Place", "MeshPlace"]],
                     "variables": {"case": "cases"},
@@ -101,6 +106,7 @@ def test_generation_carries_scene_labelspace_and_scene_specific_uid():
         "values": {},
         "templates": [
             {
+                "validation_contract": qa_contract(),
                 "query_type": "inventory",
                 "cypher": "MATCH (o:Object) RETURN o",
                 "questions": ["List objects."],
@@ -283,6 +289,7 @@ def test_format_solution_field_supports_sets_of_pairs():
 
 def test_variable_template_samples_target_number_of_unique_questions():
     template = {
+        "validation_contract": qa_contract(),
         "query_type": "lookup",
         "target_questions": 5,
         "variables": {"class": "classes"},
@@ -309,6 +316,7 @@ def test_variable_sampling_uses_distinct_variables_before_wording_reuse():
             "values": {"values": values},
             "templates": [
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "lookup",
                     "target_questions": 10,
                     "variables": {"value": "values"},
@@ -349,6 +357,7 @@ def test_variable_sampling_balances_solutions_before_repeating_them(monkeypatch)
             "sampling": {"seed": 7, "empty_ratio": 0.0},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["str"]),
                     "query_type": "room_lookup",
                     "target_questions": 6,
                     "solution_formats": ["str"],
@@ -377,6 +386,7 @@ def test_variable_sampling_balances_explicit_sampling_groups():
             "values": {"cases": cases},
             "templates": [
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "room_lookup",
                     "target_questions": 12,
                     "variables": {"case": "cases"},
@@ -399,6 +409,7 @@ def test_variable_template_warns_when_target_exceeds_variant_capacity():
                 "values": {"classes": ["chair"]},
                 "templates": [
                     {
+                        "validation_contract": qa_contract(),
                         "query_type": "lookup",
                         "target_questions": 10,
                         "variables": {"class": "classes"},
@@ -428,6 +439,7 @@ def test_empty_ratio_is_enforced_for_each_variable_template(monkeypatch):
             "sampling": {"seed": 7, "empty_ratio": 0.1},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["set[str]"]),
                     "query_type": "lookup",
                     "target_questions": 10,
                     "solution_formats": ["set[str]"],
@@ -468,6 +480,7 @@ def test_invalid_inputs_use_empty_answers_with_template_empty_ratio(monkeypatch)
             "sampling": {"empty_ratio": 0.1},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["set[str]"]),
                     "query_type": "lookup",
                     "target_questions": 10,
                     "empty_ratio": 0.2,
@@ -509,25 +522,28 @@ def test_pddl_invalid_inputs_are_retained_as_empty_answer_candidates(monkeypatch
             "sampling": {"empty_ratio": 0.3},
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "object": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "value",
+                                    "cardinality": "set",
+                                }
+                            },
+                        },
+                        "goal": {"fact": "visited-object", "arguments": [{"result": "object"}]},
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_visit_object_symbol",
                     "target_questions": 10,
                     "variables": {"object": "objects"},
                     "cypher": (
                         "MATCH (o:Object {nodeSymbol: '{object}'}) RETURN o.nodeSymbol AS object"
                     ),
-                    "grounding": {
-                        "fields": {
-                            "object": {
-                                "source": "value",
-                                "aliases": ["object"],
-                                "symbol_type": "Object",
-                            }
-                        }
-                    },
-                    "goal": {
-                        "fact": "visited-object",
-                        "arguments": [{"result": "object"}],
-                    },
                     "questions": ["Visit {object}."],
                 }
             ],
@@ -566,6 +582,35 @@ def test_pddl_partial_invalid_grounding_is_fully_empty(monkeypatch):
         question_templates_config={
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "first": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "first",
+                                    "cardinality": "set",
+                                },
+                                "second": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "second",
+                                    "cardinality": "set",
+                                },
+                            },
+                        },
+                        "goal": {
+                            "operator": "and",
+                            "clauses": [
+                                {"fact": "safe", "arguments": [{"result": "first"}]},
+                                {"fact": "safe", "arguments": [{"result": "second"}]},
+                            ],
+                        },
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_pair",
                     "target_questions": 1,
                     "empty_ratio": 1.0,
@@ -574,19 +619,6 @@ def test_pddl_partial_invalid_grounding_is_fully_empty(monkeypatch):
                         "second_class": "second_classes",
                     },
                     "cypher": "RETURN '{first_class}', '{second_class}'",
-                    "grounding": {
-                        "fields": {
-                            "first": {"source": "first", "cardinality": "set"},
-                            "second": {"source": "second", "cardinality": "set"},
-                        }
-                    },
-                    "goal": {
-                        "operator": "and",
-                        "clauses": [
-                            {"fact": "safe", "arguments": [{"result": "first"}]},
-                            {"fact": "safe", "arguments": [{"result": "second"}]},
-                        ],
-                    },
                     "questions": ["Use {first_class} and {second_class}."],
                 }
             ]
@@ -621,6 +653,7 @@ def test_qa_nonempty_result_with_absent_filter_value_is_not_invalid(monkeypatch)
         question_templates_config={
             "templates": [
                 {
+                    "validation_contract": qa_contract(["str"]),
                     "query_type": "nearest_excluding",
                     "target_questions": 1,
                     "solution_formats": ["str"],
@@ -661,6 +694,7 @@ def test_qa_zero_count_with_absent_filter_value_is_sampled_as_empty(monkeypatch)
             "sampling": {"seed": 7, "empty_ratio": 0.2},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["int"]),
                     "query_type": "object_class_count",
                     "target_questions": 10,
                     "solution_formats": ["int"],
@@ -700,6 +734,7 @@ def test_qa_zero_count_with_valid_input_is_empty_but_not_invalid(monkeypatch):
             "sampling": {"seed": 7, "empty_ratio": 0.5},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["int"]),
                     "query_type": "object_class_count",
                     "target_questions": 2,
                     "solution_formats": ["int"],
@@ -745,23 +780,39 @@ def test_generation_bounds_solution_size_and_cartesian_result_rows(monkeypatch):
             },
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "first": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "first",
+                                    "cardinality": "set",
+                                },
+                                "second": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "second",
+                                    "cardinality": "set",
+                                },
+                            },
+                        },
+                        "goal": {
+                            "operator": "and",
+                            "clauses": [
+                                {"fact": "safe", "arguments": [{"result": "first"}]},
+                                {"fact": "safe", "arguments": [{"result": "second"}]},
+                            ],
+                        },
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_pair",
                     "target_questions": 1,
                     "variables": {"case": "cases"},
                     "cypher": "RETURN '{case}'",
-                    "grounding": {
-                        "fields": {
-                            "first": {"source": "first", "cardinality": "set"},
-                            "second": {"source": "second", "cardinality": "set"},
-                        }
-                    },
-                    "goal": {
-                        "operator": "and",
-                        "clauses": [
-                            {"fact": "safe", "arguments": [{"result": "first"}]},
-                            {"fact": "safe", "arguments": [{"result": "second"}]},
-                        ],
-                    },
                     "questions": ["Use {case}."],
                 }
             ],
@@ -783,6 +834,7 @@ def test_generation_rejects_invalid_sampling_size_limits(key, value):
                 "sampling": {key: value},
                 "templates": [
                     {
+                        "validation_contract": qa_contract(),
                         "query_type": "lookup",
                         "variables": {"value": "values"},
                         "cypher": "RETURN '{value}'",
@@ -809,6 +861,7 @@ def test_empty_sampling_prioritizes_distinct_variables(monkeypatch):
             "sampling": {"seed": 7, "empty_ratio": 0.5},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["set[str]"]),
                     "query_type": "lookup",
                     "target_questions": 20,
                     "solution_formats": ["set[str]"],
@@ -831,6 +884,7 @@ def test_no_variable_template_keeps_each_wording_variant():
             "values": {},
             "templates": [
                 {
+                    "validation_contract": qa_contract(),
                     "query_type": "inventory",
                     "target_questions": 50,
                     "cypher": "MATCH (n) RETURN n",
@@ -872,25 +926,30 @@ def test_pddl_template_generates_goal_and_grounding_contract(monkeypatch):
         question_templates_config={
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "object": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "value",
+                                    "cardinality": "set",
+                                }
+                            },
+                        },
+                        "goal": {
+                            "fact": "holding",
+                            "arguments": [{"result": "object"}],
+                            "multiple": "or",
+                        },
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_hold_object_class",
                     "target_questions": 1,
                     "variables": {"class": "classes"},
                     "cypher": "RETURN '{class}' AS object",
-                    "grounding": {
-                        "fields": {
-                            "object": {
-                                "source": "value",
-                                "aliases": ["object"],
-                                "symbol_type": "Object",
-                                "cardinality": "set",
-                            }
-                        }
-                    },
-                    "goal": {
-                        "fact": "holding",
-                        "arguments": [{"result": "object"}],
-                        "multiple": "or",
-                    },
                     "questions": ["Pick up a {class}."],
                 }
             ]
@@ -928,6 +987,43 @@ def test_pddl_disjunction_preserves_available_branch(monkeypatch):
             "sampling": {"empty_ratio": 0.0},
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "first": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "first",
+                                    "cardinality": "set",
+                                },
+                                "second": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "second",
+                                    "cardinality": "set",
+                                },
+                            },
+                        },
+                        "goal": {
+                            "operator": "or",
+                            "clauses": [
+                                {
+                                    "fact": "safe",
+                                    "arguments": [{"result": "first"}],
+                                    "multiple": "or",
+                                },
+                                {
+                                    "fact": "visited-object",
+                                    "arguments": [{"result": "second"}],
+                                    "multiple": "or",
+                                },
+                            ],
+                        },
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_atomic_alternative",
                     "target_questions": 1,
                     "variables": {
@@ -935,37 +1031,6 @@ def test_pddl_disjunction_preserves_available_branch(monkeypatch):
                         "second_class": "second_classes",
                     },
                     "cypher": "RETURN '{first_class}', '{second_class}'",
-                    "grounding": {
-                        "fields": {
-                            "first": {
-                                "source": "first",
-                                "aliases": ["first"],
-                                "symbol_type": "Object",
-                                "cardinality": "set",
-                            },
-                            "second": {
-                                "source": "second",
-                                "aliases": ["second"],
-                                "symbol_type": "Object",
-                                "cardinality": "set",
-                            },
-                        }
-                    },
-                    "goal": {
-                        "operator": "or",
-                        "clauses": [
-                            {
-                                "fact": "safe",
-                                "arguments": [{"result": "first"}],
-                                "multiple": "or",
-                            },
-                            {
-                                "fact": "visited-object",
-                                "arguments": [{"result": "second"}],
-                                "multiple": "or",
-                            },
-                        ],
-                    },
                     "questions": ["Inspect {first_class} or visit {second_class}."],
                 }
             ],
@@ -997,6 +1062,7 @@ def test_valid_empty_scalar_solution_uses_empty_answer(monkeypatch):
             "sampling": {"empty_ratio": 1.0},
             "templates": [
                 {
+                    "validation_contract": qa_contract(["str"]),
                     "query_type": "nearest_object_between_classes",
                     "target_questions": 1,
                     "solution_formats": ["str"],
@@ -1043,14 +1109,25 @@ def test_pddl_template_without_scene_grounding_does_not_emit_invalid_goal():
         question_templates_config={
             "templates": [
                 {
+                    "validation_contract": {
+                        "result": {
+                            "kind": "role_sets",
+                            "roles": {
+                                "object": {
+                                    "type": "node_symbol",
+                                    "layers": ["Object"],
+                                    "property": "nodeSymbol",
+                                    "oracle_source": "value",
+                                    "cardinality": "set",
+                                }
+                            },
+                        },
+                        "goal": {"fact": "visited-object", "arguments": [{"result": "object"}]},
+                        "answer": {"comparison": {"mode": "pddl_equivalence"}},
+                    },
                     "query_type": "pddl_visit_object_symbol",
                     "variables": {"object": "objects"},
                     "cypher": "RETURN '{object}' AS object",
-                    "grounding": {"fields": {"object": {"source": "value", "aliases": ["object"]}}},
-                    "goal": {
-                        "fact": "visited-object",
-                        "arguments": [{"result": "object"}],
-                    },
                     "questions": ["Visit {object}."],
                 }
             ]
@@ -1063,12 +1140,13 @@ def test_pddl_template_without_scene_grounding_does_not_emit_invalid_goal():
 
 
 def test_pddl_template_rejects_missing_grounding_contract():
-    with pytest.raises(KeyError, match="must define grounding fields"):
+    with pytest.raises(KeyError, match="must define a goal mapping"):
         generate_records(
             {"values": {}},
             question_templates_config={
                 "templates": [
                     {
+                        "validation_contract": qa_contract(),
                         "query_type": "pddl_invalid",
                         "cypher": "RETURN 'O1' AS object",
                         "goal": {
@@ -1392,7 +1470,7 @@ def test_pddl_navigation_template_tags_distinguish_waypoints_from_destinations()
     ]
 
     for template in templates:
-        fact = template["goal"].get("fact")
+        fact = template["validation_contract"]["goal"].get("fact")
         tags = set(template.get("tags", []))
         if fact in {"visited-object", "visited-place", "visited-region"}:
             assert "waypoint" in tags, template["query_type"]
@@ -1475,7 +1553,10 @@ def test_pddl_object_in_place_templates_accept_both_place_layers():
         assert template["variables"]["place"] == "place_or_mesh_place_symbols"
         assert template["requires_any_layers"] == [["Place", "MeshPlace"]]
         assert "WHERE p:Place OR p:MeshPlace" in template["cypher"]
-        assert template["grounding"]["fields"]["place"]["symbol_type"] == ("PlaceOrMeshPlace")
+        assert set(template["validation_contract"]["result"]["roles"]["place"]["layers"]) == {
+            "Place",
+            "MeshPlace",
+        }
 
 
 def test_room_object_queries_follow_the_loaded_two_edge_hierarchy():
@@ -1540,21 +1621,20 @@ def test_contracts_are_resolved_only_for_selected_bindings_and_variants_are_inde
         warn_on_target_shortfall=False,
     )
     assert len(records) == 6
-    chosen = {record["metadata"]["reasoning_context"]["variables"]["object"] for record in records}
+    chosen = {record["metadata"]["template_bindings"]["object"] for record in records}
     assert sorted(v["object"] for v in resolved_variables) == sorted(chosen)
     assert len(resolved_variables) < len(template["questions"]) * 3
     for record in records:
-        symbol = record["metadata"]["reasoning_context"]["variables"]["object"]
+        symbol = record["metadata"]["template_bindings"]["object"]
         contract = record["validation_contract"]
         assert contract["result"]["roles"]["object"]["origin"] == {"nodeSymbol": symbol}
         assert record["metadata"]["validation_contract_hash"] == fingerprint(contract)
-        assert record["grounding"]["validation_contract"] is contract
+        assert "validation_contract" not in record["grounding"]
     first, second = next(
         (a, b)
         for i, a in enumerate(records)
         for b in records[i + 1 :]
-        if a["metadata"]["reasoning_context"]["variables"]
-        == b["metadata"]["reasoning_context"]["variables"]
+        if a["metadata"]["template_bindings"] == b["metadata"]["template_bindings"]
     )
     assert first["validation_contract"] is not second["validation_contract"]
     first["validation_contract"]["result"]["roles"]["object"]["origin"]["nodeSymbol"] = "O999"

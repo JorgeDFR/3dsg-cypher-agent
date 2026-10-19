@@ -31,7 +31,7 @@ from cypher_3dsg_agent_distillation.core.versioning import (
     serializable_arguments,
 )
 from cypher_3dsg_agent_distillation.cypher.pddl_goals import (
-    grounding_contract,
+    build_grounding,
     render_pddl_solution,
 )
 from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
@@ -39,9 +39,12 @@ from cypher_3dsg_agent_distillation.cypher.repair_supervision import (
     repair_cypher_sampling_ratio,
 )
 from cypher_3dsg_agent_distillation.cypher.validation_config import (
+    ValidationContract,
+    contract_for_record,
     fingerprint,
     load_question_catalog,
     resolve_contract,
+    template_identity,
     validation_identity,
 )
 from cypher_3dsg_agent_distillation.graph.heracles_validation import validate_pddl_goal
@@ -613,8 +616,7 @@ def coerce_solution_format(value: Any, solution_format: str | None) -> Any:
 
 
 def solution_formats_for_template(template: dict[str, Any]) -> list[str]:
-    formats = template.get("solution_formats", template.get("solution_format"))
-    return normalize_solution_formats(formats)
+    return normalize_solution_formats(template["validation_contract"]["answer"]["formats"])
 
 
 def format_solution_value(value: Any, indent: int = 0) -> str:
@@ -694,27 +696,24 @@ def format_solution_field(
 
 def _attach_validation_contracts(records, template):
     """Validate selected bindings once; discarded candidates never need contracts."""
-    contract = template.get("validation_contract")
-    if not contract:
-        return
+    contract = template["validation_contract"]
     resolved_bindings = {}
     for record in records:
-        variables = record["metadata"]["reasoning_context"]["variables"]
+        variables = record["metadata"]["template_bindings"]
         key = json.dumps(variables, sort_keys=True, default=str)
         if key not in resolved_bindings:
             resolved = resolve_contract(contract, variables)
-            if record.get("answer_validation") is not None:
-                resolved["answer"]["comparison"].update(record["answer_validation"])
-                resolved["result"]["comparison"].update(record["answer_validation"])
+            if record.get("_comparison_scores") is not None:
+                for section in ("answer", "result"):
+                    resolved[section]["comparison"]["scores"] = record["_comparison_scores"]
             resolved_bindings[key] = (resolved, fingerprint(resolved))
         cached, contract_hash = resolved_bindings[key]
         # Variants share a validation result, but not a mutable contract dictionary.
         resolved = deepcopy(cached)
+        record.pop("_comparison_scores", None)
         record["validation_contract"] = resolved
         record["metadata"]["validation_contract_hash"] = contract_hash
         record["metadata"]["validation_provenance"] = template.get("validation_provenance", {})
-        if record.get("grounding") is not None:
-            record["grounding"]["validation_contract"] = resolved
 
 
 def generate_records(
@@ -741,12 +740,16 @@ def generate_records(
         raise TypeError("sampling must be a mapping.")
     sampling_seed = int(seed if seed is not None else sampling_config.get("seed", 42))
     invalid_values = {str(value) for value in (values.get("invalid_values") or [])}
-    # Accept previously extracted value files as input, but ignore their legacy
-    # typed feedback values. Invalid inputs now have ordinary empty answers.
-    invalid_values.update(str(value) for value in (values.get("invalid_value_feedback") or {}))
+    # Use invalid values sampled by the current scene extractor.
     scene_index = SceneIndex(config["source_3dsg"]) if config.get("source_3dsg") else None
     records: list[dict[str, Any]] = []
     for template in templates:
+        template = {
+            **template,
+            "validation_contract": ValidationContract.model_validate(
+                contract_for_record(template)
+            ).model_dump(mode="json"),
+        }
         if not scene_supports_template(template, config.get("scene_summary")):
             continue
         query_type = template["query_type"]
@@ -755,14 +758,12 @@ def generate_records(
         max_result_rows = sampling_size_limit(template, sampling_config, "max_result_rows")
         if scene_index is not None and task_family == "cypher_qa" and not solution_formats:
             raise KeyError(f"Template `{query_type}` must define solution_formats.")
-        if task_family == "cypher_pddl" and not isinstance(template.get("goal"), dict):
-            raise KeyError(f"PDDL template `{query_type}` must define a goal mapping.")
-        if task_family == "cypher_pddl" and not (
-            isinstance(template.get("grounding"), dict)
-            and isinstance(template["grounding"].get("fields"), dict)
-            and template["grounding"]["fields"]
+        if task_family == "cypher_pddl" and not isinstance(
+            template["validation_contract"].get("goal"), dict
         ):
-            raise KeyError(f"PDDL template `{query_type}` must define grounding fields.")
+            raise KeyError(f"PDDL template `{query_type}` must define a goal mapping.")
+        if task_family == "cypher_pddl" and not template["validation_contract"]["result"]["roles"]:
+            raise KeyError(f"PDDL template `{query_type}` must declare result roles.")
 
         variable_combinations = list(variable_product(template, values))
         question_templates = list(template["questions"])
@@ -823,18 +824,24 @@ def generate_records(
             )
             record_grounding = None
             if task_family == "cypher_pddl":
-                record_grounding = grounding_contract(
-                    raw_solution,
-                    template.get("grounding") or {},
-                    variables,
-                )
-                solution = render_pddl_solution(template["goal"], record_grounding)
-                if solution is None:
-                    record_grounding = grounding_contract(
-                        None,
-                        template.get("grounding") or {},
+                record_grounding = {
+                    "expected": build_grounding(
+                        raw_solution,
+                        template["validation_contract"],
                         variables,
                     )
+                }
+                solution = render_pddl_solution(
+                    template["validation_contract"]["goal"], record_grounding
+                )
+                if solution is None:
+                    record_grounding = {
+                        "expected": build_grounding(
+                            None,
+                            template["validation_contract"],
+                            variables,
+                        )
+                    }
                 if solution:
                     valid_goal, _parsed_goal, goal_issues = validate_pddl_goal(solution)
                     if not valid_goal:
@@ -867,19 +874,9 @@ def generate_records(
                     )
                     if value is not None:
                         counts[value] += 1
-                resolved_comparison = resolve_contract(template["validation_contract"], variables)[
-                    "answer"
-                ]["comparison"]
-                answer_validation = {**resolved_comparison, "scores": dict(sorted(counts.items()))}
-            elif template.get("validation_contract"):
-                answer_validation = None
+                comparison_scores = dict(sorted(counts.items()))
             else:
-                answer_validation_for = getattr(scene_index, "answer_validation_for", None)
-                answer_validation = (
-                    answer_validation_for(query_type, variables)
-                    if callable(answer_validation_for)
-                    else None
-                )
+                comparison_scores = None
             variable_key = json.dumps(
                 variables,
                 ensure_ascii=False,
@@ -936,7 +933,7 @@ def generate_records(
                     ),
                     "scene_id": config.get("scene_id"),
                     "labelspace_description": config.get("labelspace_description"),
-                    "read_only": bool(template.get("read_only", True)),
+                    "read_only": True,
                     "tags": deepcopy(template.get("tags", [])),
                 }
                 has_solution = (
@@ -953,8 +950,8 @@ def generate_records(
                     )
                 ) and "invalid_input" not in record["tags"]:
                     record["tags"].append("invalid_input")
-                if answer_validation is not None:
-                    record["answer_validation"] = deepcopy(answer_validation)
+                if comparison_scores is not None:
+                    record["_comparison_scores"] = deepcopy(comparison_scores)
                 if record_grounding is not None:
                     record["grounding"] = deepcopy(record_grounding)
                 record["metadata"] = {
@@ -962,11 +959,8 @@ def generate_records(
                     "question_set": question_set,
                     "task_family": task_family,
                     "output_type": output_type,
-                    "reasoning_context": {
-                        "variables": deepcopy(variables),
-                        "goal": deepcopy(template.get("goal")),
-                        "variable_sources": deepcopy(template.get("variables", {})),
-                    },
+                    "template_bindings": deepcopy(variables),
+                    "template_identity": template_identity(template),
                 }
                 candidates.append(
                     QuestionCandidate(
@@ -1253,17 +1247,6 @@ def apply_dataset_question_targets(
     # Candidate generation is scene-grouped to minimize Neo4j reloads during
     # trace generation. Preserve that order after balanced selection.
     return [record for record in records if str(record["uid"]) in selected_uids]
-
-
-def load_question_templates(config: dict[str, Any]) -> dict[str, Any] | None:
-    template_path = config.get("question_templates_path")
-    if template_path:
-        return load_question_catalog(
-            template_path,
-            config.get("validation_config_path"),
-            config.get("validation_defaults_path"),
-        )
-    return None
 
 
 def write_questions_yaml(records: list[dict[str, Any]], path: str) -> None:

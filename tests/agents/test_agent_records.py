@@ -13,13 +13,11 @@ def test_agent_trace_record_accepts_task_type_and_builds_split_group():
     assert record.model_dump()["task_type"] == "object_class_count"
 
 
-def test_agent_trace_record_accepts_legacy_query_type_input():
+def test_agent_trace_record_rejects_historical_query_type_input():
     payload = answerable_trace()
     payload["query_type"] = payload.pop("task_type")
-
-    record = AgentTraceRecord.model_validate(payload)
-
-    assert record.task_type == "object_class_count"
+    with pytest.raises(ValueError, match="Unsupported trace fields"):
+        AgentTraceRecord.model_validate(payload)
 
 
 def test_agent_trace_record_rejects_answerable_trace_without_tool_call():

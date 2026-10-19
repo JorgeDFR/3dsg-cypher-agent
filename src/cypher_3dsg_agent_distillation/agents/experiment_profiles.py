@@ -89,13 +89,6 @@ def load_experiment_profile(path: str | Path) -> ExperimentProfile:
     return ExperimentProfile.model_validate(load_yaml(resolve_path(path)))
 
 
-def load_experiment_profile_from_config(data_config: dict[str, Any]) -> ExperimentProfile | None:
-    profile_path = data_paths_from_config(data_config).experiment_profile_path
-    if not profile_path:
-        return None
-    return load_experiment_profile(profile_path)
-
-
 def load_experiment_profiles_from_config(
     data_config: dict[str, Any],
 ) -> dict[str, ExperimentProfile]:
@@ -112,8 +105,7 @@ def experiment_profile_for_seed(
     seed: dict[str, Any],
     profiles: dict[str, ExperimentProfile],
 ) -> ExperimentProfile:
-    metadata = seed.get("metadata") or {}
-    requested = seed.get("experiment_profile") or metadata.get("experiment_profile")
+    requested = seed.get("experiment_profile")
     if requested:
         try:
             profile = profiles[str(requested)]
@@ -129,9 +121,7 @@ def experiment_profile_for_seed(
             profile for profile in profiles.values() if profile.task_family == task_family
         ]
         if len(candidates) != 1:
-            raise ValueError(
-                f"Seed {seed.get('uid')} does not identify one experiment profile."
-            )
+            raise ValueError(f"Seed {seed.get('uid')} does not identify one experiment profile.")
         profile = candidates[0]
 
     seed_task_family = str(seed.get("task_family") or profile.task_family)
@@ -188,16 +178,12 @@ def render_profile_messages(
         load_text_section(profile.in_context_examples_path, ["in_context_examples"]),
         prompt.novel_instruction_preamble.strip() if prompt.novel_instruction_preamble else None,
         prompt.novel_instruction_template.format(question=str(seed["question"]).strip()).strip(),
-        (
-            prompt.answer_semantic_guidance.strip()
-            if prompt.answer_semantic_guidance
-            else None
-        ),
+        (prompt.answer_semantic_guidance.strip() if prompt.answer_semantic_guidance else None),
         answer_formatting_guidance(profile.output_type),
     ]
     if profile.answer_type_hint:
         solution_format_hint = answer_type_hint_from_solution_formats(
-            seed.get("solution_formats") or seed.get("solution_format"),
+            seed["validation_contract"]["answer"]["formats"],
             profile.output_type,
         )
         if solution_format_hint is not None:
@@ -218,11 +204,5 @@ def render_profile_messages(
             messages[0]["content"] += "\n" + guidance
         else:
             messages.append({"role": "system", "content": guidance})
-    messages.extend(
-        [
-            {"role": "user", "content": section}
-            for section in user_sections
-            if section
-        ]
-    )
+    messages.extend([{"role": "user", "content": section} for section in user_sections if section])
     return messages

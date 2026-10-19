@@ -66,6 +66,11 @@ def wait_for_neo4j(
 
 
 def command(args: argparse.Namespace) -> None:
+    from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import PreparedCypherSeedRecord
+
+    inputs = read_jsonl(args.input)
+    for record in inputs:
+        PreparedCypherSeedRecord.model_validate(record)
     if not args.show_db_notifications:
         suppress_neo4j_notification_logs()
 
@@ -98,9 +103,8 @@ def command(args: argparse.Namespace) -> None:
     )
     try:
         records = evaluate_records(
-            records=read_jsonl(args.input),
+            records=inputs,
             cypher_field=args.cypher_field,
-            allow_writes=args.allow_writes,
             validator=validator,
             policy=policy,
         )
@@ -126,10 +130,10 @@ def main() -> None:
     )
     parser.add_argument("--compose-file", default=DEFAULT_COMPOSE_FILE)
     parser.add_argument("--scene", default="data/scenes/uhumans2_office.json")
-    parser.add_argument("--input", default="data/legacy/processed/cypher_records.jsonl")
+    parser.add_argument("--input", required=True)
     parser.add_argument(
         "--output",
-        default="data/legacy/reports/cypher_records.heracles.report.json",
+        required=True,
     )
     parser.add_argument("--schema-config", default="configs/schema_3dsg.yaml")
     parser.add_argument("--cypher-field", default="cypher")
@@ -162,7 +166,6 @@ def main() -> None:
     parser.add_argument("--query-timeout", type=float, default=30.0)
     parser.add_argument("--skip-docker", action="store_true")
     parser.add_argument("--skip-load", action="store_true")
-    parser.add_argument("--allow-writes", action="store_true")
     parser.add_argument(
         "--show-db-notifications",
         action="store_true",

@@ -26,6 +26,7 @@ from cypher_3dsg_agent_distillation.training.train import (
     training_arguments_kwargs,
     training_tool_schemas,
 )
+from tests.helpers import answerable_trace
 
 
 class DummyTokenizer:
@@ -85,22 +86,28 @@ def test_build_dataset_only_keeps_rendered_text_for_mixed_metadata(tmp_path):
     path = tmp_path / "train.jsonl"
     write_jsonl(
         [
-            {
-                "uid": "one",
-                "solution": "O1",
-                "messages": [
-                    {"role": "user", "content": "Question one"},
-                    {"role": "assistant", "content": "MATCH (n) RETURN n"},
-                ],
-            },
-            {
-                "uid": "two",
-                "solution": 4,
-                "messages": [
-                    {"role": "user", "content": "Question two"},
-                    {"role": "assistant", "content": "MATCH (n) RETURN count(n)"},
-                ],
-            },
+            answerable_trace(
+                **{
+                    "uid": "one",
+                    "expected_solution": "O1",
+                    "messages": [
+                        {"role": "user", "content": "Question one"},
+                        {"role": "assistant", "content": "MATCH (n) RETURN n"},
+                    ],
+                },
+                tools=[],
+            ),
+            answerable_trace(
+                **{
+                    "uid": "two",
+                    "expected_solution": 4,
+                    "messages": [
+                        {"role": "user", "content": "Question two"},
+                        {"role": "assistant", "content": "MATCH (n) RETURN count(n)"},
+                    ],
+                },
+                tools=[],
+            ),
         ],
         path,
     )
@@ -290,14 +297,9 @@ def test_training_arguments_kwargs_accepts_exact_warmup_step_count():
     assert kwargs["warmup_steps"] == 125
 
 
-def test_training_arguments_kwargs_maps_legacy_warmup_ratio():
-    kwargs = training_arguments_kwargs(
-        {"output_dir": "out", "warmup_ratio": 0.1},
-        has_eval_dataset=False,
-    )
-
-    assert kwargs["warmup_steps"] == 0.1
-    assert "warmup_ratio" not in kwargs
+def test_training_arguments_reject_retired_warmup_ratio():
+    with pytest.raises(ValueError, match="warmup_steps"):
+        training_arguments_kwargs({"warmup_ratio": 0.1}, has_eval_dataset=False)
 
 
 @pytest.mark.parametrize("use_gradient_checkpointing", [False, True])
@@ -374,9 +376,7 @@ def test_sft_config_kwargs_defaults_to_chunked_loss(loss_config, has_eval_datase
 
 @pytest.mark.parametrize("loss_type", ["nll", "chunked_nll", "dft"])
 def test_sft_config_kwargs_preserves_explicit_loss_choice(loss_type):
-    kwargs = sft_config_kwargs(
-        {"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True
-    )
+    kwargs = sft_config_kwargs({"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True)
 
     assert kwargs["loss_type"] == loss_type
 
@@ -384,9 +384,7 @@ def test_sft_config_kwargs_preserves_explicit_loss_choice(loss_type):
 @pytest.mark.parametrize("loss_type", ["", "auto", "unknown", False])
 def test_sft_config_kwargs_rejects_invalid_loss_type(loss_type):
     with pytest.raises(ValueError, match=r"training\.loss_type"):
-        sft_config_kwargs(
-            {"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True
-        )
+        sft_config_kwargs({"output_dir": "out", "loss_type": loss_type}, has_eval_dataset=True)
 
 
 def test_sft_config_kwargs_skips_trl_preparation_for_pretokenized_labels():
@@ -473,20 +471,26 @@ def test_build_training_dataset_rejects_overlength_traces_with_total_warning(tmp
     path = tmp_path / "train.jsonl"
     write_jsonl(
         [
-            {
-                "uid": "retained",
-                "messages": [
-                    {"role": "user", "content": "Q"},
-                    {"role": "assistant", "content": "A"},
-                ],
-            },
-            {
-                "uid": "rejected",
-                "messages": [
-                    {"role": "user", "content": "Q"},
-                    {"role": "assistant", "content": "A" * 100},
-                ],
-            },
+            answerable_trace(
+                **{
+                    "uid": "retained",
+                    "messages": [
+                        {"role": "user", "content": "Q"},
+                        {"role": "assistant", "content": "A"},
+                    ],
+                },
+                tools=[],
+            ),
+            answerable_trace(
+                **{
+                    "uid": "rejected",
+                    "messages": [
+                        {"role": "user", "content": "Q"},
+                        {"role": "assistant", "content": "A" * 100},
+                    ],
+                },
+                tools=[],
+            ),
         ],
         path,
     )

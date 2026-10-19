@@ -16,7 +16,6 @@ from cypher_3dsg_agent_distillation.core.cli_output import print_summary
 from cypher_3dsg_agent_distillation.core.config import (
     PROJECT_ROOT,
     ensure_parent,
-    existing_report_path,
     load_data_config,
     load_student_config,
     model_reports_dir,
@@ -26,9 +25,6 @@ from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.versioning import (
     confirm_dataset_lineage,
     read_metadata,
-)
-from cypher_3dsg_agent_distillation.cypher.cypher_match_diagnostics import (
-    result_match_diagnostics,
 )
 
 SPLITS = ("train", "eval", "test", "challenge")
@@ -50,7 +46,7 @@ LABEL_OVERRIDES = {
     "url": "URL",
     "utc": "UTC",
 }
-NEGATIVE_BOOLEAN_KEYS = {"rejected", "potential_hidden_false_positive"}
+NEGATIVE_BOOLEAN_KEYS = {"rejected"}
 CLEAN_DETAIL_FIELD_TOKENS = ("answer", "cypher", "solution")
 PRE_TABLE_KEYS = {"gold_cypher", "model_cypher", "sample", "solution"}
 
@@ -64,7 +60,7 @@ def workflow_report_output_path(
         return Path(output)
     if student_config is not None and student_config.get("model_version"):
         return model_reports_dir(data_config, student_config) / DEFAULT_REPORT_NAME
-    return Path(data_config["test_report_path"]).with_name(DEFAULT_REPORT_NAME)
+    return reports_dir(data_config) / DEFAULT_REPORT_NAME
 
 
 def relative_path(path: str | Path | None) -> str:
@@ -86,7 +82,7 @@ def read_yaml_if_exists(path: str | Path) -> dict[str, Any]:
 
 
 def read_json_if_exists(path: str | Path) -> Any:
-    resolved = existing_report_path(path)
+    resolved = Path(path)
     if not resolved.exists():
         return None
     return json.loads(resolved.read_text(encoding="utf-8"))
@@ -132,8 +128,7 @@ def count_by_task_type(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def task_family(record: dict[str, Any]) -> str:
-    metadata = record.get("metadata") or {}
-    return str(record.get("task_family") or metadata.get("task_family") or "cypher_qa")
+    return str(record.get("task_family") or "cypher_qa")
 
 
 def count_by_task_family(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -141,11 +136,9 @@ def count_by_task_family(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def output_type(record: dict[str, Any]) -> str:
-    metadata = record.get("metadata") or {}
-    value = record.get("output_type") or metadata.get("output_type")
-    if value:
-        return str(value)
-    return "PDDL" if task_family(record) == "cypher_pddl" else "SLDP"
+    return str(
+        record.get("output_type") or ("PDDL" if task_family(record) == "cypher_pddl" else "SLDP")
+    )
 
 
 def is_pddl_record(record: dict[str, Any]) -> bool:
@@ -203,7 +196,7 @@ def field_text(value: Any, key: str | None = None) -> str:
 
 
 def record_gold_cypher(record: dict[str, Any]) -> Any:
-    return record.get("gold_cypher") or record.get("solution_cypher")
+    return record.get("gold_cypher") or record.get("cypher")
 
 
 def tool_call_cypher(tool_call: dict[str, Any]) -> str:
@@ -229,9 +222,7 @@ def tool_call_cypher(tool_call: dict[str, Any]) -> str:
         return match.group("cypher").strip() if match else arguments.strip()
     if not isinstance(parsed, dict):
         return ""
-    return str(
-        parsed.get("cypher_string") or parsed.get("cypher") or parsed.get("query") or ""
-    )
+    return str(parsed.get("cypher_string") or parsed.get("cypher") or parsed.get("query") or "")
 
 
 def model_cypher_from_messages(record: dict[str, Any]) -> str:
@@ -253,7 +244,7 @@ def record_model_cypher(record: dict[str, Any]) -> Any:
 
 
 def record_solution(record: dict[str, Any]) -> Any:
-    for key in ("expected_solution", "real_solution", "solution"):
+    for key in ("expected_solution", "solution"):
         if key in record and record[key] is not None:
             return record[key]
     return None
@@ -474,15 +465,11 @@ def split_question_detail(
     info = optimized_lookup.get((uid, split)) or optimized_from_record(record, split) or {}
     kinds = optimization_kinds_from_info(info)
     tool_calls = (
-        info.get("tool_call_count")
-        or metadata.get("tool_call_count")
-        or count_tool_calls(record)
+        info.get("tool_call_count") or metadata.get("tool_call_count") or count_tool_calls(record)
     )
     return {
         "title": "Split Question Details",
-        "fields": {
-            key: value for key, value in row.items() if key != "question"
-        }
+        "fields": {key: value for key, value in row.items() if key != "question"}
         | {
             "optimization_type": kinds or ["none"],
             "tool_calls": tool_calls,
@@ -506,10 +493,7 @@ def merged_trace_records(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     def key_for(record: dict[str, Any]) -> str:
         return str(
-            record.get("uid")
-            or record.get("seed_uid")
-            or record.get("question")
-            or id(record)
+            record.get("uid") or record.get("seed_uid") or record.get("question") or id(record)
         )
 
     for record in traces["accepted_records"]:
@@ -577,7 +561,8 @@ def trace_detail(row: dict[str, Any], gold_cypher_lookup: dict[str, Any]) -> dic
         "fields": {
             key: value
             for key, value in row.items()
-            if key not in {
+            if key
+            not in {
                 "record",
                 "in_teacher_jsonl",
                 "question",
@@ -611,11 +596,7 @@ def trace_detail(row: dict[str, Any], gold_cypher_lookup: dict[str, Any]) -> dic
 
 def split_task_type_pivot(by_task_type: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
     task_types = sorted(
-        {
-            task_type_name
-            for counts in by_task_type.values()
-            for task_type_name in counts
-        }
+        {task_type_name for counts in by_task_type.values() for task_type_name in counts}
     )
     rows = []
     for task_type_name in task_types:
@@ -630,13 +611,7 @@ def split_task_type_pivot(by_task_type: dict[str, dict[str, int]]) -> list[dict[
 def split_task_family_pivot(
     by_task_family: dict[str, dict[str, int]],
 ) -> list[dict[str, Any]]:
-    families = sorted(
-        {
-            family
-            for counts in by_task_family.values()
-            for family in counts
-        }
-    )
+    families = sorted({family for counts in by_task_family.values() for family in counts})
     rows = []
     for family in families:
         row = {"task_family": family}
@@ -648,7 +623,7 @@ def split_task_family_pivot(
 
 
 def reports_dir(data_config: dict[str, Any]) -> Path:
-    return Path(data_config["test_report_path"]).parent
+    return Path(data_config["dataset_dir"]) / "reports"
 
 
 def report_path(data_config: dict[str, Any], name: str) -> Path:
@@ -656,8 +631,7 @@ def report_path(data_config: dict[str, Any], name: str) -> Path:
 
 
 def collect_report_files(data_config: dict[str, Any]) -> list[dict[str, Any]]:
-    dataset_reports = reports_dir(data_config)
-    directory = dataset_reports.parent if dataset_reports.name == "dataset" else dataset_reports
+    directory = reports_dir(data_config)
     if not directory.exists():
         return []
     return [file_info(path) for path in sorted(directory.rglob("*.report.json"))]
@@ -668,10 +642,7 @@ def report_quantization(report: dict[str, Any], path: Path) -> str:
     raw_generation = metadata.get("raw_generation") or {}
     runtime = raw_generation.get("runtime") or {}
     model_details = runtime.get("model_details") or {}
-    quantization = (
-        model_details.get("quantization_level")
-        or model_details.get("quantization")
-    )
+    quantization = model_details.get("quantization_level") or model_details.get("quantization")
     if quantization:
         return str(quantization).strip().upper()
 
@@ -695,14 +666,7 @@ def collect_quantization_reports(
     )
     reports = {}
     pattern = "challenge.student.ollama.*.raw-generation.report.json"
-    legacy = directory
-    for root in directory.parents:
-        if root.name == "reports":
-            legacy = root / "models" / directory.relative_to(root)
-            break
-    paths = {path.name: path for path in legacy.glob(pattern)}
-    paths.update({path.name: path for path in directory.glob(pattern)})
-    for path in sorted(paths.values()):
+    for path in sorted(directory.glob(pattern)):
         report = read_json_if_exists(path)
         if not isinstance(report, dict):
             continue
@@ -772,13 +736,7 @@ def collect_workflow_report_data(
 
     scene_graphs = {}
     scene_artifacts = {}
-    configured_scenes = data_config.get("scenes") or [
-        {
-            "scene_id": data_config.get("scene_id", "scene"),
-            "scene_path": data_config.get("scene_path"),
-            "scene_template_values_path": data_config["scene_template_values_path"],
-        }
-    ]
+    configured_scenes = data_config["scenes"]
     for scene in configured_scenes:
         scene_values_doc = read_yaml_if_exists(scene["scene_template_values_path"])
         scene_graphs[scene["scene_id"]] = {
@@ -791,14 +749,30 @@ def collect_workflow_report_data(
             "scene_template_values": file_info(scene["scene_template_values_path"]),
         }
     generated_questions_doc = read_yaml_if_exists(data_config["raw_questions_path"])
-    generated_questions = generated_questions_doc.get("questions") or []
-    seed_records = read_jsonl_if_exists(data_config["seed_records_jsonl_path"])
-    teacher_traces = read_jsonl_if_exists(data_config["teacher_traces_jsonl_path"])
+    from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
+    from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import (
+        CypherSeedRecord,
+        PreparedCypherSeedRecord,
+    )
+
+    def traces(path):
+        return [
+            AgentTraceRecord.model_validate(record).model_dump(exclude_none=True)
+            for record in read_jsonl_if_exists(path)
+        ]
+
+    generated_questions = [
+        CypherSeedRecord.model_validate(record).model_dump(by_alias=True, exclude_none=True)
+        for record in generated_questions_doc.get("questions") or []
+    ]
+    seed_records = [
+        PreparedCypherSeedRecord.model_validate(record).model_dump(exclude_none=True)
+        for record in read_jsonl_if_exists(data_config["seed_records_jsonl_path"])
+    ]
+    teacher_traces = traces(data_config["teacher_traces_jsonl_path"])
     accepted_traces = read_json_array_if_exists(data_config["accepted_traces_path"])
     rejected_traces = read_json_array_if_exists(data_config["rejected_traces_path"])
-    split_records = {
-        split: read_jsonl_if_exists(data_config["splits"][split]) for split in SPLITS
-    }
+    split_records = {split: traces(data_config["splits"][split]) for split in SPLITS}
     split_report = read_json_if_exists(report_path(data_config, "split.report.json"))
     selected_model_reports_dir = (
         model_reports_dir(data_config, student_config)
@@ -834,8 +808,8 @@ def collect_workflow_report_data(
         )
         for split in SPLITS
     }
-    quantization_raw_generation_reports = {} if dataset_only else collect_quantization_reports(
-        data_config, student_config
+    quantization_raw_generation_reports = (
+        {} if dataset_only else collect_quantization_reports(data_config, student_config)
     )
     agent_reports = {
         split: read_model_report(report_path(data_config, f"{split}.agent.report.json"))
@@ -860,7 +834,7 @@ def collect_workflow_report_data(
     return {
         "metadata": {
             "created_at": datetime.now(UTC).isoformat(),
-            "dataset_id": data_config.get("dataset_id", data_config.get("scene_id")),
+            "dataset_id": data_config["dataset_id"],
             "scene_ids": [scene["scene_id"] for scene in configured_scenes],
             "dataset_version": data_config.get("dataset_version"),
             "model_version": (student_config or {}).get("model_version"),
@@ -870,23 +844,23 @@ def collect_workflow_report_data(
         "artifacts": {
             "scenes": scene_artifacts,
             "scene": file_info(configured_scenes[0].get("scene_path")),
-            "scene_template_values": file_info(
-                configured_scenes[0]["scene_template_values_path"]
-            ),
+            "scene_template_values": file_info(configured_scenes[0]["scene_template_values_path"]),
             "generated_questions": file_info(data_config["raw_questions_path"]),
             "seed_records": file_info(data_config["seed_records_jsonl_path"]),
             "teacher_traces": file_info(data_config["teacher_traces_jsonl_path"]),
             "accepted_traces": file_info(data_config["accepted_traces_path"]),
             "rejected_traces": file_info(data_config["rejected_traces_path"]),
             "reports": [
-                info for info in collect_report_files(data_config)
-                if not dataset_only or Path(info["path"]).name in {
-                    "split.report.json", "revalidation.report.json",
+                info
+                for info in collect_report_files(data_config)
+                if not dataset_only
+                or Path(info["path"]).name
+                in {
+                    "split.report.json",
+                    "revalidation.report.json",
                 }
             ],
-            "splits": {
-                split: file_info(data_config["splits"][split]) for split in SPLITS
-            },
+            "splits": {split: file_info(data_config["splits"][split]) for split in SPLITS},
         },
         "scene_graphs": scene_graphs,
         "scene_graph": next(
@@ -913,8 +887,7 @@ def collect_workflow_report_data(
             "rejected_reasons": dict(
                 sorted(
                     Counter(
-                        str(record.get("reason") or "unknown")
-                        for record in rejected_traces
+                        str(record.get("reason") or "unknown") for record in rejected_traces
                     ).items()
                 )
             ),
@@ -926,8 +899,7 @@ def collect_workflow_report_data(
                 split: count_by_task_type(records) for split, records in split_records.items()
             },
             "by_task_family": {
-                split: count_by_task_family(records)
-                for split, records in split_records.items()
+                split: count_by_task_family(records) for split, records in split_records.items()
             },
             "split_report": split_report,
             "optimized_questions": (
@@ -1075,8 +1047,7 @@ def format_cell(value: Any, key: str | None = None) -> str:
     if isinstance(value, dict):
         if all(not isinstance(item, list | tuple | set | dict) for item in value.values()):
             return ", ".join(
-                f"{humanize_label(key)}: {format_cell(item)}"
-                for key, item in value.items()
+                f"{humanize_label(key)}: {format_cell(item)}" for key, item in value.items()
             )
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return str(value)
@@ -1203,9 +1174,7 @@ def render_kv(fields: dict[str, Any]) -> str:
     for key, value in fields.items():
         if value in (None, "", [], {}):
             continue
-        items.append(
-            f"<dt>{escape(humanize_label(key))}</dt><dd>{render_cell(value, key)}</dd>"
-        )
+        items.append(f"<dt>{escape(humanize_label(key))}</dt><dd>{render_cell(value, key)}</dd>")
     if not items:
         return ""
     return f'<dl class="kv">{"".join(items)}</dl>'
@@ -1317,9 +1286,7 @@ def render_detail_group(group: dict[str, Any]) -> str:
     content = render_detail_blocks(
         blocks,
         include_empty=bool(group.get("show_empty_blocks")),
-    ) + "".join(
-        render_detail_section(name, payload) for name, payload in sections.items()
-    )
+    ) + "".join(render_detail_section(name, payload) for name, payload in sections.items())
     open_attribute = " open" if group.get("open") else ""
     return (
         f'<details class="validation-detail-group"{open_attribute}>'
@@ -1385,9 +1352,7 @@ def render_interactive_record_table(
             active_assigned = True
             first_visible_index = index
         group_attribute = (
-            f' data-report-group-value="{escape(group_value)}"'
-            if visibility_field
-            else ""
+            f' data-report-group-value="{escape(group_value)}"' if visibility_field else ""
         )
         hidden_attribute = "" if visible else " hidden"
         body.append(
@@ -1398,9 +1363,7 @@ def render_interactive_record_table(
         templates.append(
             f'<template id="{escape(detail_id)}">{render_record_detail(details[index])}</template>'
         )
-    first_detail_id = stable_detail_id(
-        section_id, first_visible_index, rows[first_visible_index]
-    )
+    first_detail_id = stable_detail_id(section_id, first_visible_index, rows[first_visible_index])
     return (
         '<div class="record-grid">'
         '<div class="table-wrap">'
@@ -1412,8 +1375,7 @@ def render_interactive_record_table(
         f"{render_record_detail(details[first_visible_index])}"
         "</aside>"
         "</div>"
-        f'<!-- initial-detail:{escape(first_detail_id)} -->'
-        + "".join(templates)
+        f"<!-- initial-detail:{escape(first_detail_id)} -->" + "".join(templates)
     )
 
 
@@ -1444,12 +1406,7 @@ def render_counter_bars(
             f'<div class="bar-count">{count}</div>'
             "</div>"
         )
-    return (
-        '<section class="counter-panel">'
-        f"<h3>{escape(title)}</h3>"
-        f'{"".join(rows)}'
-        "</section>"
-    )
+    return f'<section class="counter-panel"><h3>{escape(title)}</h3>{"".join(rows)}</section>'
 
 
 def render_counter_grid(
@@ -1555,11 +1512,10 @@ def scene_graph_metrics(summary: dict[str, Any]) -> dict[str, Any]:
 
 def scene_template_sample_text(_name: str, value: Any) -> str:
     """Render template values as comma-separated scalar or dictionary samples."""
+
     def format_value(item: Any) -> str:
         if isinstance(item, dict):
-            fields = ", ".join(
-                f"{key}: {format_value(child)}" for key, child in item.items()
-            )
+            fields = ", ".join(f"{key}: {format_value(child)}" for key, child in item.items())
             return "{" + fields + "}"
         if isinstance(item, list | tuple):
             return "[" + ", ".join(format_value(child) for child in item) + "]"
@@ -1609,8 +1565,7 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
     scene_ids = list(scenes)
     selected = scene_ids[0]
     options = "".join(
-        f'<option value="{escape(scene_id)}">{escape(scene_id)}</option>'
-        for scene_id in scene_ids
+        f'<option value="{escape(scene_id)}">{escape(scene_id)}</option>' for scene_id in scene_ids
     )
     selector = (
         '<label class="quantization-selector-label" for="scene-graph-selector">Scene'
@@ -1619,14 +1574,11 @@ def render_scene_graph_tab(data: dict[str, Any]) -> str:
     )
     panels = "".join(
         f'<div class="scene-graph-group" data-scene-graph-value="{escape(scene_id)}"'
-        f'{"" if scene_id == selected else " hidden"}>'
+        f"{'' if scene_id == selected else ' hidden'}>"
         f"{render_scene_graph_panel(scene)}</div>"
         for scene_id, scene in scenes.items()
     )
-    return (
-        '<div class="raw-tab-title"><h2>3D Scene Graph</h2>'
-        f"{selector}</div>{panels}"
-    )
+    return f'<div class="raw-tab-title"><h2>3D Scene Graph</h2>{selector}</div>{panels}'
 
 
 def render_generated_questions_tab(data: dict[str, Any]) -> str:
@@ -1634,8 +1586,7 @@ def render_generated_questions_tab(data: dict[str, Any]) -> str:
     rows = [compact_question_record(record) for record in section["records"]]
     supervision_counts = generated_question_supervision_counts(section["records"])
     details = [
-        question_detail(record, title="Generated Question Details")
-        for record in section["records"]
+        question_detail(record, title="Generated Question Details") for record in section["records"]
     ]
     return (
         "<h2>Generated Questions</h2>"
@@ -1895,60 +1846,6 @@ def bool_rate_first(
     return sum(1 for value in evaluated if bool(value)) / len(evaluated)
 
 
-def record_hidden_false_positive_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
-    tool_call = record.get(TOOL_CALL_CHECK) or {}
-    if tool_call.get("result_validation"):
-        return {"potential_hidden_false_positive": None, "hidden_false_positive_reasons": []}
-    existing = tool_call.get("potential_hidden_false_positive")
-    if existing is not None:
-        return {
-            "potential_hidden_false_positive": bool_or_none(existing),
-            "hidden_false_positive_reasons": tool_call.get(
-                "hidden_false_positive_reasons"
-            )
-            or [],
-        }
-
-    expected = record.get("expected") or {}
-    generated = record.get("generated") or {}
-    pddl = task_family(record) == "cypher_pddl"
-    solution_match = tool_call.get(
-        "grounding_match" if pddl else "cypher_solution_match",
-        tool_call.get("tool_result_match", tool_call.get("cypher_solution_match")),
-    )
-    return result_match_diagnostics(
-        generated_cypher=str(
-            generated.get("cypher") or tool_call.get("generated_cypher") or ""
-        ),
-        gold_cypher=str(expected.get("cypher") or tool_call.get("gold_cypher") or ""),
-        cypher_exact_match=bool(tool_call.get("cypher_exact_match")),
-        solution_match=bool(solution_match),
-        rows=(
-            generated.get("cypher_tool_output")
-            or (tool_call.get("validation") or {}).get("rows")
-            or []
-        ),
-        expected_solution=expected.get(
-            "cypher_solution", tool_call.get("expected_solution")
-        ),
-    )
-
-
-def hidden_false_positive_rate(records: list[dict[str, Any]]) -> float | None:
-    if not records:
-        return None
-    records = [r for r in records if not (r.get(TOOL_CALL_CHECK) or {}).get("result_validation")]
-    if not records:
-        return None
-    return sum(
-        1
-        for record in records
-        if record_hidden_false_positive_diagnostics(record)[
-            "potential_hidden_false_positive"
-        ]
-    ) / len(records)
-
-
 def raw_generation_summary_fallback_row(
     report: dict[str, Any],
     task_family_name: str,
@@ -1972,18 +1869,11 @@ def raw_generation_summary_fallback_row(
             final_answer.get("total", summary.get("examples")),
         ),
         "final_answer_match": rate_value(final_answer, "rates", "final_answer_match"),
-        "end_to_end_match": rate_value(
-            end_to_end, "rates", "final_answer_match"
-        ),
-        "final_answer_domain_valid": rate_value(
-            final_answer, "rates", "final_answer_domain_valid"
-        ),
+        "end_to_end_match": rate_value(end_to_end, "rates", "final_answer_match"),
+        "final_answer_domain_valid": rate_value(final_answer, "rates", "final_answer_domain_valid"),
         "tool_call_static_valid": rate_value(tool_call, "rates", "static_valid"),
         "tool_call_executable": rate_value(tool_call, "rates", "executable"),
         "result_match": result_match,
-        "potential_hidden_false_positive": rate_value(
-            tool_call, "rates", "potential_hidden_false_positive"
-        ),
     }
 
 
@@ -1992,9 +1882,7 @@ def raw_generation_task_type_rows(
     task_family_name: str,
 ) -> list[dict[str, Any]]:
     records = [
-        record
-        for record in report.get("records") or []
-        if task_family(record) == task_family_name
+        record for record in report.get("records") or [] if task_family(record) == task_family_name
     ]
     if not records:
         return [raw_generation_summary_fallback_row(report, task_family_name)]
@@ -2045,9 +1933,6 @@ def raw_generation_task_type_rows(
                         "cypher_solution_match",
                     ),
                 ),
-                "potential_hidden_false_positive": hidden_false_positive_rate(
-                    task_records
-                ),
             }
         )
     return rows[:1] + sorted(rows[1:], key=lambda row: str(row["task_type"]))
@@ -2070,13 +1955,10 @@ def validation_example_rows(
             final_answer = record.get(FINAL_ANSWER_CHECK) or {}
             tool_call = record.get(TOOL_CALL_CHECK) or {}
             end_to_end = record.get(END_TO_END_CHECK) or {}
-            hidden_false_positive = record_hidden_false_positive_diagnostics(record)
             result_match = bool_or_none(
                 tool_call.get(
                     "grounding_match" if pddl else "cypher_solution_match",
-                    tool_call.get(
-                        "tool_result_match", tool_call.get("cypher_solution_match")
-                    ),
+                    tool_call.get("tool_result_match", tool_call.get("cypher_solution_match")),
                 )
             )
             row = {
@@ -2098,9 +1980,6 @@ def validation_example_rows(
                 "tool_call_executable": bool_or_none(tool_call.get("executable")),
                 "cypher_solution_match": None if pddl else result_match,
                 "grounding_match": result_match if pddl else None,
-                "potential_hidden_false_positive": bool_or_none(
-                    hidden_false_positive["potential_hidden_false_positive"]
-                ),
                 "final_answer_domain_valid": bool_or_none(
                     final_answer.get("final_answer_domain_valid")
                 ),
@@ -2108,59 +1987,12 @@ def validation_example_rows(
                 "end_to_end_match": bool_or_none(end_to_end.get("final_answer_match")),
             }
             rows.append(row)
-            expected = record.get("expected") or {
-                "cypher": tool_call.get("gold_cypher"),
-                "cypher_solution": tool_call.get("expected_solution"),
-                "final_answer": final_answer.get("expected_solution"),
-            }
-            generated = record.get("generated") or {
-                "cypher": tool_call.get("generated_cypher"),
-                "cypher_solution": tool_call.get("cypher_solution"),
-                "cypher_tool_output": (
-                    tool_call.get("validation") or {}
-                ).get("rows"),
-                "final_answer": final_answer.get("generated_text"),
-                "final_answer_value": final_answer.get("generated_answer"),
-            }
-            if pddl:
-                expected = {
-                    **expected,
-                    "pddl_goal": (
-                        expected.get("pddl_goal")
-                        or (
-                            expected.get("cypher_solution")
-                            if str(expected.get("cypher_solution") or "").strip()
-                            else None
-                        )
-                    ),
-                    "grounding": expected.get("grounding")
-                    or tool_call.get("expected_grounding"),
-                }
-                generated = {
-                    **generated,
-                    "actual_grounding": generated.get("actual_grounding")
-                    or tool_call.get("actual_grounding"),
-                }
+            expected = record.get("expected") or {}
+            generated = record.get("generated") or {}
             generation_debug = record.get("generation_debug") or {}
             cypher_generation = generation_debug.get("cypher_generation") or {}
-            final_answer_generation = (
-                generation_debug.get("final_answer_generation") or {}
-            )
-            end_to_end_generation = (
-                generation_debug.get("end_to_end_generation") or {}
-            )
-            # Read the previous report shape only for prompt/completion compatibility.
-            legacy_conversations = record.get("conversations") or {}
-            if not cypher_generation:
-                cypher_generation = legacy_conversations.get("cypher_generation") or {}
-            if not final_answer_generation:
-                final_answer_generation = (
-                    legacy_conversations.get("final_answer_generation") or {}
-                )
-            if not end_to_end_generation:
-                end_to_end_generation = (
-                    legacy_conversations.get("end_to_end_generation") or {}
-                )
+            final_answer_generation = generation_debug.get("final_answer_generation") or {}
+            end_to_end_generation = generation_debug.get("end_to_end_generation") or {}
             cypher_validation_issues = {
                 key: value
                 for key, value in {
@@ -2171,9 +2003,6 @@ def validation_example_rows(
                     "execution_error": tool_call.get("execution_error"),
                     "result_shape_error": tool_call.get("result_shape_error"),
                     "generation_error": tool_call.get("generation_error"),
-                    "hidden_false_positive_reasons": hidden_false_positive[
-                        "hidden_false_positive_reasons"
-                    ],
                 }.items()
                 if value not in (None, "", [], {})
             }
@@ -2231,20 +2060,14 @@ def validation_example_rows(
                 turn_number = turn.get("turn") or turn_index
                 end_to_end_sections.update(
                     {
-                        f"turn_{turn_number}_rendered_prompt": turn.get(
-                            "rendered_prompt"
-                        ),
-                        f"turn_{turn_number}_raw_completion": turn.get(
-                            "raw_completion"
-                        ),
+                        f"turn_{turn_number}_rendered_prompt": turn.get("rendered_prompt"),
+                        f"turn_{turn_number}_raw_completion": turn.get("raw_completion"),
                     }
                 )
             details.append(
                 {
                     "title": detail_title,
-                    "fields": {
-                        key: value for key, value in row.items() if key != "question"
-                    },
+                    "fields": {key: value for key, value in row.items() if key != "question"},
                     "blocks": {"question": record.get("question")},
                     "show_empty_blocks": True,
                     "groups": [
@@ -2268,9 +2091,7 @@ def validation_example_rows(
                             "blocks": {
                                 "expected_final_answer": expected.get("final_answer"),
                                 "generated_final_answer": generated.get("final_answer"),
-                                "final_answer_validation_issues": (
-                                    final_answer_validation_issues
-                                ),
+                                "final_answer_validation_issues": (final_answer_validation_issues),
                             },
                             "show_empty_blocks": True,
                             "sections": {
@@ -2286,16 +2107,12 @@ def validation_example_rows(
                             "name": "end_to_end_validation",
                             "title": "End-to-End Validation",
                             "blocks": {
-                                "expected_end_to_end_final_answer": expected.get(
-                                    "final_answer"
-                                ),
+                                "expected_end_to_end_final_answer": expected.get("final_answer"),
                                 "generated_end_to_end_final_answer": generated.get(
                                     "end_to_end_final_answer"
                                 )
                                 or end_to_end.get("generated_text"),
-                                "end_to_end_validation_issues": (
-                                    end_to_end_validation_issues
-                                ),
+                                "end_to_end_validation_issues": (end_to_end_validation_issues),
                                 "end_to_end_attempts": end_to_end.get("attempts"),
                             },
                             "show_empty_blocks": True,
@@ -2315,14 +2132,11 @@ def validation_main_rows(
         if isinstance(report, dict):
             records = report.get("records") or []
             families = {task_family(record) for record in records}
-            families.update(
-                ((report.get("summary") or {}).get("by_task_family") or {}).keys()
-            )
+            families.update(((report.get("summary") or {}).get("by_task_family") or {}).keys())
             if not families:
                 families.add("cypher_qa")
             rows[split] = {
-                family: raw_generation_task_type_rows(report, family)
-                for family in sorted(families)
+                family: raw_generation_task_type_rows(report, family) for family in sorted(families)
             }
     return rows
 
@@ -2373,14 +2187,14 @@ def render_comparison_metrics(
                 '<div class="comparison-metric-row">'
                 f"<h4>{escape(row_title)}</h4>"
                 f'<div class="metric-grid comparison-metric-grid">'
-                f'{"".join(rendered_cards)}</div></div>'
+                f"{''.join(rendered_cards)}</div></div>"
             )
     if not rendered_rows:
         return ""
     return (
         '<section class="comparison-metrics">'
-        '<h3>Comparison Metrics</h3>'
-        f'{"".join(rendered_rows)}'
+        "<h3>Comparison Metrics</h3>"
+        f"{''.join(rendered_rows)}"
         "</section>"
     )
 
@@ -2405,9 +2219,7 @@ def validation_comparison_metrics(
         rate = raw_generation_rate(
             student_reports.get(split), END_TO_END_CHECK, "final_answer_match"
         )
-        cards.append(
-            (f"{split} student end-to-end match", rate, None, END_TO_END_RATE_NOTE)
-        )
+        cards.append((f"{split} student end-to-end match", rate, None, END_TO_END_RATE_NOTE))
     return render_comparison_metrics([("End-to-End Quality", cards)])
 
 
@@ -2457,12 +2269,10 @@ def end_to_end_generation_throughput(report: dict[str, Any] | None) -> float | N
     generated_tokens = 0.0
     eval_duration_ns = 0.0
     for record in (report or {}).get("records") or []:
-        attempts = ((record.get(END_TO_END_CHECK) or {}).get("attempts") or [])
-        turns = (
-            ((record.get("generation_debug") or {}).get("end_to_end_generation") or {})
-            .get("turns")
-            or []
-        )
+        attempts = (record.get(END_TO_END_CHECK) or {}).get("attempts") or []
+        turns = ((record.get("generation_debug") or {}).get("end_to_end_generation") or {}).get(
+            "turns"
+        ) or []
         for attempt, turn in zip(attempts, turns, strict=False):
             tokens = attempt.get("generated_tokens")
             duration = (turn.get("provider_metadata") or {}).get("eval_duration")
@@ -2495,9 +2305,7 @@ def quantization_artifact(
     return None
 
 
-def deploy_comparison_metrics(
-    data: dict[str, Any], selected_quantization: str
-) -> str:
+def deploy_comparison_metrics(data: dict[str, Any], selected_quantization: str) -> str:
     deploy_data = data["deploy_quantization"]
     reports = deploy_data["raw_generation_reports"]
     transformers = data["validation"]["raw_generation_reports"].get("challenge")
@@ -2505,13 +2313,9 @@ def deploy_comparison_metrics(
     selected_report = reports.get(selected_quantization)
     quantization = selected_quantization.split(" (", 1)[0]
     quantization_label = humanize_label(quantization)
-    transformers_rate = raw_generation_rate(
-        transformers, END_TO_END_CHECK, "final_answer_match"
-    )
+    transformers_rate = raw_generation_rate(transformers, END_TO_END_CHECK, "final_answer_match")
     bf16_rate = raw_generation_rate(bf16, END_TO_END_CHECK, "final_answer_match")
-    selected_rate = raw_generation_rate(
-        selected_report, END_TO_END_CHECK, "final_answer_match"
-    )
+    selected_rate = raw_generation_rate(selected_report, END_TO_END_CHECK, "final_answer_match")
     deployment_gap = percentage_point_gap(bf16_rate, transformers_rate)
     quantization_gap = percentage_point_gap(selected_rate, bf16_rate)
 
@@ -2526,9 +2330,7 @@ def deploy_comparison_metrics(
         and isinstance(selected_bytes, int | float)
         and bf16_bytes > 0
     ):
-        size_reduction = (
-            f"{(bf16_bytes - selected_bytes) / bf16_bytes * 100:.2f}%"
-        )
+        size_reduction = f"{(bf16_bytes - selected_bytes) / bf16_bytes * 100:.2f}%"
 
     bf16_throughput = end_to_end_generation_throughput(bf16)
     selected_throughput = end_to_end_generation_throughput(selected_report)
@@ -2599,11 +2401,7 @@ def deploy_comparison_metrics(
                 ),
                 (
                     f"{quantization} GGUF size",
-                    (
-                        format_bytes(selected_bytes)
-                        if selected_bytes is not None
-                        else None
-                    ),
+                    (format_bytes(selected_bytes) if selected_bytes is not None else None),
                     None,
                     size_note,
                 ),
@@ -2676,9 +2474,7 @@ def render_raw_generation_tab(
             key=lambda name: (family_order.get(name, 2), str(name)),
         ):
             rows = family_rows[family]
-            result_label = (
-                "grounding_match" if family == "cypher_pddl" else "cypher_solution_match"
-            )
+            result_label = "grounding_match" if family == "cypher_pddl" else "cypher_solution_match"
             heading = (
                 '<div class="raw-family-heading">'
                 f"<h5>{escape(humanize_label(family))}</h5>"
@@ -2746,8 +2542,8 @@ def render_raw_generation_tab(
     else:
         raw_report_details = "".join(
             f'<div class="raw-report-json" data-report-group-value="{escape(group)}"'
-            f'{"" if group in visible_report_groups else " hidden"}>'
-            f'{render_json_details(f"{title} {group} raw generation report", report)}'
+            f"{'' if group in visible_report_groups else ' hidden'}>"
+            f"{render_json_details(f'{title} {group} raw generation report', report)}"
             "</div>"
             for group, report in raw_generation_reports.items()
         )
@@ -2792,11 +2588,7 @@ def render_deploy_quantization_tab(data: dict[str, Any]) -> str:
         (label for label in reports if label.split(" (", 1)[0].upper() == "BF16"),
         None,
     )
-    selectable = [
-        label
-        for label in reports
-        if label.split(" (", 1)[0].upper() != "BF16"
-    ]
+    selectable = [label for label in reports if label.split(" (", 1)[0].upper() != "BF16"]
     selected = selectable[0] if selectable else None
     visible_groups = {value for value in (bf16_key, selected) if value is not None}
 
@@ -2816,16 +2608,12 @@ def render_deploy_quantization_tab(data: dict[str, Any]) -> str:
         )
         comparison_metrics = "".join(
             f'<div class="quantization-metrics" data-report-metrics-value="{escape(label)}"'
-            f'{"" if label == selected else " hidden"}>'
+            f"{'' if label == selected else ' hidden'}>"
             f"{deploy_comparison_metrics(data, label)}</div>"
             for label in selectable
         )
 
-    title = (
-        '<div class="raw-tab-title">'
-        "<h2>Deploy / Quantization</h2>"
-        f"{selector}</div>"
-    )
+    title = f'<div class="raw-tab-title"><h2>Deploy / Quantization</h2>{selector}</div>'
     return title + render_raw_generation_tab(
         reports,
         title="Deploy / Quantization",
@@ -2844,9 +2632,7 @@ def artifact_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for key, value in artifacts.items():
         if key == "reports":
-            rows.extend(
-                {"artifact": f"report:{Path(info['path']).name}", **info} for info in value
-            )
+            rows.extend({"artifact": f"report:{Path(info['path']).name}", **info} for info in value)
         elif key == "splits":
             rows.extend({"artifact": f"split:{split}", **info} for split, info in value.items())
         elif key == "scenes":
@@ -2900,14 +2686,14 @@ def render_workflow_report(data: dict[str, Any]) -> str:
         ("splits", "Splits", render_splits_tab(data)),
     ]
     if not data["metadata"].get("dataset_only"):
-        tabs.extend([
-            ("train", "Train", render_train_tab(data)),
-            ("validation", "Validation", render_validation_tab(data)),
-            ("baseline", "Baseline", render_baseline_tab(data)),
-        ])
-    quantization_reports = data.get("deploy_quantization", {}).get(
-        "raw_generation_reports"
-    )
+        tabs.extend(
+            [
+                ("train", "Train", render_train_tab(data)),
+                ("validation", "Validation", render_validation_tab(data)),
+                ("baseline", "Baseline", render_baseline_tab(data)),
+            ]
+        )
+    quantization_reports = data.get("deploy_quantization", {}).get("raw_generation_reports")
     if quantization_reports:
         tabs.append(
             (
@@ -3491,15 +3277,11 @@ def write_workflow_report(
 
 
 def command(args: argparse.Namespace) -> None:
-    data_config = load_data_config(
-        args.data_config, dataset_version=args.dataset_version
-    )
+    data_config = load_data_config(args.data_config, dataset_version=args.dataset_version)
     student_config = None
     dataset_only = getattr(args, "dataset_only", False)
     if args.student_config and not dataset_only:
-        student_config = load_student_config(
-            args.student_config, model_version=args.model_version
-        )
+        student_config = load_student_config(args.student_config, model_version=args.model_version)
         if not confirm_dataset_lineage(
             model_metadata=read_metadata(student_config["model_metadata_path"]),
             data_config=data_config,
@@ -3533,7 +3315,8 @@ def main() -> None:
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
-        "--dataset-only", action="store_true",
+        "--dataset-only",
+        action="store_true",
         help="Include scene graphs, questions, teacher traces and splits only.",
     )
     parser.add_argument(
@@ -3547,8 +3330,7 @@ def main() -> None:
         "--output",
         default=None,
         help=(
-            "Optional HTML output path. Defaults to "
-            "the selected dataset/model report directory."
+            "Optional HTML output path. Defaults to the selected dataset/model report directory."
         ),
     )
     args = parser.parse_args()

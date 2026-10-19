@@ -5,20 +5,33 @@ from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import (
     add_synthetic_reasoning,
     reasoning_sentences,
     select_sentences,
-    semantic_context,
     sentence_cap,
 )
+from cypher_3dsg_agent_distillation.cypher.task_semantics import build_semantic_context
+from tests.helpers import qa_contract
 
 
 def seed(**kwargs):
-    return {
-        "question": "Inspect any chair, then finish in any office.",
-        "task_family": "cypher_pddl",
-        "cypher": 'MATCH (o:Object {class: "chair"}), (r:Room {class: "office"}) RETURN o,r',
-        "labelspace_description": "<object_labels>chair\nbox</object_labels>"
-        "<room_labels>office</room_labels>",
-        **kwargs,
+    query = kwargs.pop(
+        "cypher", 'MATCH (o:Object {class: "chair"}), (r:Room {class: "office"}) RETURN o,r'
+    )
+    goal = {
+        "operator": "and",
+        "clauses": [
+            {"fact": "visited-object", "arguments": [{"result": "object"}]},
+            {"fact": "in-region", "arguments": [{"result": "room"}]},
+        ],
     }
+    record = annotated_seed(
+        query,
+        goal,
+        {"object": {"symbol_type": "Object"}, "room": {"symbol_type": "Room"}},
+        **kwargs,
+    )
+    record["labelspace_description"] = (
+        "<object_labels>chair\nbox</object_labels><room_labels>office</room_labels>"
+    )
+    return record
 
 
 def test_unlimited_default_and_deterministic_capping_record_omitted_rules():
@@ -122,14 +135,37 @@ def test_zero_cap_keeps_auditable_selection_without_reasoning_text():
 
 
 def annotated_seed(query, goal=None, fields=None, **kwargs):
-    template = {"cypher": query, "goal": goal, "grounding": {"fields": fields or {}}}
+    contract = qa_contract(kwargs.get("solution_formats", ["str"]))
+    if goal:
+        contract["result"] = {
+            "kind": "role_sets",
+            "roles": {
+                name: {
+                    "type": "node_symbol",
+                    "property": "nodeSymbol",
+                    "nulls": "empty_set" if "OPTIONAL MATCH" in query else "reject",
+                    "layers": (
+                        ["Place", "MeshPlace"]
+                        if spec["symbol_type"] == "PlaceOrMeshPlace"
+                        else [spec["symbol_type"]]
+                    ),
+                }
+                for name, spec in (fields or {}).items()
+            },
+        }
+        contract["goal"] = goal
+        contract["answer"]["comparison"]["mode"] = "pddl_equivalence"
+        contract["answer"]["formats"] = []
+    template = {"cypher": query, "validation_contract": contract}
     return {
         "question": "Any paraphrase",
         "cypher": query,
         "query_type": "arbitrary_name",
         "task_family": "cypher_pddl" if goal else "cypher_qa",
+        "output_type": "PDDL" if goal else "SLDP",
+        "validation_contract": contract,
         "solution_formats": ["str"],
-        "metadata": {"reasoning_context": semantic_context({}, template, query)},
+        "metadata": {"reasoning_context": build_semantic_context({}, template, query)},
         **kwargs,
     }
 

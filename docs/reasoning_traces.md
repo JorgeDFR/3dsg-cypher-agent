@@ -36,8 +36,6 @@ also strips any unexpectedly returned reasoning from accepted/rejected dataset
 messages. This includes inline `<think>` blocks and opaque provider blocks.
 It does not require a mandatory-thinking model to disable internal computation;
 hidden reasoning can still be billed. Omission defaults to `false`.
-The separate `reasoning.exclude` configuration option is removed; using it raises
-an error directing callers to `reasoning.enabled`.
 
 `reasoning.effort` is optional. When omitted, no effort is sent and the selected
 model/provider uses its default. `preflight` reports the catalog's default and
@@ -247,13 +245,14 @@ change for supported operations. Changing tags, question variants or sampling
 settings requires no reasoning configuration change. `query_type` also remains the
 existing dispatch key for scene-based gold answers and configuration lookup.
 Result interpretation and comparison use the resolved validation contract. There is
-no additional identity or oracle field. An operation outside the supported
+no additional task identifier or oracle dispatch field; template provenance
+identifies the exact source query and explicit bindings. An operation outside the supported
 vocabulary requires parser/rendering support.
 The scene-based gold-answer oracle is a separate component; new question
 families also need oracle support, even when their reasoning operations are reused.
 
-Question generation retains sampled bindings and the goal without loading these
-files. Synthetic teacher generation with reasoning enabled verifies the separate
+Question generation retains explicit sampled bindings, template identity and
+the resolved contract without loading these files. Synthetic teacher generation with reasoning enabled verifies the separate
 declarations and attaches resolved operations, goal structure, public grounding
 fields and a fingerprint to `metadata.reasoning_context`. Real teachers and
 synthetic generation with reasoning disabled skip this configuration entirely.
@@ -292,47 +291,38 @@ An unavailable required conjunct produces an empty answer.
 Repairs retain their original masked faulty turn and identify the observed query
 correction where possible.
 
-### Offline audit and legacy migration
+### Offline compilation and audit
 
-The audit does not call a model or load/clear Neo4j. It verifies legacy bindings
-against the source query, previews both stages using saved tool feedback, and
-reports rule coverage, word lengths, optional exact tokenizer lengths, and cap
-omissions. `reasoning_by_stage` separates query/final turns, emitted reasoning
-coverage, and mean/median/maximum/total word and optional token lengths. Empty
-query reasoning contributes zero to these lengths. Outputs must be new files:
+Generation retains explicit `metadata.template_bindings` and template identity.
+Synthetic teachers with reasoning enabled use those bindings and the selected
+semantics catalog to build verified retrieval/goal snapshots. Context schema
+version 2 stores contract role definitions; the separate operation declarations
+remain at version 1. Real teachers and
+reasoning-disabled synthetic teachers do not load the synthetic catalog. Unknown
+or contradictory provenance requires regeneration.
+
+The audit works on copies of current seeds and does not call a model or load/clear
+Neo4j. It verifies template/query agreement, previews both stages using saved tool
+feedback, and reports coverage, lengths and cap omissions. Outputs must be new files:
 
 ```bash
 python scripts/agents/audit_synthetic_reasoning.py audit \
   --seeds data/datasets/dataset_demo/SOURCE_VERSION/cypher_seed_records.jsonl \
   --traces data/datasets/dataset_demo/SOURCE_VERSION/traces/teacher_traces.jsonl \
-  --output outputs/reasoning_audit/report.json
-
-python scripts/agents/audit_synthetic_reasoning.py migrate \
-  --seeds data/datasets/dataset_demo/SOURCE_VERSION/cypher_seed_records.jsonl \
-  --output outputs/reasoning_audit/migrated_seeds.jsonl
+  --output /tmp/reasoning-audit.json
 ```
 
-Use `--tokenizer /local/tokenizer/directory` for exact reasoning-token counts without
-a download. Word counts alone do not establish training-length usability.
-For renamed legacy templates, `--template-mapping mapping.json` accepts a JSON
-mapping from old `query_type` names to current names. Existing verified contexts
-carry their own source snapshot and do not need the current catalog to reproduce
-reasoning.
-
-Migration preserves UIDs, split groups, answers and queries. For legacy PDDL seeds
-with saved expected grounding, the proposed goal must reproduce the stored goal.
-Expected values are used only for this provenance check, never as sentence inputs.
-Changed source queries, conflicting bindings, incompatible goals or unknown
-templates are marked unresolved.
-Synthetic generation with reasoning rejects unresolved seeds explicitly. Regenerate
-those seeds from the current templates; do not reinterpret them with a newer goal.
+Use `--tokenizer /local/tokenizer/directory` for exact reasoning-token counts
+without downloading a model. Word counts alone do not establish training-length
+usability. Compile declarations into their separate synthetic configuration;
+auditing current records never imports or rewrites unsupported old formats.
 
 ### Matched experiments
 
 Generate a fresh validated dataset with the existing prompts and enabled synthetic
 reasoning, then split it once. Use the existing matched-retained-UID mechanism for
 reasoning-on/off training, ensuring that length filtering retains identical examples.
-Existing saved version-2 traces are not rewritten by the renderer change. To compare
+Saved traces remain unchanged. To compare
 versions 2 and 3, retain those traces and regenerate with the current renderer.
 For a version-1 comparison, preserve a separately generated version-1 corpus from
 the earlier code and intersect retained UIDs across the corpora. Align prompts,
@@ -475,9 +465,7 @@ separate reasoning field. Repaired traces are explicitly marked and count as
 accepted in the finalized generation outputs. The progress bar, summary, run
 metadata and pilot report show how many repairs contributed to acceptance;
 original rejection evidence remains in the attempt journal. Splitting consumes
-these finalized outputs without applying repairs, and its former
-`--repair-invalid-final-answers` override has been removed. Failed-attempt
-pruning remains unsupported.
+these finalized outputs without applying repairs.
 
 `optimizations.tuning_prompt` adds teacher-specific guidance to each outbound
 request, including subsequent turns after tool feedback. The text is appended

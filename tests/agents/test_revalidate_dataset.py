@@ -23,28 +23,61 @@ class Tokenizer:
 def saved_attempt():
     query = "MATCH (o:Object) RETURN count(o) AS count"
     seed = {
-        "uid": "count", "question": "How many objects?", "scene_id": "scene",
-        "query_type": "object_class_count", "task_family": "cypher_qa", "output_type": "SLDP",
-        "cypher": query, "solution": "3", "metadata": {},
-        "validation_contract": {"result": {"kind": "scalar", "type": "integer"},
-                                "answer": {"formats": ["int"], "empty": "0"}},
+        "uid": "count",
+        "question": "How many objects?",
+        "scene_id": "scene",
+        "query_type": "object_class_count",
+        "task_family": "cypher_qa",
+        "output_type": "SLDP",
+        "cypher": query,
+        "solution": "3",
+        "metadata": {},
+        "validation_contract": {
+            "result": {"kind": "scalar", "type": "integer"},
+            "answer": {"formats": ["int"], "empty": "0"},
+        },
     }
     messages = [
         {"role": "user", "content": seed["question"]},
-        {"role": "assistant", "tool_calls": [{"id": "call1", "type": "function", "function": {
-            "name": "run_cypher_query", "arguments": {"cypher_string": query},
-        }}]},
-        {"role": "tool", "tool_call_id": "call1", "content": json.dumps({
-            "ok": True, "rows": [{"count": 3}],
-        })},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "type": "function",
+                    "function": {
+                        "name": "run_cypher_query",
+                        "arguments": {"cypher_string": query},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call1",
+            "content": json.dumps(
+                {
+                    "ok": True,
+                    "rows": [{"count": 3}],
+                }
+            ),
+        },
         {"role": "assistant", "content": "<answer>3</answer>", "reasoning": "Use the count."},
     ]
     item = {
-        "attempt_id": "count:0", "seed_uid": "count", "accepted": False,
-        "reason": "mapping_unresolved", "record": None,
-        "debug_record": {"messages": messages, "validation": {
-            "executable": True, "rows": [{"count": 3}], "columns": ["count"],
-        }},
+        "attempt_id": "count:0",
+        "seed_uid": "count",
+        "accepted": False,
+        "reason": "mapping_unresolved",
+        "record": None,
+        "debug_record": {
+            "messages": messages,
+            "validation": {
+                "executable": True,
+                "rows": [{"count": 3}],
+                "columns": ["count"],
+            },
+        },
     }
     return seed, item
 
@@ -53,8 +86,12 @@ def test_saved_attempt_regrades_actual_evidence_and_preserves_teacher_messages()
     seed, item = saved_attempt()
     original = deepcopy(item)
     result = revalidate_attempt(
-        item, seed, teacher_model="saved-teacher", max_tool_calls=3,
-        tokenizer=Tokenizer(), max_length=5000,
+        item,
+        seed,
+        teacher_model="saved-teacher",
+        max_tool_calls=3,
+        tokenizer=Tokenizer(),
+        max_length=5000,
     )
     assert result["accepted"]
     assert result["reason"] == "accepted_revalidated"
@@ -63,14 +100,25 @@ def test_saved_attempt_regrades_actual_evidence_and_preserves_teacher_messages()
     assert item == original
 
 
-@pytest.mark.parametrize("reason", ["generation_length", "max_tool_calls_exceeded",
-                                   "multiple_tool_calls", "missing_required_tool"])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "generation_length",
+        "max_tool_calls_exceeded",
+        "multiple_tool_calls",
+        "missing_required_tool",
+    ],
+)
 def test_protocol_rejections_are_not_accepted_by_dropping_failed_messages(reason):
     seed, item = saved_attempt()
     item["reason"] = reason
     result = revalidate_attempt(
-        item, seed, teacher_model="saved-teacher", max_tool_calls=3,
-        tokenizer=Tokenizer(), max_length=5000,
+        item,
+        seed,
+        teacher_model="saved-teacher",
+        max_tool_calls=3,
+        tokenizer=Tokenizer(),
+        max_length=5000,
     )
     assert not result["accepted"]
     assert result["reason"] == reason
@@ -79,9 +127,15 @@ def test_protocol_rejections_are_not_accepted_by_dropping_failed_messages(reason
 def test_dataset_revalidation_rewrites_consistent_outputs_and_preserves_billing(tmp_path):
     seed, item = saved_attempt()
     template_path = "configs/question_templates/cypher_qa_3dsg.yaml"
-    template = next(t for t in load_question_catalog(template_path)["templates"]
-                    if t["query_type"] == "object_class_count")
-    seed["cypher"] = template["cypher"].replace('{class}', 'chair')
+    template = next(
+        t
+        for t in load_question_catalog(template_path)["templates"]
+        if t["query_type"] == "object_class_count"
+    )
+    from tests.helpers import source_metadata
+
+    seed["metadata"].update(source_metadata(template, {"class": "chair"}))
+    seed["cypher"] = template["cypher"].replace("{class}", "chair")
     seed["solution_formats"] = ["int"]
     traces = tmp_path / "traces"
     traces.mkdir()
@@ -91,15 +145,21 @@ def test_dataset_revalidation_rewrites_consistent_outputs_and_preserves_billing(
     write_jsonl([item], traces / "attempts.jsonl")
     write_jsonl([{"attempt_id": "count:0", "cost_usd": 0.012}], traces / "requests.jsonl")
     billing_bytes = (traces / "requests.jsonl").read_bytes()
-    atomic_write_yaml({
-        "status": "complete", "outputs": {}, "counts": {"accepted": 0, "rejected": 1},
-        "student_config": {"snapshot": {"training": {"max_length": 5000}}},
-        "teacher_config": {"snapshot": {"model": "saved-teacher", "max_tool_calls": 3}},
-    }, traces / "metadata.yaml")
+    atomic_write_yaml(
+        {
+            "status": "complete",
+            "outputs": {},
+            "counts": {"accepted": 0, "rejected": 1},
+            "student_config": {"snapshot": {"training": {"max_length": 5000}}},
+            "teacher_config": {"snapshot": {"model": "saved-teacher", "max_tool_calls": 3}},
+        },
+        traces / "metadata.yaml",
+    )
     atomic_write_yaml({}, traces / "token_length_report.yaml")
     atomic_write_yaml({}, traces / "pilot_report.yaml")
     config = {
-        "dataset_dir": str(tmp_path), "metadata_path": str(tmp_path / "metadata.yaml"),
+        "dataset_dir": str(tmp_path),
+        "metadata_path": str(tmp_path / "metadata.yaml"),
         "teacher_metadata_path": str(traces / "metadata.yaml"),
         "seed_records_jsonl_path": str(tmp_path / "cypher_seed_records.jsonl"),
         "raw_questions_path": str(tmp_path / "generated_questions.yaml"),

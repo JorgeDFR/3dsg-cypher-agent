@@ -75,7 +75,7 @@ def rejected_trace(executions=None, answer="<O1>"):
         "scene_id": "scene",
         "task_family": "cypher_qa",
         "output_type": "SLDP",
-        "real_solution": "<O1>",
+        "expected_solution": "<O1>",
         "cypher": executions[-1][0],
         "teacher_model": "teacher",
         "validation": {"static_valid": True, "executable": True, "rows": executions[-1][1]},
@@ -138,7 +138,8 @@ def test_unmarked_traces_keep_latest_execution_policy():
     original = rejected_trace()
     record = AgentTraceRecord.model_validate(
         {
-            **original,
+            **{key: value for key, value in original.items() if key != "query_type"},
+            "task_type": original["query_type"],
             "gold_cypher": original["cypher"],
             "expected_solution": "<O1>",
         }
@@ -150,7 +151,7 @@ def test_unmarked_traces_keep_latest_execution_policy():
 def test_selection_is_independent_of_expected_values_and_final_answer():
     baseline = rejected_trace()
     other = deepcopy(baseline)
-    other["real_solution"] = "<O999>"
+    other["expected_solution"] = "<O999>"
     other["grounding"] = {"expected": {"object": ["O999"]}}
     other["messages"][-1]["content"] = "<answer><O999></answer>"
     selected = select_earlier_retrieval(baseline)
@@ -222,7 +223,7 @@ def test_unknown_earlier_query_cannot_prove_an_empty_retrieval():
         ],
         answer="<>",
     )
-    trace["real_solution"] = "<>"
+    trace["expected_solution"] = "<>"
     assert recover_rejected_earlier_retrieval(trace) is None
 
 
@@ -297,7 +298,7 @@ def test_student_report_uses_its_generated_query_not_source_trace_recovery_metad
     recovered = recover_rejected_earlier_retrieval(rejected_trace())
     report = {
         **recovered.model_dump(),
-        "tool_call_check": {
+        "tool_call_from_prompt": {
             "generated_cypher": TASK,
             "validation": {"executable": True, "rows": [{"id": "O999"}]},
         },
@@ -307,7 +308,7 @@ def test_student_report_uses_its_generated_query_not_source_trace_recovery_metad
 
 def test_empty_retrieval_can_be_recovered_without_discarding_the_diagnostic_rows():
     trace = rejected_trace([(TASK, []), (DIAGNOSTIC, [{"class": "table"}])], answer="<>")
-    trace["real_solution"] = "<>"
+    trace["expected_solution"] = "<>"
     recovered = recover_rejected_earlier_retrieval(trace)
     assert recovered is not None
     assert recovered.cypher_solution == "<>"
@@ -342,7 +343,7 @@ def test_inventory_that_is_the_task_cannot_be_skipped_as_a_diagnostic():
 
 def test_pairing_uses_call_identity_even_with_repeated_queries_and_empty_rows():
     trace = rejected_trace([(TASK, []), (TASK, []), (DIAGNOSTIC, [])], answer="<>")
-    trace["real_solution"] = "<>"
+    trace["expected_solution"] = "<>"
     selected = select_earlier_retrieval(trace)
     assert selected.execution.call_index == 2
     assert [e.call_id for e in tool_executions(trace["messages"])] == ["call1", "call2", "call3"]
@@ -360,7 +361,7 @@ def test_a_correct_alternative_answer_still_needs_to_match_the_selected_executio
         answer="<table>",
     )
     trace["metadata"]["seed_gold_cypher"] = query
-    trace["real_solution"] = "<chair>"
+    trace["expected_solution"] = "<chair>"
     trace["validation_contract"] = {
         "result": {"kind": "set", "type": "string", "property": "class"},
         "answer": {

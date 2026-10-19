@@ -2,21 +2,35 @@ from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import (
     CypherSeedRecord,
     prepare_seed_records,
 )
+from tests.helpers import qa_contract as make_qa_contract
+from tests.helpers import source_metadata
 
 
 def test_prepare_seed_records_uses_profile_metadata_without_schema_copy():
     records = [
         CypherSeedRecord(
+            validation_contract={
+                **make_qa_contract(["set[str]"]),
+                "answer": {
+                    "formats": ["set[str]"],
+                    "comparison": {
+                        "mode": "top_k_with_ties",
+                        "limit": 2,
+                        "scores": {"chair": 3, "table": 3},
+                    },
+                },
+            },
+            metadata=source_metadata(
+                {
+                    "query_type": "class_listing",
+                    "cypher": "MATCH (o:Object) RETURN DISTINCT o.class AS class",
+                }
+            ),
             uid="0A",
             question="What objects exist?",
             gold_cypher="MATCH (o:Object) RETURN DISTINCT o.class AS class",
             query_type="class_listing",
             solution_formats=["set[str]"],
-            answer_validation={
-                "mode": "top_k_with_ties",
-                "limit": 2,
-                "scores": {"chair": 3, "table": 3},
-            },
         )
     ]
 
@@ -32,7 +46,7 @@ def test_prepare_seed_records_uses_profile_metadata_without_schema_copy():
     assert prepared[0].task_family == "cypher_qa"
     assert prepared[0].output_type == "SLDP"
     assert prepared[0].solution_formats == ["set[str]"]
-    assert prepared[0].answer_validation == {
+    assert prepared[0].validation_contract["answer"]["comparison"] == {
         "mode": "top_k_with_ties",
         "limit": 2,
         "scores": {"chair": 3, "table": 3},
@@ -42,6 +56,19 @@ def test_prepare_seed_records_uses_profile_metadata_without_schema_copy():
 def test_prepare_seed_records_preserves_native_pddl_fields():
     records = [
         CypherSeedRecord(
+            validation_contract={
+                "result": {
+                    "kind": "role_sets",
+                    "roles": {"object": {"type": "node_symbol", "layers": ["Object"]}},
+                },
+                "goal": {"fact": "holding", "arguments": [{"result": "object"}]},
+            },
+            metadata=source_metadata(
+                {
+                    "query_type": "pddl_direct_class",
+                    "cypher": "MATCH (o:Object {class: 'trash'}) RETURN o.nodeSymbol",
+                }
+            ),
             uid="0P",
             question="Grab a wastebin",
             gold_cypher="MATCH (o:Object {class: 'trash'}) RETURN o.nodeSymbol",
@@ -73,45 +100,59 @@ def test_generated_questions_round_trip_through_seed_preparation_with_shared_con
     )
     from cypher_3dsg_agent_distillation.cypher.validation_config import fingerprint
 
-    qa_contract = {'version': 1, 'result': {'kind': 'set', 'type': 'string'},
-                   'answer': {'formats': ['set[str]'], 'empty': '<>'}}
+    qa_contract = {
+        "version": 1,
+        "result": {"kind": "set", "type": "string"},
+        "answer": {"formats": ["set[str]"], "empty": "<>"},
+    }
     pddl_contract = {
-        'version': 1, 'result': {'kind': 'role_sets', 'roles': {
-            'object': {'type': 'node_symbol', 'layers': ['Object']}}},
-        'goal': {'fact': 'visited-object', 'arguments': [{'result': 'object'}]},
+        "version": 1,
+        "result": {
+            "kind": "role_sets",
+            "roles": {"object": {"type": "node_symbol", "layers": ["Object"]}},
+        },
+        "goal": {"fact": "visited-object", "arguments": [{"result": "object"}]},
     }
     questions = []
     for index, template in enumerate([qa_contract, pddl_contract]):
         contract = deepcopy(template)
         record = {
-            'uid': str(index), 'question': 'List targets.', 'query_type': 'targets',
-            'task_family': 'cypher_pddl' if index else 'cypher_qa',
-            'output_type': 'PDDL' if index else 'SLDP',
-            'gold_cypher': LiteralString('MATCH (o:Object)\nRETURN o.nodeSymbol AS object\n'),
-            'solution': '(visited-object O1)' if index else SolutionBlock('<chair, table>\n'),
-            'validation_contract': contract,
-            'metadata': {'validation_contract_hash': fingerprint(contract)},
+            "uid": str(index),
+            "question": "List targets.",
+            "query_type": "targets",
+            "task_family": "cypher_pddl" if index else "cypher_qa",
+            "output_type": "PDDL" if index else "SLDP",
+            "gold_cypher": LiteralString("MATCH (o:Object)\nRETURN o.nodeSymbol AS object\n"),
+            "solution": "(visited-object O1)" if index else SolutionBlock("<chair, table>\n"),
+            "validation_contract": contract,
+            "metadata": {"validation_contract_hash": fingerprint(contract)},
         }
+        record["metadata"].update(
+            source_metadata({"query_type": "targets", "cypher": str(record["gold_cypher"])})
+        )
         # Each record contains a repeated mapping. The old per-record dump
         # restarted its anchor counter and made the combined document invalid.
-        record['grounding'] = {'validation_contract': contract}
+        provenance = {"template": "targets", "scene": "example"}
+        record["metadata"]["provenance"] = provenance
+        record["metadata"]["provenance_copy"] = provenance
+        record["grounding"] = {}
         if index:
-            record['grounding']['expected'] = {'object': ['O1']}
+            record["grounding"]["expected"] = {"object": ["O1"]}
         questions.append(record)
-    path = tmp_path / 'generated_questions.yaml'
+    path = tmp_path / "generated_questions.yaml"
     write_questions_yaml(questions, path)
-    assert yaml.safe_load(path.read_text())['questions'] == questions
-    assert 'gold_cypher: |' in path.read_text()
-    assert 'solution: |' in path.read_text()
+    assert yaml.safe_load(path.read_text())["questions"] == questions
+    assert "gold_cypher: |" in path.read_text()
+    assert "solution: |" in path.read_text()
     loaded = load_raw_seed_records(path)
     prepared = prepare_seed_records(loaded)
-    output = tmp_path / 'cypher_seed_records.jsonl'
+    output = tmp_path / "cypher_seed_records.jsonl"
     write_jsonl(prepared, output)
     records = read_jsonl(output)
     assert len(records) == 2
     for original, record in zip(questions, records, strict=True):
-        assert record['validation_contract'] == original['validation_contract']
-        assert record['grounding'] == original['grounding']
-        assert record['metadata'] == original['metadata']
-        assert record['cypher'] == original['gold_cypher'].strip()
-        assert record['solution'] == original['solution']
+        assert record["validation_contract"] == original["validation_contract"]
+        assert record["grounding"] == original["grounding"]
+        assert record["metadata"] == original["metadata"]
+        assert record["cypher"] == original["gold_cypher"].strip()
+        assert record["solution"] == original["solution"]

@@ -8,16 +8,16 @@ from cypher_3dsg_agent_distillation.agents.reasoning_audit import (
     audit_seeds,
     compile_templates,
     load_catalog,
-    migrate_seeds,
 )
+from cypher_3dsg_agent_distillation.agents.synthetic_reasoning import _context
 from cypher_3dsg_agent_distillation.cypher.task_semantics import (
     build_semantic_context,
-    enrich_seed_semantics,
     parse_query,
-    recover_bindings,
+    prepare_seed_semantics,
     resolve_semantics,
     validate_query_semantics,
 )
+from tests.helpers import qa_contract, source_metadata
 
 CATALOG_PATHS = [str(p) for p in Path("configs/question_templates").glob("*.yaml")]
 
@@ -67,7 +67,6 @@ def test_bindings_include_nested_coordinates_layers_and_bounds():
     ]:
         concrete = concrete.replace("{" + field + "}", str(value))
     validate_query_semantics(resolve_semantics(parse_query(query), variables), concrete)
-    assert recover_bindings(query, concrete) == variables
 
 
 @pytest.mark.parametrize(
@@ -134,76 +133,37 @@ def test_compiler_writes_a_separate_file_and_never_modifies_question_templates(t
     compiled = compile_templates(path, output_path=destination, write=True)
     assert path.read_text() == original
     assert destination.read_text() == compiled
-    assert load_catalog([path], [destination])[0]["query_type"] == "inventory"
+    assert load_fixture_catalog(path, destination)[0]["query_type"] == "inventory"
     assert compile_templates(path) == compiled
     renamed = original.replace("query_type: inventory", "query_type: renamed")
     path.write_text(renamed)
     with pytest.raises(ValueError, match="missing=.*renamed.*obsolete=.*inventory"):
-        load_catalog([path], [destination])
+        load_fixture_catalog(path, destination)
     refreshed = compile_templates(path, output_path=destination, write=True)
     assert set(yaml.safe_load(refreshed)["templates"]) == {"renamed"}
     assert path.read_text() == renamed
-    assert load_catalog([path], [destination])[0]["query_type"] == "renamed"
+    assert load_fixture_catalog(path, destination)[0]["query_type"] == "renamed"
     with pytest.raises(ValueError, match="separate from question templates"):
         compile_templates(path, output_path=path, write=True)
     assert path.read_text() == renamed
 
 
-def test_migration_preserves_identity_and_does_not_mutate_inputs():
-    template = {
-        "query_type": "new_name",
-        "cypher": 'MATCH (o:Object {nodeSymbol: "{object}"}) RETURN o.nodeSymbol AS object',
-    }
-    template["semantics"] = parse_query(template["cypher"])
-    seed = {
-        "uid": "unchanged",
-        "split_group": "unchanged-group",
-        "query_type": "old_name",
-        "task_family": "cypher_qa",
-        "question": "Find O1",
-        "metadata": {},
-        "cypher": template["cypher"].replace("{object}", "O1"),
-    }
-    migrated, errors = migrate_seeds([seed], [template], {"old_name": "new_name"})
-    assert errors == []
-    assert migrated[0]["uid"] == seed["uid"]
-    assert migrated[0]["split_group"] == seed["split_group"]
-    assert seed["metadata"] == {}
-    assert migrated[0]["metadata"]["reasoning_context"]["variables"] == {"object": "O1"}
-    context = enrich_seed_semantics(migrated[0])
-    assert "template_id" not in context
-    assert "oracle_type" not in migrated[0]["metadata"]
-
-
-def test_migration_reports_changed_queries_instead_of_guessing():
-    template = {
-        "query_type": "count",
-        "cypher": "MATCH (o:Object) RETURN count(o) AS count",
-    }
-    seed = {
-        "uid": "old",
-        "query_type": "count",
-        "cypher": "MATCH (o:Room) RETURN count(o) AS count",
-    }
-    migrated, errors = migrate_seeds([seed], [template])
-    assert len(errors) == 1
-    assert migrated[0]["metadata"]["reasoning_migration"]["status"] == "unresolved"
-    assert "reasoning_context" not in migrated[0]["metadata"]
-
-
 def test_fingerprint_detects_tampering_and_goal_type_mismatch():
     query = "MATCH (r:Room) RETURN r.nodeSymbol AS room"
-    template = {
-        "cypher": query,
+    contract = {
+        "result": {
+            "kind": "role_sets",
+            "roles": {"room": {"type": "node_symbol", "layers": ["Room"]}},
+        },
         "goal": {"fact": "visited-region", "arguments": [{"result": "room"}]},
-        "grounding": {"fields": {"room": {"symbol_type": "Room"}}},
     }
+    template = {"cypher": query, "validation_contract": contract}
     context = build_semantic_context({}, template, query)
     seed = {"cypher": query, "metadata": {"reasoning_context": deepcopy(context)}}
     seed["metadata"]["reasoning_context"]["goal"]["fact"] = "in-region"
     with pytest.raises(ValueError, match="fingerprint"):
-        enrich_seed_semantics(seed)
-    template["goal"]["fact"] = "visited-object"
+        _context(seed)
+    contract["goal"]["fact"] = "visited-object"
     with pytest.raises(ValueError, match="wrong predicate type"):
         build_semantic_context({}, template, query)
 
@@ -213,7 +173,11 @@ def test_audit_counts_coverage_and_cap_omissions_without_changing_seeds():
         'MATCH (r:Room)-[:CONTAINS*2..2]->(o:Object) WHERE o.class <> "chair" '
         "RETURN o.nodeSymbol AS object"
     )
-    template = {"query_type": "contents", "cypher": query}
+    template = {
+        "query_type": "contents",
+        "cypher": query,
+        "validation_contract": qa_contract(["set[str]"]),
+    }
     seed = {
         "uid": "one",
         "query_type": "contents",
@@ -222,13 +186,17 @@ def test_audit_counts_coverage_and_cap_omissions_without_changing_seeds():
         "task_family": "cypher_qa",
         "solution_formats": ["set[str]"],
     }
+    seed.update(
+        validation_contract=template["validation_contract"], metadata=source_metadata(template)
+    )
+    original = deepcopy(seed)
     trace = {"uid": "one_teacher", "validation": {"rows": [{"object": "O1"}]}}
     report, migrated = audit_seeds([seed], [template], traces=[trace])
     assert report["verified_seeds"] == 1
     assert report["rules"]["traversal"] == 1
     assert report["caps"]["None"]["turns_with_critical_omissions"] == 0
     assert report["caps"]["1"]["turns_with_critical_omissions"] > 0
-    assert "metadata" not in seed
+    assert seed == original
     assert migrated[0]["metadata"]["reasoning_context"]["retrieval"]
 
 
@@ -243,7 +211,11 @@ def test_audit_reports_empty_query_reasoning_separately_from_final_syntax():
         "solution_formats": ["str"],
     }
     trace = {"uid": "simple_teacher", "validation": {"rows": [{"object": "O1"}]}}
-    report, _ = audit_seeds([seed], [{"query_type": "lookup", "cypher": query}], traces=[trace])
+    template = {"query_type": "lookup", "cypher": query, "validation_contract": qa_contract()}
+    seed.update(
+        validation_contract=template["validation_contract"], metadata=source_metadata(template)
+    )
+    report, _ = audit_seeds([seed], [template], traces=[trace])
     assert report["renderer_version"] == 3
     assert report["reasoning_by_stage"]["tool"]["turns"] == 1
     assert report["reasoning_by_stage"]["tool"]["turns_with_reasoning"] == 0
@@ -251,30 +223,6 @@ def test_audit_reports_empty_query_reasoning_separately_from_final_syntax():
     assert report["reasoning_by_stage"]["final"]["turns_with_reasoning"] == 1
     assert report["examples"][0]["final"] == "SLDP unquoted string."
     assert report["caps"]["1"]["turns_with_critical_omissions"] == 0
-
-
-def test_legacy_goal_change_with_same_query_is_not_silently_migrated():
-    query = 'MATCH (o:Object {nodeSymbol: "O1"}) RETURN o.nodeSymbol AS object'
-    template = {
-        "query_type": "visit",
-        "cypher": query,
-        "goal": {"fact": "at-object", "arguments": [{"result": "object"}]},
-    }
-    seed = {
-        "uid": "old",
-        "query_type": "visit",
-        "task_family": "cypher_pddl",
-        "cypher": query,
-        "solution": "(visited-object O1)",
-        "grounding": {
-            "expected": {"object": ["O1"]},
-            "fields": {"object": {"symbol_type": "Object"}},
-        },
-    }
-    migrated, errors = migrate_seeds([seed], [template])
-    assert len(errors) == 1
-    assert "does not reproduce the saved PDDL goal" in errors[0]["error"]
-    assert "reasoning_context" not in migrated[0]["metadata"]
 
 
 def test_invalid_function_arity_is_an_explicit_diagnostic():
@@ -301,11 +249,16 @@ def test_changed_query_requires_refreshing_only_the_separate_reasoning_file(tmp_
     path.write_text(yaml.safe_dump({"templates": [template]}))
     question_content = path.read_text()
     with pytest.raises(ValueError, match="does not match"):
-        load_catalog([path], [destination])
+        load_fixture_catalog(path, destination)
     compile_templates(path, output_path=destination, write=True)
-    catalog = load_catalog([path], [destination])
-    seed = {"query_type": "ranked_objects", "cypher": template["cypher"], "metadata": {}}
-    enrich_seed_semantics(seed, catalog[0])
+    catalog = load_fixture_catalog(path, destination)
+    seed = {
+        "query_type": "ranked_objects",
+        "cypher": template["cypher"],
+        "validation_contract": catalog[0]["validation_contract"],
+        "metadata": source_metadata(template),
+    }
+    prepare_seed_semantics(seed, catalog[0])
     sentences = reasoning_sentences(seed, stage="tool")
     assert any("DESC" in sentence.text for sentence in sentences)
     assert path.read_text() == question_content
@@ -328,7 +281,7 @@ def test_separate_config_rejects_unsupported_global_versions(tmp_path, version):
     compiled["version"] = version
     destination.write_text(yaml.safe_dump(compiled))
     with pytest.raises(ValueError, match="Unsupported synthetic reasoning version"):
-        load_catalog([path], [destination])
+        load_fixture_catalog(path, destination)
 
 
 def test_real_teachers_and_disabled_synthetic_reasoning_do_not_load_config(monkeypatch):
@@ -367,6 +320,7 @@ def test_question_generation_retains_bindings_without_compiling_synthetic_semant
             "templates": [
                 {
                     "query_type": "custom_inventory",
+                    "validation_contract": qa_contract(["set[str]"]),
                     "variables": {"class": "object_classes"},
                     "cypher": 'MATCH (o:Object {class: "{class}"}) RETURN o.nodeSymbol AS object',
                     "questions": ["List {class} objects."],
@@ -377,9 +331,9 @@ def test_question_generation_retains_bindings_without_compiling_synthetic_semant
         limit_per_template=1,
         warn_on_target_shortfall=False,
     )
-    context = records[0]["metadata"]["reasoning_context"]
-    assert context["variables"] == {"class": "chair"}
-    assert "retrieval" not in context
+    metadata = records[0]["metadata"]
+    assert metadata["template_bindings"] == {"class": "chair"}
+    assert "reasoning_context" not in metadata
 
 
 def test_enabled_synthetic_teacher_loads_external_config_and_builds_verified_snapshots():
@@ -391,7 +345,19 @@ def test_enabled_synthetic_teacher_loads_external_config_and_builds_verified_sna
         for t in yaml.safe_load(Path(path).read_text())["templates"]
         if t["query_type"] == "object_total"
     )
-    population = [{"query_type": "object_total", "cypher": template["cypher"], "metadata": {}}]
+    from cypher_3dsg_agent_distillation.cypher.validation_config import load_question_catalog
+
+    current = next(
+        t for t in load_question_catalog(path)["templates"] if t["query_type"] == "object_total"
+    )
+    population = [
+        {
+            "validation_contract": current["validation_contract"],
+            "query_type": "object_total",
+            "cypher": template["cypher"],
+            "metadata": source_metadata(template),
+        }
+    ]
     paths = prepare_synthetic_reasoning(
         population,
         [{"name": "cypher_qa", "question_templates_path": path}],
@@ -401,4 +367,19 @@ def test_enabled_synthetic_teacher_loads_external_config_and_builds_verified_sna
     assert paths[0].parent.name == "synthetic_reasoning"
     assert paths[0].parent.parent.name == "question_templates"
     assert population[0]["metadata"]["reasoning_context"]["retrieval"]
-    assert population[0]["metadata"]["reasoning_migration"]["status"] == "verified"
+    assert "reasoning_migration" not in population[0]["metadata"]
+
+
+def load_fixture_catalog(path, destination):
+    from cypher_3dsg_agent_distillation.cypher.validation_config import default_validation_path
+
+    validation = default_validation_path(path)
+    validation.parent.mkdir(parents=True, exist_ok=True)
+    names = [t["query_type"] for t in yaml.safe_load(path.read_text())["templates"]]
+    validation.write_text(yaml.safe_dump({"version": 1, "templates": {name: {} for name in names}}))
+    defaults = qa_contract()
+    defaults.pop("version")
+    (validation.parent / "defaults.yaml").write_text(
+        yaml.safe_dump({"version": 1, "defaults": defaults})
+    )
+    return load_catalog([path], [destination])

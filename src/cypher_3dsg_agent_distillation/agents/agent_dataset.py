@@ -108,18 +108,18 @@ def read_student_trace_records_with_counts(
     config: dict[str, Any],
 ) -> tuple[list[AgentTraceRecord], Counter[str]]:
     """Load finalized generation outputs; splitting never repairs rejected attempts."""
-    records = read_agent_jsonl(
-        config.get("teacher_traces_jsonl_path") or config["traces_jsonl_path"]
+    records = read_agent_jsonl(config["teacher_traces_jsonl_path"])
+    counts: Counter[str] = Counter(
+        {
+            "accepted_teacher_traces": len(records),
+            "repaired_invalid_answer_format": sum(
+                bool(record.metadata.get("final_answer_repaired")) for record in records
+            ),
+            "recovered_earlier_retrieval": sum(
+                bool(record.metadata.get("earlier_retrieval_recovered")) for record in records
+            ),
+        }
     )
-    counts: Counter[str] = Counter({
-        "accepted_teacher_traces": len(records),
-        "repaired_invalid_answer_format": sum(
-            bool(record.metadata.get("final_answer_repaired")) for record in records
-        ),
-        "recovered_earlier_retrieval": sum(
-            bool(record.metadata.get("earlier_retrieval_recovered")) for record in records
-        ),
-    })
     return records, counts
 
 

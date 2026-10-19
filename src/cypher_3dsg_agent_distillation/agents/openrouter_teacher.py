@@ -76,7 +76,6 @@ from cypher_3dsg_agent_distillation.core.config import (
     resolve_project_path,
     teacher_name_from_config,
 )
-from cypher_3dsg_agent_distillation.core.io import read_jsonl
 from cypher_3dsg_agent_distillation.core.model_runtime_output import (
     configure_model_library_output,
 )
@@ -90,13 +89,10 @@ from cypher_3dsg_agent_distillation.core.versioning import (
     mapping_fingerprint,
     serializable_arguments,
 )
+from cypher_3dsg_agent_distillation.cypher.cypher_seed_records import load_prepared_seed_records
 from cypher_3dsg_agent_distillation.cypher.evaluation import (
-    ResultShapeError,
     normalize_answer,
-    rows_to_solution_text,
 )
-from cypher_3dsg_agent_distillation.cypher.pddl_goals import validate_grounding_rows
-from cypher_3dsg_agent_distillation.graph.heracles_validation import answer_matches_with_heracles
 from cypher_3dsg_agent_distillation.graph.load_neo4j import load_scene
 from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
     DEFAULT_HERACLES_NEO4J_DATABASE,
@@ -153,8 +149,7 @@ class OpenRouterTeacherClient:
         self._sdk_client = sdk_client
         self._owns_sdk_client = sdk_client is None
         self.reasoning = dict(reasoning or {})
-        if "exclude" in self.reasoning:
-            raise ValueError("reasoning.exclude was removed; use reasoning.enabled instead.")
+        validate_reasoning_settings(self.reasoning)
         if not isinstance(self.reasoning.get("enabled", False), bool):
             raise ValueError("reasoning.enabled must be a boolean.")
         if (
@@ -209,14 +204,18 @@ class OpenRouterTeacherClient:
         try:
             if self._sdk_client is not None and not self._owns_sdk_client:
                 response = self._sdk().models.list(
-                    q=self.model, limit=1000, timeout_ms=self.timeout_ms,
+                    q=self.model,
+                    limit=1000,
+                    timeout_ms=self.timeout_ms,
                 )
                 entries = [object_to_plain_dict(model) for model in response.result.data]
             else:
                 # New catalog fields (notably mandatory reasoning) may be absent from
                 # the installed SDK schema, so discovery also retains the raw JSON.
-                with urlopen("https://openrouter.ai/api/v1/models?q=" + quote(self.model),
-                             timeout=self.timeout) as response:
+                with urlopen(
+                    "https://openrouter.ai/api/v1/models?q=" + quote(self.model),
+                    timeout=self.timeout,
+                ) as response:
                     entries = json.load(response)["data"]
         except openrouter_errors.OpenRouterError as exc:
             raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
@@ -246,7 +245,8 @@ class OpenRouterTeacherClient:
     def api_reasoning(self) -> dict[str, Any]:
         """The public enabled switch controls inclusion, not mandatory internal thinking."""
         parameters = {
-            key: value for key, value in self.reasoning.items()
+            key: value
+            for key, value in self.reasoning.items()
             if key != "enabled" and value is not None
         }
         parameters["exclude"] = not self.include_reasoning
@@ -290,16 +290,19 @@ class OpenRouterTeacherClient:
         wire = Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(request, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {self.require_api_key()}",
-                     "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {self.require_api_key()}",
+                "Content-Type": "application/json",
+            },
             method="POST",
         )
         try:
             with urlopen(wire, timeout=self.timeout) as response:
                 return json.load(response)
         except HTTPError as exc:
-            raise RuntimeError(f"OpenRouter HTTP {exc.code}: "
-                               f"{exc.read().decode('utf-8', errors='replace')[:1000]}") from exc
+            raise RuntimeError(
+                f"OpenRouter HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:1000]}"
+            ) from exc
         except URLError as exc:
             raise RuntimeError(f"OpenRouter request failed: {exc.reason}") from exc
 
@@ -313,9 +316,14 @@ class OpenRouterTeacherClient:
         if self.max_cost_usd is not None and not self.model_info:
             self.preflight()
         request = {
-            "model": self.model, "messages": sdk_outbound_messages(messages),
-            "tools": tools, "tool_choice": tool_choice, "parallel_tool_calls": False,
-            "temperature": self.temperature, "max_tokens": self.max_tokens, "stream": False,
+            "model": self.model,
+            "messages": sdk_outbound_messages(messages),
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "parallel_tool_calls": False,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
         }
         request["reasoning"] = self.api_reasoning()
         if self.model_info and "parallel_tool_calls" not in (
@@ -325,8 +333,11 @@ class OpenRouterTeacherClient:
             # do not expose this parameter. The interaction loop still enforces one call.
             request.pop("parallel_tool_calls", None)
         self.request_index += 1
-        cached = (self.journal.cached_request(self.attempt_id, self.request_index, request)
-                  if self.journal is not None else None)
+        cached = (
+            self.journal.cached_request(self.attempt_id, self.request_index, request)
+            if self.journal is not None
+            else None
+        )
         if cached is not None:
             return cached
         self.reserve_request_budget(request)
@@ -345,12 +356,16 @@ class OpenRouterTeacherClient:
         usage = raw.get("usage") or {}
         choices = raw.get("choices") or []
         entry = {
-            "generation_id": raw.get("id"), "model": raw.get("model", self.model),
-            "provider": raw.get("provider"), "usage": usage,
-            "cost_usd": usage.get("cost"), "latency_seconds": time.monotonic() - started,
+            "generation_id": raw.get("id"),
+            "model": raw.get("model", self.model),
+            "provider": raw.get("provider"),
+            "usage": usage,
+            "cost_usd": usage.get("cost"),
+            "latency_seconds": time.monotonic() - started,
             "finish_reason": choices[0].get("finish_reason") if choices else None,
             "native_finish_reason": choices[0].get("native_finish_reason") if choices else None,
-            "attempt_id": self.attempt_id, "request_index": self.request_index,
+            "attempt_id": self.attempt_id,
+            "request_index": self.request_index,
         }
         self.requests.append(entry)
         if choices:
@@ -563,14 +578,8 @@ def append_controlled_repair_context(
     return len(messages)
 
 
-def seed_expected_solution(seed: dict[str, Any]) -> Any:
-    if "solution" in seed:
-        return seed["solution"]
-    return seed.get("expected_solution")
-
-
-def seed_real_solution(seed: dict[str, Any]) -> Any:
-    return seed_expected_solution(seed)
+def seed_solution(seed: dict[str, Any]) -> Any:
+    return seed.get("solution")
 
 
 def final_answer_value(content: str | None) -> str | None:
@@ -617,21 +626,19 @@ def build_candidate_trace(
     teacher_model: str | None,
 ) -> AgentTraceRecord:
     cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
-    real_solution = seed_real_solution(seed)
+    expected_solution = seed_solution(seed)
     return AgentTraceRecord(
         uid=str(candidate.get("uid") or f"{seed['uid']}_teacher"),
         scene_id=seed.get("scene_id"),
         question=str(candidate.get("question") or seed["question"]),
-        query_type=seed.get("query_type", "unknown"),
+        task_type=seed["query_type"],
         task_family=seed.get("task_family", "cypher_qa"),
         output_type=seed.get("output_type", "SLDP"),
         experiment_profile=seed.get("experiment_profile"),
         messages=candidate["messages"],
         gold_cypher=cypher,
-        expected_solution=real_solution,
-        real_solution=real_solution,
+        expected_solution=expected_solution,
         solution_formats=seed.get("solution_formats", []),
-        answer_validation=seed.get("answer_validation"),
         grounding=seed.get("grounding"),
         validation_contract=seed.get("validation_contract"),
         final_answer=final_answer_from_messages(candidate["messages"]),
@@ -663,15 +670,17 @@ def configured_trace_decision(seed, record, candidate, execution):
 
     contract = contract_for_record(seed)
     query = record.gold_cypher
-    if not execution.get("executable") or "rows" not in execution:
+    if (
+        not execution.get("executable")
+        or "rows" not in execution
+        or any(execution.get(key) for key in ("rows_truncated", "rows_omitted"))
+    ):
         outcome = {"status": "not_checked", "match": None}
     else:
         outcome = validate_record_result(seed, execution["rows"], query, execution.get("columns"))
     final = answer_inner_text(record.final_answer_text)
     answer = (
-        compare_answers(
-            final or "", str(seed_real_solution(seed)), contract, seed.get("answer_validation")
-        )
+        compare_answers(final or "", str(seed_solution(seed)), contract)
         if final is not None
         else {"status": "missing_answer_tags", "format_valid": False, "match": False}
     )
@@ -707,11 +716,16 @@ def configured_trace_decision(seed, record, candidate, execution):
         else "final_answer_cypher_mismatch"
     )
     return TraceDecision(
-        accepted, record, reason, {
-            **candidate, "cypher": query, "cypher_solution": record.cypher_solution,
+        accepted,
+        record,
+        reason,
+        {
+            **candidate,
+            "cypher": query,
+            "cypher_solution": record.cypher_solution,
             "final_answer": final_answer_from_messages(candidate.get("messages") or []),
             "validation": record.validation.model_dump(),
-        }
+        },
     )
 
 
@@ -729,7 +743,7 @@ def build_interaction_trace(
     static_only: bool = False,
 ) -> AgentTraceRecord:
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
-    real_solution = seed_real_solution(seed)
+    expected_solution = seed_solution(seed)
     metadata = {
         **dict(seed.get("metadata") or {}),
         "seed_uid": seed.get("uid"),
@@ -759,9 +773,9 @@ def build_interaction_trace(
                 metadata["non_trainable_message_indices"] = [index, index + 1]
                 break
     excluded = set(metadata.get("non_trainable_message_indices") or [])
-    metadata["reasoning_coverage"] = trace_reasoning_coverage([
-        message for index, message in enumerate(messages) if index not in excluded
-    ])
+    metadata["reasoning_coverage"] = trace_reasoning_coverage(
+        [message for index, message in enumerate(messages) if index not in excluded]
+    )
     if static_only:
         metadata["static_only"] = True
         metadata["incomplete_conversation"] = True
@@ -769,16 +783,14 @@ def build_interaction_trace(
         uid=f"{seed['uid']}_teacher",
         scene_id=seed.get("scene_id"),
         question=str(seed["question"]),
-        query_type=seed.get("query_type", "unknown"),
+        task_type=seed["query_type"],
         task_family=seed.get("task_family", "cypher_qa"),
         output_type=seed.get("output_type", "SLDP"),
         experiment_profile=seed.get("experiment_profile"),
         messages=messages,
         gold_cypher=cypher,
-        expected_solution=real_solution,
-        real_solution=real_solution,
+        expected_solution=expected_solution,
         solution_formats=seed.get("solution_formats", []),
-        answer_validation=seed.get("answer_validation"),
         grounding=seed.get("grounding"),
         validation_contract=seed.get("validation_contract"),
         cypher_solution=cypher_solution,
@@ -827,8 +839,7 @@ def evaluate_candidate_trace(
     validator: Neo4jValidator | None,
     policy: dict[str, Any] | None,
 ) -> TraceDecision:
-    real_solution = seed_real_solution(seed)
-    output_type = seed.get("output_type", "SLDP")
+    expected_solution = seed_solution(seed)
     try:
         record = build_candidate_trace(seed, candidate, teacher_model)
     except Exception as exc:
@@ -842,7 +853,7 @@ def evaluate_candidate_trace(
         record.validation.executable = True
         record.validation.cypher_solution_match = True
         record.validation.final_answer_cypher_match = True
-        record.validation.final_answer_match = normalize_answer(real_solution) in {
+        record.validation.final_answer_match = normalize_answer(expected_solution) in {
             "",
             normalize_answer(record.final_answer),
         } or WRITE_REFUSAL_ANSWER in normalize_answer(record.final_answer)
@@ -860,165 +871,24 @@ def evaluate_candidate_trace(
     if DEFAULT_AGENT_TOOL not in [call.function.name for call in record.tool_calls]:
         return TraceDecision(False, record, "missing_required_tool", candidate)
 
-    static_issues = static_checks(
-        cypher, allow_writes=not record.read_only and not record.validation_contract, policy=policy
-    )
+    static_issues = static_checks(cypher, allow_writes=False, policy=policy)
     record.validation.static_issues = static_issues
     record.validation.static_valid = not static_issues
     if static_issues:
         return TraceDecision(False, record, "static_issues", candidate)
 
+    record.metadata["seed_gold_cypher"] = record.gold_cypher
+    record.gold_cypher = cypher
     if validator is None:
-        if seed.get("validation_contract"):
-            return configured_trace_decision(seed, record, candidate, {})
-        record.validation.executable = True
-        record.validation.solution_match = True
-        return TraceDecision(True, record, "accepted_static_only", candidate)
-
+        return configured_trace_decision(seed, record, candidate, {})
     validation = validator.validate(cypher, execute=True)
     record.validation.executable = bool(validation.get("executable"))
     record.validation.error = validation.get("error")
     if not record.validation.executable:
         return TraceDecision(
-            False,
-            record,
-            "execution_failed",
-            {**candidate, "validation": validation},
+            False, record, "execution_failed", {**candidate, "validation": validation}
         )
-
-    if seed.get("validation_contract"):
-        return configured_trace_decision(seed, record, candidate, validation)
-
-    task_family = str(seed.get("task_family") or "cypher_qa")
-    if task_family == "cypher_pddl":
-        cypher_matches_real, cypher_solution, _actual_grounding = validate_grounding_rows(
-            validation.get("rows", []), seed.get("grounding"), query=cypher
-        )
-        valid_cypher_format = True
-    else:
-        try:
-            cypher_solution = rows_to_solution_text(
-                {**seed, "_validation_query": cypher}, validation.get("rows", [])
-            )
-        except ResultShapeError as exc:
-            record.validation.error = str(exc)
-            return TraceDecision(
-                False,
-                record,
-                "result_shape_error",
-                {**candidate, "cypher_solution": None, "validation": validation},
-            )
-        valid_cypher_format, cypher_matches_real = answer_matches_with_heracles(
-            cypher_solution,
-            str(real_solution),
-            output_type,
-            answer_validation=seed.get("answer_validation"),
-            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-        )
-    record.cypher_solution = cypher_solution
-    record.validation.cypher_solution_match = cypher_matches_real
-    record.validation.tool_result_match = cypher_matches_real
-    cypher_checked_validation = validation_with_solution_checks(
-        validation,
-        cypher_solution_match=cypher_matches_real,
-    )
-    if not valid_cypher_format:
-        return TraceDecision(
-            False,
-            record,
-            "invalid_answer_format",
-            {
-                **candidate,
-                "cypher_solution": cypher_solution,
-                "validation": cypher_checked_validation,
-            },
-        )
-    if not cypher_matches_real:
-        return TraceDecision(
-            False,
-            record,
-            "solution_mismatch",
-            {
-                **candidate,
-                "cypher_solution": cypher_solution,
-                "validation": cypher_checked_validation,
-            },
-        )
-
-    inner_answer = answer_inner_text(record.final_answer_text)
-    record.final_answer = final_answer_value(record.final_answer_text)
-    if inner_answer is None:
-        return TraceDecision(
-            False,
-            record,
-            "missing_answer_tags",
-            {**candidate, "cypher_solution": cypher_solution, "validation": validation},
-        )
-    valid_final_format, final_matches_real = answer_matches_with_heracles(
-        inner_answer,
-        str(real_solution),
-        output_type,
-        answer_validation=seed.get("answer_validation"),
-        solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-    )
-    if task_family == "cypher_qa":
-        valid_consistency_format, final_matches_cypher = answer_matches_with_heracles(
-            inner_answer,
-            str(cypher_solution),
-            output_type,
-            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-        )
-    else:
-        valid_consistency_format = True
-        final_matches_cypher = cypher_matches_real and final_matches_real
-    record.validation.final_answer_match = final_matches_real
-    record.validation.final_answer_cypher_match = final_matches_cypher
-    record.validation.final_answer_format_valid = valid_final_format
-    record.validation.final_answer_domain_valid = valid_final_format
-    record.validation.answer_grounded = final_matches_cypher
-    record.validation.solution_match = bool(
-        cypher_matches_real and final_matches_real and final_matches_cypher
-    )
-    checked_validation = validation_with_solution_checks(
-        validation,
-        cypher_solution_match=cypher_matches_real,
-        final_answer_match=final_matches_real,
-        final_answer_cypher_match=final_matches_cypher,
-    )
-    if not valid_final_format or not valid_consistency_format:
-        return TraceDecision(
-            False,
-            record,
-            "invalid_answer_format",
-            {
-                **candidate,
-                "cypher_solution": cypher_solution,
-                "validation": checked_validation,
-            },
-        )
-    if not final_matches_real:
-        return TraceDecision(
-            False,
-            record,
-            "final_answer_mismatch",
-            {
-                **candidate,
-                "cypher_solution": cypher_solution,
-                "validation": checked_validation,
-            },
-        )
-    if not final_matches_cypher:
-        return TraceDecision(
-            False,
-            record,
-            "final_answer_cypher_mismatch",
-            {
-                **candidate,
-                "cypher_solution": cypher_solution,
-                "validation": checked_validation,
-            },
-        )
-    return TraceDecision(True, record, "accepted", candidate)
+    return configured_trace_decision(seed, record, candidate, validation)
 
 
 def run_teacher_interaction(
@@ -1036,9 +906,16 @@ def run_teacher_interaction(
 ) -> TraceDecision:
     """Keep provider replay intact internally; apply inclusion when saving the trace."""
     decision = _run_teacher_interaction(
-        without_controlled_repair(seed), profile=profile, tool_interface=tool_interface,
-        client=client, teacher_model=teacher_model, validator=validator, policy=policy,
-        max_tool_calls=max_tool_calls, static_only=static_only, tuning_prompt=tuning_prompt,
+        without_controlled_repair(seed),
+        profile=profile,
+        tool_interface=tool_interface,
+        client=client,
+        teacher_model=teacher_model,
+        validator=validator,
+        policy=policy,
+        max_tool_calls=max_tool_calls,
+        static_only=static_only,
+        tuning_prompt=tuning_prompt,
     )
     if getattr(client, "include_reasoning", True):
         return decision
@@ -1066,14 +943,14 @@ def _run_teacher_interaction(
     static_only: bool,
     tuning_prompt: str = "",
 ) -> TraceDecision:
+    from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+    contract_for_record(seed)
     if max_tool_calls < 1:
         raise ValueError("max_tool_calls must be >= 1.")
     messages = render_profile_messages(profile, seed, tool_interface=tool_interface)
 
-    task_family = str(seed.get("task_family") or profile.task_family)
-    output_type = str(seed.get("output_type") or profile.output_type)
     seed_cypher = str(seed.get("cypher") or seed.get("gold_cypher") or "").strip()
-    real_solution = seed_real_solution(seed)
     expected_refusal = is_safe_refusal(seed_cypher)
     tool_call_count = 0
     successful_tool_call_index: int | None = None
@@ -1146,8 +1023,7 @@ def _run_teacher_interaction(
 
             static_issues = static_checks(
                 cypher,
-                allow_writes=not bool(seed.get("read_only", True))
-                and not seed.get("validation_contract"),
+                allow_writes=False,
                 policy=policy,
             )
             if static_issues:
@@ -1185,9 +1061,7 @@ def _run_teacher_interaction(
                     cypher_solution=None,
                     static_only=True,
                 )
-                if seed.get("validation_contract"):
-                    return configured_trace_decision(seed, record, {"messages": messages}, {})
-                return TraceDecision(True, record, "accepted_static_only", {"messages": messages})
+                return configured_trace_decision(seed, record, {"messages": messages}, {})
 
             if validator is None:
                 return rejected("execution_failed", messages=messages, cypher=cypher)
@@ -1237,172 +1111,18 @@ def _run_teacher_interaction(
         inner_answer = answer_inner_text(final_answer)
         if inner_answer is None:
             return rejected("missing_answer_tags", messages=messages, final_answer=final_answer)
-        if seed.get("validation_contract"):
-            record = build_interaction_trace(
-                seed,
-                messages=messages,
-                teacher_model=teacher_model,
-                cypher=last_executed_cypher,
-                validation=last_execution or {},
-                max_tool_calls=max_tool_calls,
-                tool_call_count=tool_call_count,
-                successful_tool_call_index=successful_tool_call_index,
-                cypher_solution=cypher_solution,
-            )
-            return configured_trace_decision(
-                seed, record, {"messages": messages}, last_execution or {}
-            )
-
-        # Legacy seeds without a validation contract are also graded only after
-        # the final answer; their decoding/grounding errors never become tool feedback.
-        if task_family == "cypher_qa":
-            try:
-                cypher_solution = rows_to_solution_text(
-                    {**seed, "_validation_query": last_executed_cypher},
-                    (last_execution or {}).get("rows", []),
-                )
-            except ResultShapeError as exc:
-                return rejected(
-                    "result_shape_error", messages=messages, cypher=last_executed_cypher,
-                    validation={**(last_execution or {}), "result_shape_error": str(exc)},
-                    final_answer=final_answer,
-                )
-        elif task_family == "cypher_pddl":
-            grounding_match, cypher_solution, _actual_grounding = validate_grounding_rows(
-                (last_execution or {}).get("rows", []), seed.get("grounding"),
-                query=last_executed_cypher,
-            )
-            if not grounding_match:
-                return rejected(
-                    "grounding_mismatch", messages=messages, cypher=last_executed_cypher,
-                    validation=validation_with_solution_checks(
-                        {**(last_execution or {}), "grounding_mismatch": True},
-                        cypher_solution_match=False,
-                    ),
-                    cypher_solution=cypher_solution, final_answer=final_answer,
-                )
-
-        cypher_solution_match: bool | None = None
-        final_answer_cypher_match: bool | None = None
-        if task_family == "cypher_qa":
-            valid_cypher_format, cypher_solution_match = answer_matches_with_heracles(
-                str(cypher_solution),
-                str(real_solution),
-                output_type,
-                answer_validation=seed.get("answer_validation"),
-                solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-            )
-            cypher_checked_validation = validation_with_solution_checks(
-                last_execution or {},
-                cypher_solution_match=cypher_solution_match,
-            )
-            if not valid_cypher_format:
-                return rejected(
-                    "invalid_answer_format",
-                    messages=messages,
-                    cypher=last_executed_cypher,
-                    validation=cypher_checked_validation,
-                    cypher_solution=cypher_solution,
-                    final_answer=final_answer,
-                )
-            if not cypher_solution_match:
-                return rejected(
-                    "solution_mismatch",
-                    messages=messages,
-                    cypher=last_executed_cypher,
-                    validation=cypher_checked_validation,
-                    cypher_solution=cypher_solution,
-                    final_answer=final_answer,
-                )
-            valid_consistency_format, final_answer_cypher_match = answer_matches_with_heracles(
-                inner_answer,
-                str(cypher_solution),
-                output_type,
-                solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-            )
-            if not valid_consistency_format:
-                return rejected(
-                    "invalid_answer_format",
-                    messages=messages,
-                    cypher=last_executed_cypher,
-                    validation=validation_with_solution_checks(
-                        last_execution or {},
-                        cypher_solution_match=cypher_solution_match,
-                        final_answer_cypher_match=final_answer_cypher_match,
-                    ),
-                    cypher_solution=cypher_solution,
-                    final_answer=final_answer,
-                )
-        elif task_family == "cypher_pddl":
-            # Grounding was checked internally after the teacher's final answer.
-            cypher_solution_match = True
-            final_answer_cypher_match = None
-        valid_final_format, final_matches = answer_matches_with_heracles(
-            inner_answer,
-            str(real_solution),
-            output_type,
-            answer_validation=seed.get("answer_validation"),
-            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-        )
-        checked_validation = validation_with_solution_checks(
-            last_execution or {},
-            cypher_solution_match=cypher_solution_match,
-            final_answer_match=final_matches,
-            final_answer_cypher_match=final_answer_cypher_match,
-        )
-        checked_validation.update(
-            {
-                "tool_result_match": cypher_solution_match,
-                "final_answer_format_valid": valid_final_format,
-                "final_answer_domain_valid": valid_final_format,
-                "answer_grounded": bool(cypher_solution_match and final_matches),
-            }
-        )
-        if not valid_final_format:
-            return rejected(
-                "invalid_answer_format",
-                messages=messages,
-                cypher=last_executed_cypher,
-                validation=checked_validation,
-                cypher_solution=cypher_solution,
-                final_answer=final_answer,
-            )
-        if not final_matches:
-            return rejected(
-                "final_answer_mismatch",
-                messages=messages,
-                cypher=last_executed_cypher,
-                validation=checked_validation,
-                cypher_solution=cypher_solution,
-                final_answer=final_answer,
-            )
-        if final_answer_cypher_match is False:
-            return rejected(
-                "final_answer_cypher_mismatch",
-                messages=messages,
-                cypher=last_executed_cypher,
-                validation=checked_validation,
-                cypher_solution=cypher_solution,
-                final_answer=final_answer,
-            )
-
         record = build_interaction_trace(
             seed,
             messages=messages,
             teacher_model=teacher_model,
             cypher=last_executed_cypher,
-            validation={
-                **checked_validation,
-                "static_valid": True,
-                "executable": True,
-                "error": None,
-            },
+            validation=last_execution or {},
             max_tool_calls=max_tool_calls,
             tool_call_count=tool_call_count,
             successful_tool_call_index=successful_tool_call_index,
             cypher_solution=cypher_solution,
         )
-        return TraceDecision(True, record, "accepted", {"messages": messages})
+        return configured_trace_decision(seed, record, {"messages": messages}, last_execution or {})
 
 
 def configured_teacher_provider(config: dict[str, Any]) -> TeacherProvider:
@@ -1412,8 +1132,7 @@ def configured_teacher_provider(config: dict[str, Any]) -> TeacherProvider:
             f"Unsupported teacher provider `{provider or '<missing>'}`. "
             f"Expected one of {SUPPORTED_TEACHER_PROVIDERS}."
         )
-    if "exclude" in (config.get("reasoning") or {}):
-        raise ValueError("reasoning.exclude was removed; use reasoning.enabled instead.")
+    validate_reasoning_settings(config.get("reasoning") or {})
     if provider != "synthetic" and config.get("inject_controlled_repair"):
         warnings.warn(
             "inject_controlled_repair is only valid for provider: synthetic; "
@@ -1436,6 +1155,9 @@ def run_synthetic_teacher_interaction(
     inject_controlled_repair: bool = True,
 ) -> TraceDecision:
     """Construct a validated trace from gold Cypher, gold solution, and Neo4j rows."""
+    from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+    contract_for_record(seed)
     reasoning = reasoning or {}
     sentence_cap(reasoning, "tool")
     sentence_cap(reasoning, "final")
@@ -1448,9 +1170,6 @@ def run_synthetic_teacher_interaction(
                 reasoning_sentences,
             )
 
-            migration = (seed.get("metadata") or {}).get("reasoning_migration", {})
-            if migration.get("status") == "unresolved":
-                raise ValueError("Seed requires semantic migration or regeneration")
             reasoning_sentences(seed, stage="tool")
         except ValueError as exc:
             return rejected(
@@ -1460,8 +1179,8 @@ def run_synthetic_teacher_interaction(
     if not cypher:
         return rejected("missing_gold_cypher", messages=messages)
 
-    real_solution = seed_real_solution(seed)
-    if real_solution is None:
+    expected_solution = seed_solution(seed)
+    if expected_solution is None:
         return rejected("missing_gold_solution", messages=messages, cypher=cypher)
 
     if is_safe_refusal(cypher):
@@ -1492,7 +1211,7 @@ def run_synthetic_teacher_interaction(
 
     static_issues = static_checks(
         cypher,
-        allow_writes=not bool(seed.get("read_only", True)) and not seed.get("validation_contract"),
+        allow_writes=False,
         policy=policy,
     )
     if static_issues:
@@ -1542,9 +1261,13 @@ def run_synthetic_teacher_interaction(
     )
     validation = validator.validate(cypher, execute=True)
     add_synthetic_reasoning(
-        messages[-1], seed, reasoning, stage="tool",
+        messages[-1],
+        seed,
+        reasoning,
+        stage="tool",
         repair_template=(seed.get("metadata") or {}).get("repair_template")
-        if repair_context_message_count is not None else None,
+        if repair_context_message_count is not None
+        else None,
     )
     validation = {**validation, "static_valid": True}
     if not validation.get("executable"):
@@ -1570,135 +1293,25 @@ def run_synthetic_teacher_interaction(
         )
     )
 
-    task_family = str(seed.get("task_family") or profile.task_family)
-    output_type = str(seed.get("output_type") or profile.output_type)
-    if seed.get("validation_contract"):
-        final_answer = str(real_solution).strip()
-        messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
-        add_synthetic_reasoning(
-            messages[-1], seed, reasoning, stage="final", rows=validation.get("rows", [])
-        )
-        record = build_interaction_trace(
-            seed,
-            messages=messages,
-            teacher_model=None,
-            cypher=cypher,
-            validation=validation,
-            max_tool_calls=max_tool_calls,
-            tool_call_count=2 if repair_context_message_count is not None else 1,
-            successful_tool_call_index=2 if repair_context_message_count is not None else 1,
-            cypher_solution=None,
-        )
-        record.metadata["teacher_provider"] = "synthetic"
-        record.metadata["generation_mode"] = "synthetic_gold_cypher"
-        return configured_trace_decision(seed, record, {"messages": messages}, validation)
-
-    cypher_solution: str | None = None
-    cypher_solution_match: bool | None = None
-    final_answer_cypher_match: bool | None = None
-    if task_family == "cypher_qa":
-        try:
-            cypher_solution = rows_to_solution_text(
-                {**seed, "_validation_query": cypher}, validation.get("rows", [])
-            )
-        except ResultShapeError as exc:
-            return rejected(
-                "result_shape_error",
-                messages=messages,
-                cypher=cypher,
-                validation={**validation, "result_shape_error": str(exc)},
-            )
-        valid_cypher_format, cypher_solution_match = answer_matches_with_heracles(
-            cypher_solution,
-            str(real_solution),
-            output_type,
-            solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-        )
-        if not valid_cypher_format:
-            return rejected(
-                "invalid_answer_format",
-                messages=messages,
-                cypher=cypher,
-                validation=validation,
-                cypher_solution=cypher_solution,
-            )
-        if not cypher_solution_match:
-            return rejected(
-                "gold_solution_mismatch",
-                messages=messages,
-                cypher=cypher,
-                validation=validation_with_solution_checks(
-                    validation,
-                    cypher_solution_match=False,
-                ),
-                cypher_solution=cypher_solution,
-            )
-        final_answer_cypher_match = True
-    elif task_family == "cypher_pddl":
-        cypher_solution_match, cypher_solution, _actual_grounding = validate_grounding_rows(
-            validation.get("rows", []), seed.get("grounding"), query=cypher
-        )
-        if not cypher_solution_match:
-            return rejected(
-                "grounding_mismatch",
-                messages=messages,
-                cypher=cypher,
-                validation=validation_with_solution_checks(
-                    validation,
-                    cypher_solution_match=False,
-                ),
-                cypher_solution=cypher_solution,
-            )
-
-    final_answer = str(real_solution).strip()
-    valid_final_format, final_answer_match = answer_matches_with_heracles(
-        final_answer,
-        str(real_solution),
-        output_type,
-        solution_formats=seed.get("solution_formats") or seed.get("solution_format"),
-    )
-    if not valid_final_format or not final_answer_match:
-        return rejected(
-            "invalid_gold_solution",
-            messages=messages,
-            cypher=cypher,
-            validation=validation,
-            cypher_solution=cypher_solution,
-            final_answer=final_answer,
-        )
-
+    final_answer = str(expected_solution).strip()
     messages.append({"role": "assistant", "content": f"<answer>{final_answer}</answer>"})
     add_synthetic_reasoning(
-        messages[-1], seed, reasoning, stage="final", rows=validation.get("rows", []),
-    )
-    checked_validation = validation_with_solution_checks(
-        validation,
-        cypher_solution_match=cypher_solution_match,
-        final_answer_match=final_answer_match,
-        final_answer_cypher_match=final_answer_cypher_match,
-    )
-    checked_validation.update(
-        {
-            "tool_result_match": cypher_solution_match,
-            "final_answer_format_valid": valid_final_format,
-            "final_answer_domain_valid": valid_final_format,
-            "answer_grounded": bool(cypher_solution_match and final_answer_match),
-        }
+        messages[-1], seed, reasoning, stage="final", rows=validation.get("rows", [])
     )
     record = build_interaction_trace(
         seed,
         messages=messages,
         teacher_model=None,
         cypher=cypher,
-        validation=checked_validation,
+        validation=validation,
         max_tool_calls=max_tool_calls,
         tool_call_count=2 if repair_context_message_count is not None else 1,
         successful_tool_call_index=2 if repair_context_message_count is not None else 1,
-        cypher_solution=cypher_solution,
+        cypher_solution=None,
     )
     record.metadata["teacher_provider"] = "synthetic"
     record.metadata["generation_mode"] = "synthetic_gold_cypher"
-    return TraceDecision(True, record, "accepted", {"messages": messages})
+    return configured_trace_decision(seed, record, {"messages": messages}, validation)
 
 
 def configured_max_tool_calls(
@@ -1835,9 +1448,8 @@ def debug_trace_record(
         or seed.get("experiment_profile"),
         "question": record_json.get("question") or seed.get("question"),
         "cypher": payload.get("cypher") or record_json.get("gold_cypher"),
-        "real_solution": seed_real_solution(seed),
+        "expected_solution": seed_solution(seed),
         "solution_formats": seed.get("solution_formats", []),
-        "answer_validation": seed.get("answer_validation"),
         "grounding": seed.get("grounding"),
         "validation_contract": seed.get("validation_contract"),
         "cypher_solution": cypher_solution,
@@ -1865,7 +1477,7 @@ def prepare_synthetic_reasoning(population, question_sets, teacher_config):
         default_semantics_path,
         load_catalog,
     )
-    from cypher_3dsg_agent_distillation.cypher.task_semantics import enrich_seed_semantics
+    from cypher_3dsg_agent_distillation.cypher.task_semantics import prepare_seed_semantics
 
     template_paths = [resolve_project_path(q["question_templates_path"]) for q in question_sets]
     configured_paths = reasoning.get("semantics_paths")
@@ -1884,12 +1496,7 @@ def prepare_synthetic_reasoning(population, question_sets, teacher_config):
         )
     }
     for seed in population:
-        try:
-            enrich_seed_semantics(seed, templates.get(seed["query_type"]))
-        except ValueError as exc:
-            seed.setdefault("metadata", {})["reasoning_migration"] = {
-                "status": "unresolved", "error": str(exc)
-            }
+        prepare_seed_semantics(seed, templates[seed["query_type"]])
     return semantics_paths
 
 
@@ -1903,9 +1510,13 @@ def optimize_teacher_attempts(
     teacher_model: str,
 ) -> None:
     """Finalize rejected attempts before publishing generation outputs and reports."""
-    if not any(optimizations.get(name) for name in (
-        "repair_invalid_final_answers", "recover_earlier_retrievals",
-    )):
+    if not any(
+        optimizations.get(name)
+        for name in (
+            "repair_invalid_final_answers",
+            "recover_earlier_retrievals",
+        )
+    ):
         return
     rejected = sum(not item["accepted"] for item in journal.attempts)
     if not rejected:
@@ -1922,8 +1533,11 @@ def optimize_teacher_attempts(
     )
     changed = False
     with Progress(
-        TextColumn("[progress.description]{task.description}"), BarColumn(),
-        MofNCompleteColumn(), TimeElapsedColumn(), TimeRemainingColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
     ) as progress:
         task = progress.add_task(
             f"teacher optimizations repaired={repaired_count} recovered={recovered_count}",
@@ -1971,11 +1585,16 @@ def optimize_teacher_attempts(
             if record is not None:
                 record_json = record.model_dump(by_alias=True, exclude_none=True)
                 decision = TraceDecision(
-                    True, record, reason,
+                    True,
+                    record,
+                    reason,
                     {"messages": record_json["messages"], "optimization": optimization},
                 )
                 item = attempt_payload(
-                    seed, decision, attempt_id=item["attempt_id"], tokenizer=tokenizer,
+                    seed,
+                    decision,
+                    attempt_id=item["attempt_id"],
+                    tokenizer=tokenizer,
                     max_length=max_length,
                 )
                 item["debug_record"] = debug_trace_record(seed, decision, record_json=record_json)
@@ -1983,7 +1602,9 @@ def optimize_teacher_attempts(
                 changed = True
             updated.append(item)
             progress.update(
-                task, advance=1, description=(
+                task,
+                advance=1,
+                description=(
                     f"teacher optimizations repaired={repaired_count} recovered={recovered_count}"
                 ),
             )
@@ -2048,17 +1669,23 @@ def generate_command(args: argparse.Namespace) -> None:
         data_config["teacher_name"] = teacher_name
     else:
         data_config = prepare_teacher_dataset(data_config, teacher_name=teacher_name)
-    population = read_jsonl(data_config["seed_records_jsonl_path"])
+    population = load_prepared_seed_records(data_config["seed_records_jsonl_path"])
     semantics_paths = prepare_synthetic_reasoning(
         population, data_config.get("question_sets") or [], teacher_config
     )
-    seeds = select_pilot_seeds(
-        population, per_task_type=getattr(args, "pilot_per_task_type", 2),
-        random_seed=getattr(args, "sample_seed", 42),
-        extra_per_tag=getattr(args, "pilot_extra_per_tag", 2),
-    ) if pilot else population
+    seeds = (
+        select_pilot_seeds(
+            population,
+            per_task_type=getattr(args, "pilot_per_task_type", 2),
+            random_seed=getattr(args, "sample_seed", 42),
+            extra_per_tag=getattr(args, "pilot_extra_per_tag", 2),
+        )
+        if pilot
+        else population
+    )
     seed_manifest = {
-        "pilot": pilot, "sample_seed": getattr(args, "sample_seed", 42),
+        "pilot": pilot,
+        "sample_seed": getattr(args, "sample_seed", 42),
         "seed_uids": [seed["uid"] for seed in seeds],
         "population_fingerprint": file_fingerprint(data_config["seed_records_jsonl_path"]),
     }
@@ -2070,7 +1697,8 @@ def generate_command(args: argparse.Namespace) -> None:
             profile_path, project_root=PROJECT_ROOT
         )
         profile_inputs[f"templates:{question_set['name']}"] = config_record(
-            question_set["question_templates_path"], project_root=PROJECT_ROOT,
+            question_set["question_templates_path"],
+            project_root=PROJECT_ROOT,
         )
         for key, value in load_yaml(profile_path).items():
             if key.endswith("_path") and value:
@@ -2160,9 +1788,11 @@ def generate_command(args: argparse.Namespace) -> None:
             temperature=float(teacher_config.get("temperature", 0.2)),
             max_tokens=int(teacher_config.get("max_tokens", 2048)),
             reasoning=teacher_config.get("reasoning"),
-            max_cost_usd=(getattr(args, "max_cost_usd", None)
-                          if getattr(args, "max_cost_usd", None) is not None
-                          else teacher_config.get("max_cost_usd")),
+            max_cost_usd=(
+                getattr(args, "max_cost_usd", None)
+                if getattr(args, "max_cost_usd", None) is not None
+                else teacher_config.get("max_cost_usd")
+            ),
         )
         if provider == "openrouter"
         else nullcontext(None)
@@ -2227,8 +1857,10 @@ def generate_command(args: argparse.Namespace) -> None:
                 for seed_index, seed in enumerate(seeds, start=1):
                     if stop_reason:
                         break
-                    if all(f"{seed['uid']}:{index}" in journal.completed
-                           for index in range(traces_per_seed)):
+                    if all(
+                        f"{seed['uid']}:{index}" in journal.completed
+                        for index in range(traces_per_seed)
+                    ):
                         progress.update(task_id, advance=traces_per_seed)
                         continue
                     seed_scene_id = str(seed.get("scene_id") or "")
@@ -2273,9 +1905,14 @@ def generate_command(args: argparse.Namespace) -> None:
                             client.request_index = 0
                             try:
                                 decision = run_teacher_interaction(
-                                    seed, profile=profile, tool_interface="openrouter",
-                                    client=client, teacher_model=model, validator=validator,
-                                    policy=policy, max_tool_calls=max_tool_calls,
+                                    seed,
+                                    profile=profile,
+                                    tool_interface="openrouter",
+                                    client=client,
+                                    teacher_model=model,
+                                    validator=validator,
+                                    policy=policy,
+                                    max_tool_calls=max_tool_calls,
                                     static_only=args.static_only,
                                     tuning_prompt=teacher_config["optimizations"]["tuning_prompt"],
                                 )
@@ -2293,9 +1930,12 @@ def generate_command(args: argparse.Namespace) -> None:
                                 policy=policy,
                                 max_tool_calls=max_tool_calls,
                                 reasoning=teacher_config.get("reasoning"),
-                                inject_controlled_repair=bool(teacher_config.get(
-                                    "inject_controlled_repair", True,
-                                )),
+                                inject_controlled_repair=bool(
+                                    teacher_config.get(
+                                        "inject_controlled_repair",
+                                        True,
+                                    )
+                                ),
                             )
                         record_json = None
                         if decision.accepted and decision.record is not None:
@@ -2310,11 +1950,16 @@ def generate_command(args: argparse.Namespace) -> None:
                         else:
                             rejected_debug_records.append(debug_trace_record(seed, decision))
                         item = attempt_payload(
-                            seed, decision, attempt_id=attempt_id, tokenizer=tokenizer,
+                            seed,
+                            decision,
+                            attempt_id=attempt_id,
+                            tokenizer=tokenizer,
                             max_length=training_max_length,
                         )
                         item["debug_record"] = debug_trace_record(
-                            seed, decision, record_json=record_json,
+                            seed,
+                            decision,
+                            record_json=record_json,
                         )
                         journal.finish_attempt(item)
                         progress.update(
@@ -2328,15 +1973,21 @@ def generate_command(args: argparse.Namespace) -> None:
                             ),
                         )
             optimize_teacher_attempts(
-                journal, seeds=seeds, optimizations=teacher_config["optimizations"],
-                tokenizer=tokenizer, max_length=training_max_length,
+                journal,
+                seeds=seeds,
+                optimizations=teacher_config["optimizations"],
+                tokenizer=tokenizer,
+                max_length=training_max_length,
                 teacher_model=str(model or provider),
             )
         finally:
             if validator is not None:
                 validator.close()
             report = pilot_report(
-                population, journal.attempts, journal.requests, traces_per_seed=traces_per_seed,
+                population,
+                journal.attempts,
+                journal.requests,
+                traces_per_seed=traces_per_seed,
             )
             report["optimizations"]["enabled"] = bool(
                 teacher_config["optimizations"]["repair_invalid_final_answers"]
@@ -2350,13 +2001,12 @@ def generate_command(args: argparse.Namespace) -> None:
                 report["projection"]["full_dataset_cost_usd"] = None
             atomic_write_yaml(report, traces_dir / "pilot_report.yaml")
             (traces_dir / "matched_retained_uids.json").write_text(
-                json.dumps(report["matched_retained_uids"], indent=2) + "\n", encoding="utf-8",
+                json.dumps(report["matched_retained_uids"], indent=2) + "\n",
+                encoding="utf-8",
             )
 
     teacher_records = [item["record"] for item in journal.attempts if item["accepted"]]
-    accepted_debug_records = [
-        item["debug_record"] for item in journal.attempts if item["accepted"]
-    ]
+    accepted_debug_records = [item["debug_record"] for item in journal.attempts if item["accepted"]]
     rejected_debug_records = [
         item["debug_record"] for item in journal.attempts if not item["accepted"]
     ]
@@ -2377,9 +2027,12 @@ def generate_command(args: argparse.Namespace) -> None:
         teacher_records,
         tokenizer,
         max_length=training_max_length,
-        include_reasoning=bool((student_config.get("training") or {}).get(
-            "include_reasoning", False,
-        )),
+        include_reasoning=bool(
+            (student_config.get("training") or {}).get(
+                "include_reasoning",
+                False,
+            )
+        ),
     )
     token_report.update(
         {
@@ -2445,7 +2098,6 @@ def generate_command(args: argparse.Namespace) -> None:
     )
     atomic_write_yaml(teacher_metadata, data_config["teacher_metadata_path"])
     dataset_metadata = load_yaml(data_config["metadata_path"])
-    dataset_metadata.pop("active_teacher_run", None)
     dataset_metadata["teacher"] = {
         "teacher_name": data_config["teacher_name"],
     }
@@ -2526,7 +2178,9 @@ def preflight_command(args: argparse.Namespace) -> None:
         print_summary(
             "Teacher preflight complete",
             [
-                ("Provider", provider), ("Model", client.model), ("Available", True),
+                ("Provider", provider),
+                ("Model", client.model),
+                ("Available", True),
                 ("Supported parameters", client.model_info.get("supported_parameters")),
                 ("Reasoning defaults", client.model_info.get("reasoning")),
                 ("Catalog pricing USD/token", client.model_info.get("pricing")),
@@ -2570,7 +2224,8 @@ def main() -> None:
     generate_parser.add_argument("--traces-per-seed", type=int, default=None)
     generate_parser.add_argument("--preflight", action="store_true")
     generate_parser.add_argument(
-        "--pilot", action="store_true",
+        "--pilot",
+        action="store_true",
         help="Sample every task type and scene for cost/coverage testing.",
     )
     generate_parser.add_argument("--pilot-per-task-type", type=int, default=2)
@@ -2578,7 +2233,8 @@ def main() -> None:
     generate_parser.add_argument("--sample-seed", type=int, default=42)
     generate_parser.add_argument("--max-cost-usd", type=float, default=None)
     generate_parser.add_argument(
-        "--resume", action="store_true",
+        "--resume",
+        action="store_true",
         help="Resume an explicit dataset version using saved API responses.",
     )
     generate_parser.add_argument("--max-tool-calls", type=int, default=None)
@@ -2603,6 +2259,21 @@ def main() -> None:
 
     args = parser.parse_args()
     args.func(args)
+
+
+def validate_reasoning_settings(settings):
+    allowed = {
+        "enabled",
+        "effort",
+        "max_tokens",
+        "semantics_paths",
+        "max_sentences",
+        "max_tool_sentences",
+        "max_final_sentences",
+    }
+    unknown = settings.keys() - allowed
+    if unknown:
+        raise ValueError(f"Unknown reasoning settings: {', '.join(sorted(unknown))}")
 
 
 if __name__ == "__main__":

@@ -24,8 +24,6 @@ from cypher_3dsg_agent_distillation.core.versioning import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
 GENERATED_DATASETS_ROOT = PROJECT_ROOT / "data" / "datasets"
-# Kept as a compatibility alias for callers which imported the old constant.
-GENERATED_3DSG_ROOT = GENERATED_DATASETS_ROOT
 
 
 @dataclass(frozen=True)
@@ -49,20 +47,12 @@ class ScenePaths:
 class DataPaths:
     dataset_id: str
     scenes: tuple[ScenePaths, ...]
-    # Compatibility aliases for legacy single-scene callers. New dataset code
-    # should iterate ``scenes`` instead.
-    scene_id: str
     dataset_version: str
-    scene_path: Path
     schema_path: Path
-    experiment_profile_path: Path | None
-    question_templates_path: Path
     question_sets: tuple[QuestionSetPaths, ...]
     dataset_root: Path
     dataset_dir: Path
     metadata_path: Path
-    scene_dir: Path
-    scene_template_values_path: Path
     raw_questions_path: Path
     seed_records_jsonl_path: Path
     teacher_traces_jsonl_path: Path
@@ -119,31 +109,14 @@ def _safe_config_id(value: Any, *, field: str) -> str:
 
 
 def dataset_id_from_config(config: dict[str, Any]) -> str:
-    value = config.get("dataset_id", config.get("scene_id"))
+    value = config.get("dataset_id")
     if value is None:
         raise KeyError("data config requires `dataset_id`.")
     return _safe_config_id(value, field="dataset_id")
 
 
-def scene_id_from_config(config: dict[str, Any]) -> str:
-    """Return the sole scene id for compatibility with legacy callers."""
-    scenes = scenes_from_config(config)
-    if len(scenes) != 1:
-        raise ValueError("This operation requires a single configured scene.")
-    return scenes[0]["scene_id"]
-
-
 def scenes_from_config(config: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     raw_scenes = config.get("scenes")
-    if raw_scenes is None:
-        if "scene_id" not in config or "scene_path" not in config:
-            raise KeyError(
-                "data config requires a non-empty `scenes` list containing "
-                "scene_id and scene_path."
-            )
-        raw_scenes = [
-            {"scene_id": config["scene_id"], "scene_path": config["scene_path"]}
-        ]
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("scenes must be a non-empty list.")
 
@@ -177,17 +150,68 @@ def data_paths_from_config(
 ) -> DataPaths:
     dataset_id = dataset_id_from_config(config)
     configured_scenes = scenes_from_config(config)
-    legacy_single_scene = "scenes" not in config
-
+    retired = {
+        "scene_id",
+        "scene_path",
+        "experiment_profile_path",
+        "question_templates_path",
+        "scene_template_values_path",
+        "question_set_name",
+        "traces_jsonl_path",
+    } & config.keys()
+    if retired:
+        raise ValueError(
+            f"Unsupported data configuration fields: {', '.join(sorted(retired))}. "
+            "Use dataset_id, scenes and question_sets; regenerate old artifacts."
+        )
+    raw_question_sets = config.get("question_sets")
+    if not isinstance(raw_question_sets, list) or not raw_question_sets:
+        raise ValueError("question_sets must be a non-empty list.")
+    question_sets = []
+    seen_names = set()
+    for index, item in enumerate(raw_question_sets):
+        if not isinstance(item, dict):
+            raise TypeError(f"question_sets[{index}] must be a mapping.")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"question_sets[{index}] requires a non-empty name.")
+        if name in seen_names:
+            raise ValueError(f"Duplicate question set name `{name}`.")
+        seen_names.add(name)
+        try:
+            templates_path = item["question_templates_path"]
+            profile_path = item["experiment_profile_path"]
+        except KeyError as exc:
+            raise KeyError(
+                f"question_sets[{index}] requires question_templates_path and "
+                "experiment_profile_path."
+            ) from exc
+        question_sets.append(
+            QuestionSetPaths(
+                name=name,
+                question_templates_path=resolve_config_path(templates_path, "question_templates"),
+                experiment_profile_path=resolve_config_path(profile_path, "experiment_profiles"),
+                validation_config_path=(
+                    resolve_config_path(item["validation_config_path"])
+                    if item.get("validation_config_path")
+                    else None
+                ),
+                validation_defaults_path=(
+                    resolve_config_path(item["validation_defaults_path"])
+                    if item.get("validation_defaults_path")
+                    else None
+                ),
+            )
+        )
     dataset_root = GENERATED_DATASETS_ROOT / dataset_id
     requested_version = dataset_version or config.get("dataset_version")
     if create_version:
-        resolved_version, scene_dir = create_version_dir(
+        resolved_version, dataset_dir = create_version_dir(
             dataset_root,
             None if requested_version in (None, "latest") else str(requested_version),
         )
     elif require_existing:
-        resolved_version, scene_dir = resolve_version_dir(
+        resolved_version, dataset_dir = resolve_version_dir(
             dataset_root,
             None if requested_version is None else str(requested_version),
             artifact_label="dataset version",
@@ -196,122 +220,37 @@ def data_paths_from_config(
         resolved_version = str(requested_version or "latest")
         if resolved_version != "latest":
             resolved_version = validate_version(resolved_version)
-        scene_dir = dataset_root / resolved_version
-    resolved_scenes = tuple(
+        dataset_dir = dataset_root / resolved_version
+    scenes = tuple(
         ScenePaths(
             scene_id=scene["scene_id"],
             scene_path=Path(scene["scene_path"]),
-            scene_dir=(
-                scene_dir
-                if legacy_single_scene
-                else scene_dir / "scenes" / scene["scene_id"]
-            ),
+            scene_dir=dataset_dir / "scenes" / scene["scene_id"],
             scene_template_values_path=(
-                scene_dir / "scene_template_values.yaml"
-                if legacy_single_scene
-                else scene_dir / "scenes" / scene["scene_id"] / "scene_template_values.yaml"
+                dataset_dir / "scenes" / scene["scene_id"] / "scene_template_values.yaml"
             ),
         )
         for scene in configured_scenes
     )
-
-    raw_question_sets = config.get("question_sets")
-    if raw_question_sets is not None:
-        if not isinstance(raw_question_sets, list) or not raw_question_sets:
-            raise ValueError("question_sets must be a non-empty list when provided.")
-        question_sets = []
-        seen_names: set[str] = set()
-        for index, item in enumerate(raw_question_sets):
-            if not isinstance(item, dict):
-                raise TypeError(f"question_sets[{index}] must be a mapping.")
-            name = str(item.get("name") or "").strip()
-            if not name:
-                raise ValueError(f"question_sets[{index}] requires a non-empty name.")
-            if name in seen_names:
-                raise ValueError(f"Duplicate question set name `{name}`.")
-            seen_names.add(name)
-            try:
-                templates_path = item["question_templates_path"]
-                profile_path = item["experiment_profile_path"]
-            except KeyError as exc:
-                raise KeyError(
-                    f"question_sets[{index}] requires question_templates_path and "
-                    "experiment_profile_path."
-                ) from exc
-            question_sets.append(
-                QuestionSetPaths(
-                    name=name,
-                    validation_config_path=(
-                        resolve_config_path(item["validation_config_path"])
-                        if item.get("validation_config_path")
-                        else None
-                    ),
-                    validation_defaults_path=(
-                        resolve_config_path(item["validation_defaults_path"])
-                        if item.get("validation_defaults_path")
-                        else None
-                    ),
-                    question_templates_path=resolve_config_path(
-                        templates_path, "question_templates"
-                    ),
-                    experiment_profile_path=resolve_config_path(
-                        profile_path, "experiment_profiles"
-                    ),
-                )
-            )
-        resolved_question_sets = tuple(question_sets)
-    else:
-        profile_value = config.get("experiment_profile_path") or "cypher_qa_template.yaml"
-        resolved_question_sets = (
-            QuestionSetPaths(
-                name=str(config.get("question_set_name") or "cypher_qa"),
-                validation_config_path=(
-                    resolve_config_path(config["validation_config_path"])
-                    if config.get("validation_config_path")
-                    else None
-                ),
-                validation_defaults_path=(
-                    resolve_config_path(config["validation_defaults_path"])
-                    if config.get("validation_defaults_path")
-                    else None
-                ),
-                question_templates_path=resolve_config_path(
-                    config.get("question_templates_path", "cypher_qa_3dsg.yaml"),
-                    "question_templates",
-                ),
-                experiment_profile_path=resolve_config_path(profile_value, "experiment_profiles"),
-            ),
-        )
-
-    first_question_set = resolved_question_sets[0]
-    first_scene = resolved_scenes[0]
     return DataPaths(
         dataset_id=dataset_id,
-        scenes=resolved_scenes,
-        scene_id=first_scene.scene_id,
+        scenes=scenes,
         dataset_version=resolved_version,
-        scene_path=first_scene.scene_path,
         schema_path=resolve_config_path(config.get("schema_path", "schema_3dsg.yaml")),
-        experiment_profile_path=first_question_set.experiment_profile_path,
-        question_templates_path=first_question_set.question_templates_path,
-        question_sets=resolved_question_sets,
+        question_sets=tuple(question_sets),
         dataset_root=dataset_root,
-        dataset_dir=scene_dir,
-        metadata_path=scene_dir / "metadata.yaml",
-        scene_dir=scene_dir,
-        scene_template_values_path=first_scene.scene_template_values_path,
-        raw_questions_path=scene_dir / "generated_questions.yaml",
-        seed_records_jsonl_path=scene_dir / "cypher_seed_records.jsonl",
-        teacher_traces_jsonl_path=scene_dir / "traces" / "teacher_traces.jsonl",
-        accepted_traces_path=scene_dir / "traces" / "accepted.json",
-        rejected_traces_path=scene_dir / "traces" / "rejected.json",
+        dataset_dir=dataset_dir,
+        metadata_path=dataset_dir / "metadata.yaml",
+        raw_questions_path=dataset_dir / "generated_questions.yaml",
+        seed_records_jsonl_path=dataset_dir / "cypher_seed_records.jsonl",
+        teacher_traces_jsonl_path=dataset_dir / "traces" / "teacher_traces.jsonl",
+        accepted_traces_path=dataset_dir / "traces" / "accepted.json",
+        rejected_traces_path=dataset_dir / "traces" / "rejected.json",
         splits={
-            "train": scene_dir / "splits" / "train.jsonl",
-            "eval": scene_dir / "splits" / "eval.jsonl",
-            "test": scene_dir / "splits" / "test.jsonl",
-            "challenge": scene_dir / "splits" / "challenge.jsonl",
+            name: dataset_dir / "splits" / f"{name}.jsonl"
+            for name in ("train", "eval", "test", "challenge")
         },
-        test_report_path=scene_dir / "reports" / "test.agent.report.json",
+        test_report_path=dataset_dir / "reports" / "test.agent.report.json",
     )
 
 
@@ -347,16 +286,7 @@ def load_data_config(
                 }
                 for scene in paths.scenes
             ],
-            # Compatibility aliases for commands that explicitly operate on a
-            # single scene (for example load_3dsg_neo4j without --scene).
-            "scene_id": paths.scene_id,
-            "scene_path": str(paths.scene_path),
             "schema_path": str(paths.schema_path),
-            "question_templates_path": str(paths.question_templates_path),
-            "validation_config_path": (str(paths.question_sets[0].validation_config_path)
-                if paths.question_sets[0].validation_config_path else None),
-            "validation_defaults_path": (str(paths.question_sets[0].validation_defaults_path)
-                if paths.question_sets[0].validation_defaults_path else None),
             "question_sets": [
                 {
                     "name": question_set.name,
@@ -371,7 +301,6 @@ def load_data_config(
                 }
                 for question_set in paths.question_sets
             ],
-            "scene_template_values_path": str(paths.scene_template_values_path),
             "raw_questions_path": str(paths.raw_questions_path),
             "seed_records_jsonl_path": str(paths.seed_records_jsonl_path),
             "teacher_traces_jsonl_path": str(paths.teacher_traces_jsonl_path),
@@ -381,20 +310,14 @@ def load_data_config(
             "test_report_path": str(paths.test_report_path),
         }
     )
-    if paths.experiment_profile_path is not None:
-        resolved["experiment_profile_path"] = str(paths.experiment_profile_path)
     try:
         dataset_metadata = read_metadata(paths.metadata_path)
     except (FileNotFoundError, TypeError, yaml.YAMLError):
         dataset_metadata = {}
-    teacher = dataset_metadata.get("teacher") or dataset_metadata.get("active_teacher_run")
+    teacher = dataset_metadata.get("teacher")
     if isinstance(teacher, dict):
         resolved["teacher_name"] = teacher.get("teacher_name")
     traces_dir = paths.dataset_dir / "traces"
-    # Read existing versioned datasets without moving or rewriting their artifacts.
-    if not (traces_dir / "metadata.yaml").exists() and isinstance(teacher, dict):
-        if teacher.get("version") and teacher.get("teacher_name"):
-            traces_dir = traces_dir / teacher["teacher_name"] / validate_version(teacher["version"])
     resolved.update(
         {
             "teacher_metadata_path": str(traces_dir / "metadata.yaml"),
@@ -455,22 +378,25 @@ def fork_dataset_for_teacher(data_config: dict[str, Any]) -> dict[str, Any]:
             else:
                 shutil.copy2(item, destination)
         metadata = rebase(metadata)
-        for key in ("teacher", "active_teacher_run", "split_files", "split_fingerprint"):
+        for key in ("teacher", "split_files", "split_fingerprint"):
             metadata.pop(key, None)
         metadata["stages"] = {
-            key: value for key, value in metadata.get("stages", {}).items()
+            key: value
+            for key, value in metadata.get("stages", {}).items()
             if key not in {"split", "teacher", "generate_traces"}
         }
-        metadata.update({
-            "version": version,
-            "created_at": iso_now(),
-            "updated_at": iso_now(),
-            "status": "building",
-            "parent_dataset": {
-                "dataset_id": data_config["dataset_id"],
-                "version": data_config["dataset_version"],
-            },
-        })
+        metadata.update(
+            {
+                "version": version,
+                "created_at": iso_now(),
+                "updated_at": iso_now(),
+                "status": "building",
+                "parent_dataset": {
+                    "dataset_id": data_config["dataset_id"],
+                    "version": data_config["dataset_version"],
+                },
+            }
+        )
         atomic_write_yaml(metadata, target / "metadata.yaml")
     except BaseException:
         shutil.rmtree(target)
@@ -481,15 +407,11 @@ def fork_dataset_for_teacher(data_config: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
-def prepare_teacher_dataset(
-    data_config: dict[str, Any], *, teacher_name: str
-) -> dict[str, Any]:
+def prepare_teacher_dataset(data_config: dict[str, Any], *, teacher_name: str) -> dict[str, Any]:
     """Reserve the dataset's sole trace set; existing work always causes a fork."""
     traces = Path(data_config["dataset_dir"]) / "traces"
     splits = Path(data_config["dataset_dir"]) / "splits"
-    if (traces.exists() and any(traces.iterdir())) or (
-        splits.exists() and any(splits.iterdir())
-    ):
+    if (traces.exists() and any(traces.iterdir())) or (splits.exists() and any(splits.iterdir())):
         data_config = fork_dataset_for_teacher(data_config)
         traces = Path(data_config["dataset_dir"]) / "traces"
     traces.mkdir(parents=True, exist_ok=True)
@@ -581,34 +503,11 @@ def model_reports_dir(
             fallback="unknown",
         )
     )
-    dataset_dir_value = data_config.get("dataset_dir")
-    if dataset_dir_value:
-        reports_root = Path(dataset_dir_value) / "reports"
-    else:
-        legacy_reports = Path(data_config["test_report_path"]).parent
-        reports_root = (
-            legacy_reports.parent if legacy_reports.name == "dataset" else legacy_reports
-        )
+    reports_root = Path(data_config["dataset_dir"]) / "reports"
     return reports_root / family / version
 
 
-def existing_report_path(path: str | Path) -> Path:
-    """Read historical reports while always writing to the current flat layout."""
-    selected = Path(path)
-    if selected.exists():
-        return selected
-    for root in selected.parents:
-        if root.name != "reports":
-            continue
-        relative = selected.relative_to(root)
-        legacy = root / ("dataset" if len(relative.parts) == 1 else "models") / relative
-        return legacy if legacy.exists() else selected
-    return selected
-
-
-def ollama_export_metadata(
-    student_config: dict[str, Any], ollama_model: str
-) -> dict[str, Any]:
+def ollama_export_metadata(student_config: dict[str, Any], ollama_model: str) -> dict[str, Any]:
     export_config = student_config.get("ollama_export") or {}
     export_root = resolve_project_path(export_config.get("export_root", "outputs/ollama"))
     matches: list[tuple[int, dict[str, Any]]] = []

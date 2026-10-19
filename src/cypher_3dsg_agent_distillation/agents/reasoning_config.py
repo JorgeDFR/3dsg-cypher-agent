@@ -54,16 +54,12 @@ def load_catalog(
         template_paths, semantics_paths, validation_paths, validation_defaults_paths, strict=True
     ):
         from cypher_3dsg_agent_distillation.cypher.validation_config import (
-            default_validation_path,
             load_question_catalog,
         )
 
-        if validation_path or default_validation_path(template_path).exists():
-            templates = load_question_catalog(template_path, validation_path, defaults_path)[
-                "templates"
-            ]
-        else:
-            templates = yaml.safe_load(Path(template_path).read_text())["templates"]
+        templates = load_question_catalog(template_path, validation_path, defaults_path)[
+            "templates"
+        ]
         config = yaml.safe_load(Path(semantics_path).read_text())
         version = config.get("version")
         if type(version) is not int or version != SEMANTICS_VERSION:
@@ -95,7 +91,8 @@ def load_catalog(
             try:
                 validate_query_semantics(semantics, template["cypher"])
                 validate_goal_semantics(
-                    template.get("goal"), template.get("grounding", {}).get("fields", {})
+                    template["validation_contract"].get("goal"),
+                    template["validation_contract"]["result"]["roles"],
                 )
             except ValueError as exc:
                 raise ValueError(f"Question type {query_type}: {exc}") from exc

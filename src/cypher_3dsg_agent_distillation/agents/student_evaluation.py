@@ -111,7 +111,7 @@ def report_output_path(
     directory = (
         Path(reports_directory)
         if reports_directory is not None
-        else Path(data_config["test_report_path"]).parent
+        else Path(data_config["dataset_dir"]) / "reports"
     )
     if split == ALL_SPLITS:
         return directory / f"{model_name}{runtime_suffix}.{mode}.report.json"
@@ -143,10 +143,7 @@ CODE_BLOCK_RE = re.compile(
 
 
 def record_expected_solution(record: dict[str, Any]) -> Any:
-    for key in ("expected_solution", "real_solution", "solution"):
-        if key in record and record[key] is not None:
-            return record[key]
-    return None
+    return record.get("expected_solution") if "messages" in record else record.get("solution")
 
 
 def record_gold_cypher(record: dict[str, Any]) -> str:
@@ -154,23 +151,15 @@ def record_gold_cypher(record: dict[str, Any]) -> str:
 
 
 def record_output_type(record: dict[str, Any]) -> str:
-    metadata = record.get("metadata") or {}
-    return str(record.get("output_type") or metadata.get("output_type") or "SLDP")
+    return str(record["output_type"])
 
 
 def record_task_family(record: dict[str, Any]) -> str:
-    metadata = record.get("metadata") or {}
-    return str(record.get("task_family") or metadata.get("task_family") or "cypher_qa")
+    return str(record["task_family"])
 
 
 def record_query_type(record: dict[str, Any]) -> str:
     return str(record.get("query_type") or record.get("task_type") or "")
-
-
-def record_for_solution_conversion(record: dict[str, Any]) -> dict[str, Any]:
-    if record.get("query_type"):
-        return record
-    return {**record, "query_type": record_query_type(record)}
 
 
 def record_is_refusal(record: dict[str, Any]) -> bool:
@@ -413,10 +402,8 @@ def score_final_answer_generation(
     record: dict[str, Any],
     generated_text: str,
 ) -> dict[str, Any]:
+    contract_for_record(record)
     from cypher_3dsg_agent_distillation.agents.openrouter_teacher import answer_inner_text
-    from cypher_3dsg_agent_distillation.graph.heracles_validation import (
-        answer_matches_with_heracles,
-    )
 
     expected_solution = record_expected_solution(record)
     answer = answer_inner_text(generated_text)
@@ -424,21 +411,9 @@ def score_final_answer_generation(
     answer_match = False
     comparison_status = None
     if answer is not None and expected_solution is not None:
-        contract = contract_for_record(record)
-        if contract:
-            comparison = compare_answers(
-                answer, str(expected_solution), contract, record.get("answer_validation")
-            )
-            format_valid, answer_match = comparison["format_valid"], comparison["match"]
-            comparison_status = comparison["status"]
-        else:
-            format_valid, answer_match = answer_matches_with_heracles(
-                answer,
-                str(expected_solution),
-                record_output_type(record),
-                answer_validation=record.get("answer_validation"),
-                solution_formats=record.get("solution_formats") or record.get("solution_format"),
-            )
+        comparison = compare_answers(answer, str(expected_solution), contract_for_record(record))
+        format_valid, answer_match = comparison["format_valid"], comparison["match"]
+        comparison_status = comparison["status"]
     status = "pass"
     if expected_solution is None:
         status = "missing_expected_solution"
@@ -762,8 +737,7 @@ def evaluate_end_to_end_record(
                 else:
                     static_issues, explain_validation = static_checks_with_explain(
                         cypher,
-                        allow_writes=not bool(record.get("read_only", True))
-                        and not contract_for_record(record),
+                        allow_writes=False,
                         policy=policy,
                         validator=validator,
                     )
@@ -878,9 +852,6 @@ def skipped_tool_call_result(reason: str) -> dict[str, Any]:
         "executable": False,
         "cypher_solution_match": False,
         "tool_result_match": False,
-        "result_match_without_exact_cypher_match": False,
-        "potential_hidden_false_positive": False,
-        "hidden_false_positive_reasons": [],
     }
 
 
@@ -900,9 +871,6 @@ def tool_call_generation_error(record: dict[str, Any], exc: Exception) -> dict[s
         "expected_solution": record_expected_solution(record),
         "cypher_solution_match": False,
         "tool_result_match": False,
-        "result_match_without_exact_cypher_match": False,
-        "potential_hidden_false_positive": False,
-        "hidden_false_positive_reasons": [],
     }
 
 
@@ -943,9 +911,6 @@ def score_refusal_tool_generation(
         "cypher_solution": WRITE_REFUSAL_ANSWER if refusal_match else None,
         "cypher_solution_match": refusal_match,
         "tool_result_match": refusal_match,
-        "result_match_without_exact_cypher_match": False,
-        "potential_hidden_false_positive": False,
-        "hidden_false_positive_reasons": [],
     }
 
 
@@ -959,20 +924,10 @@ def score_tool_call_generation(
     max_result_chars: int | None = None,
     structured_tool_calls: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> dict[str, Any]:
+    contract_for_record(record)
     from cypher_3dsg_agent_distillation.agents.agent_records import (
         DEFAULT_AGENT_TOOL,
         normalize_cypher,
-    )
-    from cypher_3dsg_agent_distillation.cypher.cypher_match_diagnostics import (
-        result_match_diagnostics,
-    )
-    from cypher_3dsg_agent_distillation.cypher.evaluation import (
-        ResultShapeError,
-        rows_to_solution_text,
-    )
-    from cypher_3dsg_agent_distillation.cypher.pddl_goals import validate_grounding_rows
-    from cypher_3dsg_agent_distillation.graph.heracles_validation import (
-        answer_matches_with_heracles,
     )
     from cypher_3dsg_agent_distillation.graph.neo4j_validation import (
         result_hash,
@@ -1006,9 +961,6 @@ def score_tool_call_generation(
         "cypher_solution_format_valid": False,
         "cypher_solution_match": False,
         "tool_result_match": False,
-        "result_match_without_exact_cypher_match": False,
-        "potential_hidden_false_positive": False,
-        "hidden_false_positive_reasons": [],
     }
 
     if record_is_refusal(record):
@@ -1044,7 +996,7 @@ def score_tool_call_generation(
 
     static_issues, explain_validation = static_checks_with_explain(
         cypher,
-        allow_writes=not bool(record.get("read_only", True)) and not contract_for_record(record),
+        allow_writes=False,
         policy=policy,
         validator=validator,
     )
@@ -1106,80 +1058,23 @@ def score_tool_call_generation(
     if result_too_large:
         return {**base, "status": "result_too_large"}
 
-    if contract_for_record(record):
-        outcome = validate_record_result(record, rows, cypher, validation.get("columns"))
-        is_pddl = record_task_family(record) == "cypher_pddl"
-        return {
-            **base,
-            "status": outcome["status"],
-            "result_validation": outcome,
-            "semantic_check": outcome.get("semantic_check"),
-            "cypher_solution": outcome.get("solution"),
-            "cypher_solution_format_valid": outcome["status"]
-            not in {"invalid_result_shape", "mapping_unresolved"},
-            "cypher_solution_match": outcome["match"],
-            "tool_result_match": outcome["match"],
-            **(
-                {"actual_grounding": outcome.get("actual"), "grounding_match": outcome["match"]}
-                if is_pddl
-                else {}
-            ),
-        }
-
-    expected_solution = record_expected_solution(record)
+    outcome = validate_record_result(record, rows, cypher, validation.get("columns"))
     is_pddl = record_task_family(record) == "cypher_pddl"
-    if is_pddl:
-        cypher_solution_match, cypher_solution, actual_grounding = validate_grounding_rows(
-            rows, record.get("grounding")
-        )
-        format_valid = True
-        base["expected_grounding"] = record.get("grounding")
-        base["actual_grounding"] = actual_grounding
-        base["grounding_match"] = cypher_solution_match
-    else:
-        try:
-            cypher_solution = rows_to_solution_text(record_for_solution_conversion(record), rows)
-        except ResultShapeError as exc:
-            return {**base, "status": "result_shape_error", "result_shape_error": str(exc)}
-        format_valid = False
-        cypher_solution_match = False
-        if expected_solution is not None:
-            format_valid, cypher_solution_match = answer_matches_with_heracles(
-                str(cypher_solution),
-                str(expected_solution),
-                record_output_type(record),
-                answer_validation=record.get("answer_validation"),
-                solution_formats=record.get("solution_formats") or record.get("solution_format"),
-            )
-    status = "pass"
-    if expected_solution is None:
-        status = "missing_expected_solution"
-    elif not format_valid:
-        status = "invalid_cypher_solution_format"
-    elif not cypher_solution_match:
-        status = (
-            "grounding_mismatch"
-            if record_task_family(record) == "cypher_pddl"
-            else "cypher_solution_mismatch"
-        )
-
-    match_diagnostics = result_match_diagnostics(
-        generated_cypher=cypher,
-        gold_cypher=record_gold_cypher(record),
-        cypher_exact_match=bool(base["cypher_exact_match"]),
-        solution_match=bool(cypher_solution_match),
-        rows=rows,
-        expected_solution=expected_solution,
-    )
-
     return {
         **base,
-        **match_diagnostics,
-        "status": status,
-        "cypher_solution": cypher_solution,
-        "cypher_solution_format_valid": format_valid,
-        "cypher_solution_match": cypher_solution_match,
-        "tool_result_match": cypher_solution_match,
+        "status": outcome["status"],
+        "result_validation": outcome,
+        "semantic_check": outcome.get("semantic_check"),
+        "cypher_solution": outcome.get("solution"),
+        "cypher_solution_format_valid": outcome["status"]
+        not in {"invalid_result_shape", "mapping_unresolved"},
+        "cypher_solution_match": outcome["match"],
+        "tool_result_match": outcome["match"],
+        **(
+            {"actual_grounding": outcome.get("actual"), "grounding_match": outcome["match"]}
+            if is_pddl
+            else {}
+        ),
     }
 
 
@@ -1220,9 +1115,7 @@ def summarize_raw_section(
 
 
 def end_to_end_metrics(records):
-    if any((record.get(END_TO_END_CHECK) or {}).get("result_validation") for record in records):
-        return ("final_answer_match", "final_answer_grounded", "tool_result_match")
-    return ("final_answer_match",)
+    return ("final_answer_match", "final_answer_grounded", "tool_result_match")
 
 
 def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1251,8 +1144,6 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
                 "executable",
                 "cypher_solution_match",
                 "tool_result_match",
-                "result_match_without_exact_cypher_match",
-                "potential_hidden_false_positive",
             ),
         ),
         END_TO_END_CHECK: summarize_raw_section(
@@ -1270,7 +1161,6 @@ def summarize_raw_generation_records(records: list[dict[str, Any]]) -> dict[str,
             "static_valid",
             "executable",
             "tool_result_match",
-            "potential_hidden_false_positive",
         ]
         if family == "cypher_pddl":
             family_tool_metrics.append("grounding_match")
@@ -1373,6 +1263,7 @@ def raw_generation_report_record(
     }
     if family == "cypher_pddl":
         empty_answer = expected_solution is not None and not str(expected_solution).strip()
+        expected.pop("cypher_solution", None)
         expected.update(
             {
                 "pddl_goal": None if empty_answer else expected_solution,
@@ -1439,7 +1330,12 @@ def evaluate_raw_generation(
     if tool_call_skip_reason is None and validator is None:
         raise ValueError("validator is required when tool-call evaluation is not skipped.")
 
-    records = read_jsonl(data_config["splits"][split])
+    from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
+
+    records = [
+        AgentTraceRecord.model_validate(record).model_dump(exclude_none=True)
+        for record in read_jsonl(data_config["splits"][split])
+    ]
     scene_order = [str(scene["scene_id"]) for scene in data_config.get("scenes", [])]
     records = group_records_by_scene(
         records,
@@ -1945,10 +1841,6 @@ def print_raw_generation_summary(
                 ("Static-valid Cypher", format_count_rate(tool_call, "static_valid")),
                 ("Executable Cypher", format_count_rate(tool_call, "executable")),
                 ("Cypher solution match", format_count_rate(tool_call, "cypher_solution_match")),
-                (
-                    "Potential hidden false positives",
-                    format_count_rate(tool_call, "potential_hidden_false_positive"),
-                ),
             ]
         )
     rows.append(("Report", output_path))
@@ -2049,9 +1941,12 @@ def command(args: argparse.Namespace) -> None:
         selected_reports_dir = model_reports_dir(data_config, student_config)
 
     if args.enable_thinking is None:
-        args.enable_thinking = bool((student_config.get("inference") or {}).get(
-            "enable_thinking", False,
-        ))
+        args.enable_thinking = bool(
+            (student_config.get("inference") or {}).get(
+                "enable_thinking",
+                False,
+            )
+        )
     output_path = report_output_path(
         data_config=data_config,
         split=args.split,
@@ -2065,10 +1960,16 @@ def command(args: argparse.Namespace) -> None:
     runtime_identity = None
     if args.runtime != TRANSFORMERS_RUNTIME:
         runtime_identity = OllamaRawGenerationRuntime(
-            model=args.ollama_model, host=args.ollama_host, timeout=args.ollama_timeout,
+            model=args.ollama_model,
+            host=args.ollama_host,
+            timeout=args.ollama_timeout,
         ).cache_identity()
     identity = evaluation_identity(
-        args, data_config, student_config, adapter_dir, runtime_identity=runtime_identity,
+        args,
+        data_config,
+        student_config,
+        adapter_dir,
+        runtime_identity=runtime_identity,
     )
     if not args.force and completed_evaluation(output_path, identity):
         print_summary("Validation already complete; skipping", [("Report", output_path)])
@@ -2216,10 +2117,12 @@ def command(args: argparse.Namespace) -> None:
         runtime=args.runtime,
         model_metadata=model_metadata,
     )
-    report["metadata"].update({
-        "evaluation_identity": identity,
-        "evaluation_status": "complete" if evaluation_completed(report) else "incomplete",
-    })
+    report["metadata"].update(
+        {
+            "evaluation_identity": identity,
+            "evaluation_status": "complete" if evaluation_completed(report) else "incomplete",
+        }
+    )
     write_report(report, output_path)
 
     if args.mode == EVAL_LOSS_MODE:
@@ -2255,7 +2158,8 @@ def main() -> None:
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--dataset-version", default=None)
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Re-run validation even when a matching completed report exists.",
     )
     parser.add_argument(

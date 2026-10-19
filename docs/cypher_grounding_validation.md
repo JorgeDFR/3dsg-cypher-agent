@@ -42,10 +42,10 @@ question_sets:
     validation_defaults_path: configs/question_templates/validation/defaults.yaml
 ```
 
-Paths use the existing project/config resolution helpers. The loader's private
-composed view supplies compatibility fields to seed/oracle/reasoning builders;
-there is one declaration on disk. Real teachers never need synthetic reasoning
-files. A standalone query-only reasoning scratch file can still be compiled
+Paths use the existing project/config resolution helpers. Generation, oracle,
+prompt and reasoning consumers read the composed validation contract directly.
+Records retain one top-level `validation_contract`, plus expected grounding values
+where needed. Real teachers never need synthetic reasoning files. A standalone query-only reasoning scratch file can still be compiled
 without a validation sidecar; production generation requires one.
 
 ## Contracts and controlled bindings
@@ -171,19 +171,8 @@ All objects reject unknown keys. Version 1 has these fields:
 | --- | --- |
 | Contract | `version: 1`; required `result`; `query_policy`, `answer`, `semantic_checks` use defaults; optional `goal` |
 | `query_policy` | `read_only: true` cannot be weakened; optional `refusal` literal |
-| `result` | Required `kind`: `scalar`, `set`, `multiset`, `list`, `tuples`, `role_sets`, or `flexible` |
-| Simple result type | `type: string`, `layers: []`, `property: null`, `origin: {}`; optional `element` gives the full value specification below |
-| Structured result | `roles: {}` maps role names to value specifications; required for `tuples`/`role_sets` |
-| Representations | `accepted_forms: [scalar_columns, collected_columns, nodes]`; add `maps` for declared structured layouts |
-| Mapping | `mapping: provenance_or_unique_type` or `explicit`; `ambiguity: unresolved`; no expected-value or implicit positional fallback |
-| Extra output | `extra_columns: inferred` permits typed diagnostics after answer mapping; `reject` forbids extras; `declared` permits only named, typed `auxiliary` columns |
-| Shape | `row_count: {min: 0, max: null}`; `unordered_tuple: false`; `symbol_case_sensitive: true` |
-| Value specification | `type`: `integer`, `number`, `string`, `node_symbol`, `point`; `layers: []`; `property: null`; `origin: {}`; `oracle_source: value` |
-| Value collections | `cardinality: set` or `list`/`multiset` for role sets; `nulls: reject` or explicit `empty_set`; `dimensions: 3` |
-| Value adapters | Optional `column` **or** zero-based `position`; `path: []` selects explicit nested map keys/list indices |
-| `answer` | `formats: []`, `empty: ''`, `answer_tags: exactly_one`, `comparison` |
-| Comparison | `mode: exact`, `sldp`, `pddl_equivalence`, or `top_k_with_ties`; `numeric_abs_tolerance: 0`; `point_abs_tolerance: 0.01`; optional `limit`, `scores`, `score_source` |
-| `semantic_checks` | `mode: supported_fragment` (default) or `unverified`; runtime query-analysis policy only |
+| `result` | Required `kind`: `scalar`, `set`, `multiset`, `list`, `tuples`, `role_sets`, or `object_place_lookup` uses a set result and `set[str]` answers. Empty,
+singleton and multiple results all use the declared set syntax.
 
 `result.comparison` controls execution-vs-oracle comparison. `answer.comparison`
 controls final-answer-vs-oracle comparison. Configure both when both need the same
@@ -199,8 +188,8 @@ case-sensitively: `p119` and `P119` are different. Set comparisons deduplicate;
 lists retain order; multisets retain multiplicity. Numeric/point matching uses
 one-to-one matching, so one approximate match cannot satisfy two expected items.
 
-`flexible` supports legacy scalar-or-set answer shapes: one value is scalar,
-otherwise values form a set. Prefer an explicit shape for new templates.
+`object_place_lookup` uses a set result and `set[str]` answers. Empty,
+singleton and multiple results all use the declared set syntax.
 
 For `mapping: explicit`, every role (or the simple result's `element`) requires a
 column or position. Position adapters use preserved driver column order. A
@@ -302,8 +291,6 @@ Result equality means equality on the evaluated scene. Conservative AST evidence
 supports variable renaming, cosmetic return aliases, and identical fixed path
 bounds while retaining clause boundaries, optionality, direction, grouping,
 ordering and limits. Different ASTs remain unverified; they do not prove an error.
-Legacy `potential_hidden_false_positive` diagnostics remain readable for old
-reports; new contract results do not use them as correctness decisions.
 
 `semantic_checks.mode` controls this runtime diagnostic: `supported_fragment`
 attempts conservative AST equivalence checks; `unverified` skips them and reports
@@ -346,8 +333,8 @@ The database defaults to `neo4j`; set `VALIDATION_LIVE_NEO4J_DATABASE` to overri
 New contract-backed training traces require a passing retrieval check, correct
 final answer, and grounded final answer. Unresolved or unavailable checks are
 excluded rather than labeled proven incorrect. Static-only contract traces are
-not accepted as validated training examples. Historical records retain their
-legacy behavior until explicitly migrated. Saved contract-backed trace audits
+not accepted as validated training examples. All input records require current
+top-level contracts; regenerate unsupported formats. Saved trace audits
 recompute from saved successful tool evidence; missing evidence is not checked.
 
 During teacher generation, tool responses expose only safety/schema or execution
@@ -376,7 +363,7 @@ Unresolved/not-checked records stay in total denominators. End-to-end reports
 separate final-answer accuracy, retrieval match, and grounded-answer rate. The
 workflow HTML detail view includes those statuses and semantic evidence.
 
-## Audit, migration, and rescoring
+## Audit and rescoring
 
 The decoder supports typed mixed-layer UNION columns even when their alias
 matches one role; explicit configured column selectors remain authoritative.
@@ -399,24 +386,17 @@ These commands do not call model APIs:
 ```bash
 python scripts/cypher/audit_validation.py audit
 
-python scripts/cypher/audit_validation.py migrate \
-  --records historical/test.jsonl --output /tmp/test.validation-v1.jsonl
-
 python scripts/cypher/audit_validation.py rescore \
-  --records historical/raw-generation.report.json \
-  --source-records /tmp/test.validation-v1.jsonl \
-  --output /tmp/rescored.validation-v1.json
+  --records /tmp/current-generation.report.json \
+  --source-records /tmp/current-seeds.jsonl \
+  --output /tmp/rescored.validation.json
 ```
 
 `audit` validates catalog coverage, source query parsing, formats, goals and
-binding declarations. `--templates` selects alternate catalogs for audit/migrate;
-their validation files follow the same sibling discovery rules. Migrating a
-historical record requires a selected template **and** a trusted saved query that
-reproduces its parsed operations after recovering parameters. A matching
-`query_type` alone is insufficient. Existing per-record comparison metadata is
-retained. Missing grounding, changed queries, inconsistent gold goals or formats
-are reported as migration issues; original labels are never rewritten. Such
-records must be resolved or regenerated as a new dataset version before rescoring.
+binding declarations. `--templates` selects alternate catalogs; validation files
+follow the same sibling discovery rules. Current contract refresh uses stored
+bindings and template identity, checks trusted query agreement and retains saved
+labels. Missing provenance or contradictory labels require regeneration.
 
 `rescore` uses complete saved rows and generated answers. `--source-records`
 associates records by exact UID. Its output contains before/after matches, status

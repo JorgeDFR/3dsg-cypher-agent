@@ -47,14 +47,17 @@ from cypher_3dsg_agent_distillation.agents.student_model import (
     load_student_model_and_tokenizer,
 )
 from cypher_3dsg_agent_distillation.core.io import write_jsonl
+from tests.helpers import qa_contract
 
 
 def raw_generation_record():
     cypher = (
-        "MATCH (p:Place {nodeSymbol: 'p1'})-[:CONTAINS]->(o:Object) "
-        "RETURN o.nodeSymbol AS object"
+        "MATCH (p:Place {nodeSymbol: 'p1'})-[:CONTAINS]->(o:Object) RETURN o.nodeSymbol AS object"
     )
     return {
+        "validation_contract": qa_contract(["set[str]"]),
+        "task_family": "cypher_qa",
+        "output_type": "SLDP",
         "uid": "trace-one",
         "question": "What objects are directly contained in place p1?",
         "task_type": "objects_in_place_symbol",
@@ -96,6 +99,20 @@ def pddl_generation_record():
             "task_family": "cypher_pddl",
             "output_type": "PDDL",
             "expected_solution": "(visited-object O1)",
+            "validation_contract": {
+                "result": {
+                    "kind": "role_sets",
+                    "roles": {
+                        "object": {
+                            "type": "node_symbol",
+                            "layers": ["Object"],
+                            "property": "nodeSymbol",
+                        }
+                    },
+                },
+                "goal": {"fact": "visited-object", "arguments": [{"result": "object"}]},
+                "answer": {"comparison": {"mode": "pddl_equivalence"}},
+            },
             "grounding": {
                 "expected": {"object": ["O1"]},
                 "fields": {
@@ -317,17 +334,20 @@ def test_tokenizer_source_baseline_ignores_existing_adapter(tmp_path):
     adapter_dir = tmp_path / "adapter"
     adapter_dir.mkdir()
 
-    assert tokenizer_source(
-        adapter_dir=str(adapter_dir),
-        explicit_tokenizer=None,
-        model_config={"base_model": "base-model", "tokenizer": "base-tokenizer"},
-        use_adapter=False,
-    ) == "base-tokenizer"
+    assert (
+        tokenizer_source(
+            adapter_dir=str(adapter_dir),
+            explicit_tokenizer=None,
+            model_config={"base_model": "base-model", "tokenizer": "base-tokenizer"},
+            use_adapter=False,
+        )
+        == "base-tokenizer"
+    )
 
 
 def test_report_output_path_uses_split_and_mode_name():
     output = report_output_path(
-        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
+        data_config={"dataset_dir": "data/datasets/scene"},
         split="challenge",
         mode=EVAL_LOSS_MODE,
         output=None,
@@ -338,7 +358,7 @@ def test_report_output_path_uses_split_and_mode_name():
 
 def test_report_output_path_keeps_baseline_separate_from_fine_tuned_results():
     output = report_output_path(
-        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
+        data_config={"dataset_dir": "data/datasets/scene"},
         split="test",
         mode="raw-generation",
         output=None,
@@ -350,7 +370,7 @@ def test_report_output_path_keeps_baseline_separate_from_fine_tuned_results():
 
 def test_report_output_path_keeps_ollama_models_separate():
     output = report_output_path(
-        data_config={"test_report_path": "data/scene/reports/test.agent.report.json"},
+        data_config={"dataset_dir": "data/datasets/scene"},
         split="challenge",
         mode="raw-generation",
         output=None,
@@ -359,14 +379,13 @@ def test_report_output_path_keeps_ollama_models_separate():
     )
 
     assert output.name == (
-        "challenge.student.ollama.qwen3.5-4b-finetune-q4_k_m."
-        "raw-generation.report.json"
+        "challenge.student.ollama.qwen3.5-4b-finetune-q4_k_m.raw-generation.report.json"
     )
 
 
 def test_report_output_path_uses_aggregate_name_for_all_splits():
     output = report_output_path(
-        data_config={"test_report_path": "data/datasets/scene/reports/test.agent.report.json"},
+        data_config={"dataset_dir": "data/datasets/scene"},
         split=ALL_SPLITS,
         mode=EVAL_LOSS_MODE,
         output=None,
@@ -376,13 +395,7 @@ def test_report_output_path_uses_aggregate_name_for_all_splits():
 
 
 def test_report_output_path_uses_selected_model_version_directory(tmp_path):
-    reports = (
-        tmp_path
-        / "reports"
-        / "models"
-        / "qwen3.5-4b-finetune"
-        / "2026-09-08-T-15-05-21-Z"
-    )
+    reports = tmp_path / "reports" / "models" / "qwen3.5-4b-finetune" / "2026-09-08-T-15-05-21-Z"
 
     output = report_output_path(
         data_config={"test_report_path": str(tmp_path / "reports" / "dataset" / "test.json")},
@@ -610,16 +623,22 @@ def test_generation_length_kwargs_uses_max_new_tokens():
 
 
 def test_raw_generation_progress_description_is_stable_and_concise():
-    assert raw_generation_progress_description(
-        split="challenge",
-        phase="tool-call tokens",
-    ) == "Generating tool call · Challenge"
+    assert (
+        raw_generation_progress_description(
+            split="challenge",
+            phase="tool-call tokens",
+        )
+        == "Generating tool call · Challenge"
+    )
 
 
 def test_clean_generated_text_removes_qwen_thinking_and_turn_artifacts():
-    assert clean_generated_text(
-        "Need to answer with tags.\n</think>\n\n<answer>O29</answer><|im_end|>"
-    ) == "<answer>O29</answer>"
+    assert (
+        clean_generated_text(
+            "Need to answer with tags.\n</think>\n\n<answer>O29</answer><|im_end|>"
+        )
+        == "<answer>O29</answer>"
+    )
 
 
 def test_render_messages_for_generation_disables_thinking_by_default():
@@ -635,10 +654,13 @@ def test_render_messages_for_generation_disables_thinking_by_default():
 
     tokenizer = ChatTemplateTokenizer()
 
-    assert render_messages_for_generation(
-        tokenizer,
-        [{"role": "user", "content": "question"}],
-    ) == "rendered"
+    assert (
+        render_messages_for_generation(
+            tokenizer,
+            [{"role": "user", "content": "question"}],
+        )
+        == "rendered"
+    )
     assert tokenizer.kwargs["add_generation_prompt"] is True
     assert tokenizer.kwargs["enable_thinking"] is False
 
@@ -657,11 +679,14 @@ def test_render_messages_for_generation_passes_native_tool_schema():
     tokenizer = ChatTemplateTokenizer()
     tools = [run_cypher_tool_schema()]
 
-    assert render_messages_for_generation(
-        tokenizer,
-        [{"role": "user", "content": "question"}],
-        tools=tools,
-    ) == "rendered"
+    assert (
+        render_messages_for_generation(
+            tokenizer,
+            [{"role": "user", "content": "question"}],
+            tools=tools,
+        )
+        == "rendered"
+    )
     assert tokenizer.kwargs["tools"] == tools
     assert tokenizer.kwargs["tools"][0]["function"]["name"] == "run_cypher_query"
     parameters = tokenizer.kwargs["tools"][0]["function"]["parameters"]
@@ -716,10 +741,13 @@ def test_render_messages_for_generation_falls_back_without_thinking_kwarg():
             assert add_generation_prompt is True
             return "rendered"
 
-    assert render_messages_for_generation(
-        StrictChatTemplateTokenizer(),
-        [{"role": "user", "content": "question"}],
-    ) == "rendered"
+    assert (
+        render_messages_for_generation(
+            StrictChatTemplateTokenizer(),
+            [{"role": "user", "content": "question"}],
+        )
+        == "rendered"
+    )
 
 
 def test_raw_generation_prompt_slices_do_not_leak_gold_targets():
@@ -785,9 +813,7 @@ def test_parse_generated_tool_calls_accepts_qwen_tool_call_tags():
     assert parsed.tool_call_generated is True
     assert parsed.error is None
     assert parsed.tool_calls[0]["function"]["name"] == "run_cypher_query"
-    assert parsed.tool_calls[0]["function"]["arguments"] == {
-        "cypher_string": "MATCH (n) RETURN n"
-    }
+    assert parsed.tool_calls[0]["function"]["arguments"] == {"cypher_string": "MATCH (n) RETURN n"}
 
 
 def test_parse_generated_tool_calls_reports_malformed_marker():
@@ -879,75 +905,6 @@ def test_score_tool_call_generation_marks_explain_rejection_static_invalid():
     assert "Neo4j EXPLAIN rejected query" in result["static_issues"][0]
 
 
-def test_score_tool_call_generation_flags_empty_result_hidden_false_positive_risk():
-    record = raw_generation_record()
-    record["expected_solution"] = "<>"
-    generated_cypher = (
-        "MATCH (p:Place {nodeSymbol: 'p1'})-[:CONTAINS*2..2]->(o:Object) "
-        "RETURN o.nodeSymbol AS object"
-    )
-
-    class EmptyValidator:
-        def validate(self, cypher, execute):
-            return {
-                "syntax_error": False,
-                "timeout": False,
-                "executable": True,
-                "elapsed_ms": 1.0,
-                "rows": [],
-                "error": None,
-            }
-
-    result = score_tool_call_generation(
-        record,
-        (
-            "<tool_call>\n"
-            "<function=run_cypher_query>\n"
-            "<parameter=cypher_string>\n"
-            f"{generated_cypher}\n"
-            "</parameter>\n"
-            "</function>\n"
-            "</tool_call>"
-        ),
-        validator=EmptyValidator(),
-        policy=None,
-    )
-
-    assert result["status"] == "pass"
-    assert result["cypher_solution_match"] is True
-    assert result["result_match_without_exact_cypher_match"] is True
-    assert result["potential_hidden_false_positive"] is True
-    assert result["hidden_false_positive_reasons"] == [
-        "non_exact_cypher_matched_empty_result",
-        "relationship_pattern_mismatch",
-    ]
-
-
-def test_non_exact_result_match_without_structural_change_is_reviewable_not_high_risk():
-    record = raw_generation_record()
-    generated_cypher = f"{record['gold_cypher']} ORDER BY object"
-
-    result = score_tool_call_generation(
-        record,
-        (
-            "<tool_call>\n"
-            "<function=run_cypher_query>\n"
-            "<parameter=cypher_string>\n"
-            f"{generated_cypher}\n"
-            "</parameter>\n"
-            "</function>\n"
-            "</tool_call>"
-        ),
-        validator=FakeValidator(),
-        policy=None,
-    )
-
-    assert result["status"] == "pass"
-    assert result["result_match_without_exact_cypher_match"] is True
-    assert result["potential_hidden_false_positive"] is False
-    assert result["hidden_false_positive_reasons"] == []
-
-
 def test_score_pddl_tool_call_generation_compares_grounding_not_goal_text():
     record = pddl_generation_record()
     result = score_tool_call_generation(
@@ -969,7 +926,7 @@ def test_score_pddl_tool_call_generation_compares_grounding_not_goal_text():
     assert result["cypher_solution_match"] is True
     assert result["tool_result_match"] is True
     assert result["grounding_match"] is True
-    assert result["expected_grounding"] == record["grounding"]
+    assert result["result_validation"]["actual"] == record["grounding"]["expected"]
     assert result["actual_grounding"] == {"object": ["O1"]}
 
 
@@ -1040,15 +997,16 @@ def test_pddl_invalid_input_empty_answer_passes_tool_and_final_answer_scoring():
     )
 
     assert tool_result["status"] == "pass"
-    assert tool_result["cypher_solution"] == ""
+    assert json.loads(tool_result["cypher_solution"]) == {"object": []}
     assert tool_result["grounding_match"] is True
     assert final_result["status"] == "pass"
     assert final_result["final_answer_domain_valid"] is True
     assert report_record["expected"]["empty_answer"] is True
     assert report_record["expected"]["pddl_goal"] is None
-    assert report_record["generation_debug"]["end_to_end_generation"]["turns"][0][
-        "rendered_prompt"
-    ] == "end-to-end prompt"
+    assert (
+        report_record["generation_debug"]["end_to_end_generation"]["turns"][0]["rendered_prompt"]
+        == "end-to-end prompt"
+    )
 
 
 def test_raw_generation_report_record_exposes_pddl_goal_and_grounding():
@@ -1079,7 +1037,7 @@ def test_raw_generation_report_record_exposes_pddl_goal_and_grounding():
     assert report_record["expected"]["grounding"] == record["grounding"]
     assert report_record["generated"]["actual_grounding"] == {"object": ["O1"]}
     # Retained for consumers of the previous raw-report schema.
-    assert report_record["expected"]["cypher_solution"] == "(visited-object O1)"
+    assert "cypher_solution" not in report_record["expected"]
 
 
 def test_score_pddl_final_answer_uses_pddl_comparator():
@@ -1096,6 +1054,7 @@ def test_score_tool_call_generation_preserves_expected_set_syntax_without_format
     record = raw_generation_record()
     record.update(
         {
+            "validation_contract": qa_contract(["set[str]"]),
             "task_type": "top_object_classes_by_count",
             "gold_cypher": (
                 "MATCH (o:Object) RETURN o.class AS class, count(o) AS count "
@@ -1136,7 +1095,7 @@ def test_score_tool_call_generation_preserves_expected_set_syntax_without_format
     )
 
     assert result["status"] == "pass"
-    assert result["cypher_solution"] == "<light, cabinet>"
+    assert result["cypher_solution"] == "<cabinet, light>"
     assert result["cypher_solution_format_valid"] is True
     assert result["cypher_solution_match"] is True
 
@@ -1278,9 +1237,7 @@ def test_end_to_end_accepts_ollama_native_tool_calls():
 
     assert result["status"] == "pass"
     assert result["final_answer_match"] is True
-    assert conversations[1][-2]["tool_calls"][0]["function"]["name"] == (
-        "run_cypher_query"
-    )
+    assert conversations[1][-2]["tool_calls"][0]["function"]["name"] == ("run_cypher_query")
     assert conversations[1][-1]["role"] == "tool"
 
 
@@ -1340,8 +1297,7 @@ def test_default_end_to_end_limits_accept_bounded_room_result(monkeypatch):
 def test_neo4j_notifications_are_suppressed_unless_requested(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        "cypher_3dsg_agent_distillation.graph.neo4j_validation."
-        "suppress_neo4j_notification_logs",
+        "cypher_3dsg_agent_distillation.graph.neo4j_validation.suppress_neo4j_notification_logs",
         lambda: calls.append(True),
     )
 
@@ -1448,9 +1404,7 @@ def test_end_to_end_stops_after_default_one_query_retry(monkeypatch):
     )
     result = evaluate_end_to_end_record(
         raw_generation_record(),
-        runtime=FakeGenerationRuntime(
-            lambda *_args, **_kwargs: next(responses)
-        ),
+        runtime=FakeGenerationRuntime(lambda *_args, **_kwargs: next(responses)),
         validator=FakeValidator(),
         policy=None,
         tool_schemas=[run_cypher_tool_schema()],
@@ -1524,11 +1478,15 @@ def test_summarize_raw_generation_records_counts_both_checks():
     assert summary["examples"] == 1
     assert summary[FINAL_ANSWER_CHECK]["rates"]["final_answer_match"] == 1.0
     assert summary[TOOL_CALL_CHECK]["statuses"] == {"missing_required_tool": 1}
-    assert summary[END_TO_END_CHECK]["metrics"] == {"final_answer_match": 0}
+    assert summary[END_TO_END_CHECK]["metrics"] == {
+        "final_answer_match": 0,
+        "final_answer_grounded": 0,
+        "tool_result_match": 0,
+    }
     assert summary[END_TO_END_CHECK]["skipped"] == 1
 
 
-def test_end_to_end_summary_exposes_only_final_answer_match_metric():
+def test_end_to_end_summary_exposes_current_correctness_and_grounding_metrics():
     record = {
         FINAL_ANSWER_CHECK: {"status": "pass", "final_answer_match": True},
         TOOL_CALL_CHECK: {"status": "pass", "executable": True},
@@ -1542,8 +1500,16 @@ def test_end_to_end_summary_exposes_only_final_answer_match_metric():
 
     section = summarize_raw_generation_records([record])[END_TO_END_CHECK]
 
-    assert section["metrics"] == {"final_answer_match": 1}
-    assert section["rates"] == {"final_answer_match": 1.0}
+    assert section["metrics"] == {
+        "final_answer_match": 1,
+        "final_answer_grounded": 0,
+        "tool_result_match": 0,
+    }
+    assert section["rates"] == {
+        "final_answer_match": 1.0,
+        "final_answer_grounded": 0.0,
+        "tool_result_match": 0.0,
+    }
 
 
 def test_summarize_raw_generation_records_reports_pddl_grounding_metrics():
@@ -1565,43 +1531,11 @@ def test_summarize_raw_generation_records_reports_pddl_grounding_metrics():
         },
     }
 
-    family_summary = summarize_raw_generation_records([record])["by_task_family"][
-        "cypher_pddl"
-    ]
+    family_summary = summarize_raw_generation_records([record])["by_task_family"]["cypher_pddl"]
 
     assert family_summary["examples"] == 1
-    assert family_summary[FINAL_ANSWER_CHECK]["rates"][
-        "final_answer_domain_valid"
-    ] == 1.0
+    assert family_summary[FINAL_ANSWER_CHECK]["rates"]["final_answer_domain_valid"] == 1.0
     assert family_summary[TOOL_CALL_CHECK]["rates"]["grounding_match"] == 1.0
-
-
-def test_summarize_raw_generation_records_counts_hidden_false_positive_risks():
-    record = {
-        "task_family": "cypher_qa",
-        FINAL_ANSWER_CHECK: {
-            "status": "pass",
-            "final_answer_format_valid": True,
-            "final_answer_domain_valid": True,
-            "final_answer_match": True,
-        },
-        TOOL_CALL_CHECK: {
-            "status": "pass",
-            "static_valid": True,
-            "executable": True,
-            "cypher_solution_match": True,
-            "tool_result_match": True,
-            "result_match_without_exact_cypher_match": True,
-            "potential_hidden_false_positive": True,
-        },
-    }
-
-    summary = summarize_raw_generation_records([record])
-
-    assert summary[TOOL_CALL_CHECK]["metrics"]["potential_hidden_false_positive"] == 1
-    assert summary["by_task_family"]["cypher_qa"][TOOL_CALL_CHECK]["metrics"][
-        "potential_hidden_false_positive"
-    ] == 1
 
 
 def test_finite_perplexity_reports_none_before_json_overflow():
@@ -1623,7 +1557,7 @@ def test_contract_end_to_end_separates_correct_answer_from_actual_grounding():
 
     class WrongRows:
         def validate(self, cypher, execute, **kwargs):
-            return {"executable": True, "rows": [{"renamed": "O999"}], "error": None}
+            return {"executable": True, "rows": [{"object": "O999"}], "error": None}
 
     runtime = FakeGenerationRuntime(lambda *args, **kwargs: next(responses))
     result = evaluate_end_to_end_record(
@@ -1638,4 +1572,4 @@ def test_contract_end_to_end_separates_correct_answer_from_actual_grounding():
     assert result["final_answer_match"] is True
     assert result["result_validation"]["match"] is False
     assert result["final_answer_grounded"] is False
-    assert result["attempts"][0]["validation"]["rows"] == [{"renamed": "O999"}]
+    assert result["attempts"][0]["validation"]["rows"] == [{"object": "O999"}]

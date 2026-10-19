@@ -36,7 +36,6 @@ Setup and lifecycle:
 Main project container:
   main COMMAND [ARGS...]   Run a command in the running main container.
   shell                    Open an interactive shell in the main container.
-  exec COMMAND [ARGS...]   Alias for main (kept for compatibility).
   ollama COMMAND [ARGS...] Run the Ollama CLI in the optional container.
 
 Automated workflow:
@@ -54,7 +53,6 @@ Inspection:
   status                   Show service status.
   logs [SERVICE...]        Follow logs for all services or selected services.
   config                   Validate and print the merged Compose config.
-  ps                       Alias for status (kept for compatibility).
 
 Examples:
   docker/stack.sh main python scripts/training/train_agent_lora.py \
@@ -534,14 +532,14 @@ run_demo_validate() {
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split test \
       --mode raw-generation \
-      --max-new-tokens 1024
+      --max-new-tokens 2048
   demo_step 3 "${total_steps}" "Validate generation on the challenge split" \
     python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
       --student-config "${DEMO_STUDENT_CONFIG}" \
       --split challenge \
       --mode raw-generation \
-      --max-new-tokens 1024
+      --max-new-tokens 2048
   demo_step 4 "${total_steps}" "Establish baseline on the test split" \
     python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
@@ -549,7 +547,7 @@ run_demo_validate() {
       --split test \
       --mode raw-generation \
       --baseline \
-      --max-new-tokens 1024
+      --max-new-tokens 2048
   demo_step 5 "${total_steps}" "Establish baseline on the challenge split" \
     python scripts/agents/evaluate_student.py \
       --data-config "${DEMO_DATA_CONFIG}" \
@@ -557,7 +555,7 @@ run_demo_validate() {
       --split challenge \
       --mode raw-generation \
       --baseline \
-      --max-new-tokens 1024
+      --max-new-tokens 2048
   demo_step 6 "${total_steps}" "Generate HTML workflow report" \
     python scripts/reporting/generate_workflow_report.py \
       --data-config "${DEMO_DATA_CONFIG}" \
@@ -694,7 +692,7 @@ case "${command}" in
     check_docker
     compose logs -f "$@"
     ;;
-  status | ps)
+  status)
     check_docker
     compose ps
     ;;
@@ -703,7 +701,7 @@ case "${command}" in
     require_service_running main
     compose exec main bash
     ;;
-  main | exec)
+  main)
     run_main "$@"
     ;;
   ollama)

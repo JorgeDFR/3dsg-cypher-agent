@@ -122,7 +122,6 @@ docker/stack.sh ollama list
 | --- | --- |
 | `main COMMAND [ARGS...]` | Run a command in the `main` container |
 | `shell` | Open an interactive Bash shell in `main` |
-| `exec COMMAND [ARGS...]` | Compatibility alias for `main` |
 | `ollama COMMAND [ARGS...]` | Run the CLI in the optional Ollama container |
 | `load-neo4j [SCENE]` | Load a scene into the project Neo4j service |
 | `demo-dataset` | Generate a new dataset, teacher traces, and splits |

@@ -4,43 +4,67 @@ import pytest
 
 from cypher_3dsg_agent_distillation.cypher.validation_audit import (
     load_templates,
-    migrate_records,
     rescore_records,
     write_new,
 )
+from cypher_3dsg_agent_distillation.cypher.validation_config import resolve_contract
+from cypher_3dsg_agent_distillation.cypher.validation_refresh import refresh_contracts
+from tests.helpers import qa_contract, source_metadata
 
 
-def test_migration_requires_query_agreement_and_preserves_historical_labels():
+def source_seed():
     templates = load_templates(["configs/question_templates/cypher_pddl_3dsg.yaml"])
-    old = {
-        "uid": "old",
-        "query_type": "pddl_visit_object_symbol",
-        "cypher": 'MATCH (o:Object {nodeSymbol: "O1"}) RETURN o.nodeSymbol AS object',
+    template = next(t for t in templates if t["query_type"] == "pddl_visit_object_symbol")
+    bindings = {"object": "O1"}
+    seed = {
+        "uid": "current",
+        "query_type": template["query_type"],
+        "cypher": template["cypher"].replace("{object}", "O1"),
         "solution": "(visited-object O1)",
         "grounding": {"expected": {"object": ["O1"]}},
+        "validation_contract": resolve_contract(template["validation_contract"], bindings),
+        "metadata": source_metadata(template, bindings),
     }
-    source = deepcopy(old)
-    migrated, issues = migrate_records([old], templates)
-    assert not issues
-    assert migrated[0]["validation_contract"]["result"]["roles"]["object"]["origin"] == {
+    return seed, templates
+
+
+def test_contract_refresh_verifies_explicit_bindings_and_preserves_labels_and_inputs():
+    seed, templates = source_seed()
+    original = deepcopy(seed)
+    refreshed = refresh_contracts([seed], templates)[0]
+    assert refreshed["validation_contract"]["result"]["roles"]["object"]["origin"] == {
         "nodeSymbol": "O1"
     }
-    assert old == source
-    wrong = {**old, "cypher": "MATCH (r:Room) RETURN r.nodeSymbol AS object"}
-    _records, issues = migrate_records([wrong], templates)
-    assert issues[0]["status"] == "migration_unresolved"
-    flawed_label = {**old, "solution": "(visited-object O2)"}
-    migrated, issues = migrate_records([flawed_label], templates)
-    assert issues
-    assert migrated[0]["solution"] == flawed_label["solution"]
+    assert refreshed["solution"] == seed["solution"]
+    assert seed == original
+    assert "validation_migration" not in refreshed["metadata"]
+    assert "validation_contract" not in refreshed["grounding"]
+
+
+@pytest.mark.parametrize("change", ["query", "identity", "bindings", "label", "contract"])
+def test_refresh_rejects_missing_or_contradictory_current_inputs(change):
+    seed, templates = source_seed()
+    if change == "query":
+        seed["cypher"] = "MATCH (r:Room) RETURN r.nodeSymbol AS object"
+    elif change == "identity":
+        seed["metadata"]["template_identity"] = "wrong"
+    elif change == "bindings":
+        seed["metadata"].pop("template_bindings")
+    elif change == "label":
+        seed["solution"] = "(visited-object O2)"
+    else:
+        seed.pop("validation_contract")
+    with pytest.raises(ValueError):
+        refresh_contracts([seed], templates)
 
 
 def test_rescore_does_not_treat_missing_rows_as_empty_execution():
-    c = {
-        "result": {"kind": "scalar", "type": "integer"},
-        "answer": {"formats": ["int"], "empty": "0"},
+    record = {
+        "uid": "a",
+        "validation_contract": qa_contract(["int"]),
+        "solution": "2",
+        "cypher": "RETURN 2 AS total",
     }
-    record = {"uid": "a", "validation_contract": c, "solution": "2", "cypher": "RETURN 2 AS total"}
     assert rescore_records([record])["records"][0]["result_validation"]["status"] == "not_checked"
     record["validation"] = {
         "executable": True,
@@ -52,32 +76,74 @@ def test_rescore_does_not_treat_missing_rows_as_empty_execution():
     assert report["records"][0]["result_validation"]["status"] == "pass"
 
 
-def test_refresh_existing_contract_uses_the_trusted_query_without_changing_labels():
-    templates = load_templates(["configs/question_templates/cypher_qa_3dsg.yaml"])
-    template = next(t for t in templates if t["query_type"] == "nearest_object_between_classes")
-    query = template["cypher"].replace('{reference_class}', 'bed').replace(
-        '{target_class}', 'light',
-    )
-    record = {
-        "uid": "old", "query_type": template["query_type"], "cypher": query, "solution": "O47",
-        "validation_contract": {"result": {"kind": "scalar", "type": "node_symbol",
-                                           "layers": ["Object"]},
-                                "answer": {"formats": ["str"]}},
-    }
-    original = deepcopy(record)
-    migrated, issues = migrate_records([record], templates, refresh_contracts=True)
-    assert not issues
-    assert migrated[0]["validation_contract"]["result"]["origin"] == {"class": "light"}
-    assert migrated[0]["solution"] == record["solution"]
-    assert record == original
-    record["cypher"] = "MATCH (o:Object) RETURN o.nodeSymbol AS object"
-    _migrated, issues = migrate_records([record], templates, refresh_contracts=True)
-    assert issues
-
-
 def test_audit_outputs_cannot_overwrite_existing_data(tmp_path):
     output = tmp_path / "existing.json"
     output.write_text("original")
     with pytest.raises(FileExistsError):
         write_new(output, {"different": True})
     assert output.read_text() == "original"
+
+
+def ranking_seed():
+    comparison = {
+        "mode": "top_k_with_ties",
+        "limit": {"binding": "limit"},
+        "score_source": {"kind": "property_counts", "layer": "Object", "property": "class"},
+    }
+    template = {
+        "query_type": "ranking",
+        "cypher": "MATCH (o:Object) RETURN o.class AS class LIMIT {limit}",
+        "variables": {"limit": "limits"},
+        "validation_provenance": {},
+        "validation_contract": {
+            "result": {"kind": "set", "type": "string", "comparison": deepcopy(comparison)},
+            "answer": {"formats": ["set[str]"], "comparison": deepcopy(comparison)},
+        },
+    }
+    bindings = {"limit": 2}
+    contract = resolve_contract(template["validation_contract"], bindings)
+    for section in ("answer", "result"):
+        contract[section]["comparison"]["scores"] = {"chair": 5, "table": 3, "desk": 3}
+    record = {
+        "uid": "ranked",
+        "query_type": "ranking",
+        "cypher": template["cypher"].replace("{limit}", "2"),
+        "solution": "<chair, table>",
+        "validation_contract": contract,
+        "metadata": source_metadata(template, bindings),
+    }
+    return record, template
+
+
+def test_refresh_preserves_observed_scores_only_for_the_same_scoring_rule():
+    record, template = ranking_seed()
+    refreshed = refresh_contracts([record], [template])[0]
+    assert refreshed["validation_contract"]["answer"]["comparison"]["scores"] == {
+        "chair": 5,
+        "table": 3,
+        "desk": 3,
+    }
+    # Changing to exact comparison drops scene scores.
+    for section in ("answer", "result"):
+        template["validation_contract"][section]["comparison"] = {"mode": "exact"}
+    refreshed = refresh_contracts([record], [template])[0]
+    assert refreshed["validation_contract"]["answer"]["comparison"]["scores"] is None
+
+
+def test_refresh_cannot_reuse_scores_for_a_different_observation_source():
+    record, template = ranking_seed()
+    for section in ("answer", "result"):
+        template["validation_contract"][section]["comparison"]["score_source"]["property"] = (
+            "nodeSymbol"
+        )
+    original = deepcopy(record)
+    with pytest.raises(ValueError, match="saved label violates"):
+        refresh_contracts([record], [template])
+    assert record == original
+
+
+def test_refresh_rejects_retired_record_level_comparison_overrides():
+    record, template = ranking_seed()
+    record["answer_validation"] = {"mode": "top_k_with_ties", "limit": 2}
+    with pytest.raises(ValueError, match="answer_validation.*regenerate"):
+        refresh_contracts([record], [template])

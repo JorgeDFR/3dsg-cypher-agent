@@ -131,9 +131,9 @@ To bind training to an exact dataset or choose a model-version identifier:
 ```bash
 docker/stack.sh main python scripts/training/train_agent_lora.py \
   --data-config configs/data.yaml \
-  --dataset-version 2026-09-08-T-12-05-47-Z \
+  --dataset-version DATASET_VERSION \
   --student-config configs/students/student_qwen3.5_4b.yaml \
-  --model-version 2026-09-08-T-13-00-00-Z
+  --model-version MODEL_VERSION
 ```
 
 The output directory comes from `training.output_dir`. Each successful run

@@ -1,11 +1,10 @@
-"""Explicit catalog audits, historical migration and saved-output rescoring."""
+"""Explicit catalog audits and saved-output rescoring."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from collections import Counter
-from copy import deepcopy
 from pathlib import Path
 
 from cypher_3dsg_agent_distillation.cypher.result_validation import (
@@ -13,14 +12,11 @@ from cypher_3dsg_agent_distillation.cypher.result_validation import (
     final_grounding_check,
     validate_record_result,
 )
-from cypher_3dsg_agent_distillation.cypher.task_semantics import recover_bindings
 from cypher_3dsg_agent_distillation.cypher.validation_config import (
-    ValidationContract,
     contract_for_record,
     fingerprint,
     implementation_fingerprint,
     load_question_catalog,
-    resolve_contract,
     strict_yaml,
 )
 
@@ -44,139 +40,37 @@ def load_templates(paths):
     return templates
 
 
-def migrate_records(records, templates, *, refresh_contracts=False):
-    """Explicit selection plus verified gold query/bindings; never lookup by type alone."""
-    catalog = {t["query_type"]: t for t in templates}
-    implementation = implementation_fingerprint()
-    migrated, issues = [], []
-    for original in records:
-        record = deepcopy(original)
-        try:
-            contract = contract_for_record(record)
-            if contract and not refresh_contracts:
-                ValidationContract.model_validate(contract)
-            else:
-                query_type = record.get("query_type", record.get("task_type"))
-                template = catalog.get(query_type)
-                if template is None:
-                    raise ValueError("No selected source template")
-                # Teacher traces retain the original gold query in metadata.
-                query = (
-                    (record.get("metadata") or {}).get("seed_gold_cypher")
-                    or record.get("cypher")
-                    or record.get("gold_cypher")
-                )
-                if not query:
-                    raise ValueError("No saved trusted query")
-                variables = recover_bindings(template["cypher"], query)
-                previous_contract = contract
-                contract = resolve_contract(template["validation_contract"], variables)
-                if record.get("answer_validation"):
-                    contract["answer"]["comparison"].update(record["answer_validation"])
-                # Scores are scene observations, not template declarations. Reuse
-                # them only when the scoring rule and resolved limit are unchanged.
-                for section in ("result", "answer"):
-                    old = (previous_contract or {}).get(section, {}).get("comparison", {})
-                    new = contract[section]["comparison"]
-                    if all(old.get(key) == new.get(key) for key in (
-                        "mode", "score_source", "limit",
-                    )) and old.get("scores") is not None:
-                        new["scores"] = deepcopy(old["scores"])
-                ValidationContract.model_validate(contract)
-                record["validation_contract"] = contract
-                if record.get("grounding"):
-                    record["grounding"]["validation_contract"] = deepcopy(contract)
-                record.setdefault("metadata", {})["validation_provenance"] = template[
-                    "validation_provenance"
-                ]
-            meta = record.setdefault("metadata", {})
-            meta["validation_contract_hash"] = fingerprint(contract)
-            meta["validation_migration"] = {
-                "status": "migrated",
-                "source_record_hash": fingerprint(original),
-                "implementation": implementation,
-            }
-            expected = next(
-                (
-                    record[k]
-                    for k in ("expected_solution", "real_solution", "solution")
-                    if record.get(k) is not None
-                ),
-                None,
-            )
-            if (
-                expected is not None
-                and compare_answers(str(expected), str(expected), contract)["status"]
-                == "invalid_expected_solution"
-            ):
-                raise ValueError(
-                    "Historical expected solution violates selected contract; label unchanged"
-                )
-            if contract.get("goal"):
-                from cypher_3dsg_agent_distillation.cypher.pddl_goals import render_goal_spec
-
-                expected_roles = (record.get("grounding") or {}).get("expected")
-                if expected_roles is None:
-                    raise ValueError(
-                        "Missing historical expected grounding; cannot reconstruct oracle"
-                    )
-                rendered = render_goal_spec(contract["goal"], expected_roles) or ""
-                if (
-                    expected is not None
-                    and not compare_answers(rendered, str(expected), contract)["match"]
-                ):
-                    raise ValueError(
-                        "Historical goal disagrees with configured goal tree; label unchanged"
-                    )
-        except (ValueError, KeyError, TypeError) as exc:
-            diagnostic = {
-                "uid": record.get("uid"),
-                "status": "migration_unresolved",
-                "issue": str(exc),
-            }
-            record.setdefault("metadata", {})["validation_migration"] = diagnostic
-            issues.append(diagnostic)
-        migrated.append(record)
-    return migrated, issues
-
-
 def saved_result(record):
-    """Read actual saved execution evidence; absence is never interpreted as empty rows."""
+    """Read a current report, paired conversation or standalone execution record."""
     from cypher_3dsg_agent_distillation.agents.trace_evidence import (
         marked_earlier_execution,
+        tool_executions,
         uses_earlier_retrieval,
     )
 
-    tool = (
-        record.get("tool_call_from_prompt")
-        or record.get("tool_call_check")
-        or record.get("tool_call_generation")
-        or {}
-    )
+    tool = record.get("tool_call_from_prompt") or {}
     validation = tool.get("validation") or record.get("validation") or {}
-    query = tool.get("generated_cypher") or (record.get("generated") or {}).get("cypher")
-    rows = validation.get("rows")
-    if not query:
-        if uses_earlier_retrieval(record):
-            # Canonical traces and accepted debug records share the same proof.
-            # Invalid markers must never fall back to a cached grade.
-            return marked_earlier_execution(record)
-        from cypher_3dsg_agent_distillation.agents.agent_evaluation import saved_execution
-        from cypher_3dsg_agent_distillation.agents.agent_records import AgentTraceRecord
-
-        if record.get("messages"):
-            try:
-                execution = saved_execution(AgentTraceRecord.model_validate(record))
-                if execution:
-                    return execution
-            except ValueError:
-                pass
-        query = record.get("cypher") or record.get("gold_cypher")
-    if rows is None:
-        rows = (record.get("generated") or {}).get("cypher_tool_output")
     if validation.get("rows_truncated") or validation.get("rows_omitted"):
         return None
-    if query and isinstance(rows, list) and validation.get("executable") is not False:
+    # A student report's generated evidence is independent of its source trace markers.
+    if tool:
+        query = tool.get("generated_cypher")
+        rows = validation.get("rows")
+    elif record.get("messages"):
+        if uses_earlier_retrieval(record):
+            return marked_earlier_execution(record)
+        executions = tool_executions(record["messages"])
+        if not executions or not executions[-1].complete:
+            return None
+        execution = executions[-1]
+        columns = execution.columns
+        if columns is None and validation.get("rows") == execution.rows:
+            columns = validation.get("columns")
+        return execution.query, execution.rows, columns
+    else:
+        query = record.get("cypher")
+        rows = validation.get("rows")
+    if query and isinstance(rows, list) and validation.get("executable") is True:
         return query, rows, validation.get("columns")
     return None
 
@@ -187,34 +81,20 @@ def rescore_records(records, sources=None):
     for original in records:
         source = sources.get(original.get("uid"), original)
         query_record = {**source}
-        if not contract_for_record(query_record):
-            outcome = {
+        contract_for_record(query_record)
+        evidence = saved_result(original)
+        outcome = (
+            validate_record_result(query_record, evidence[1], evidence[0], evidence[2])
+            if evidence
+            else {
                 "status": "not_checked",
                 "match": None,
-                "issues": ["Explicit contract migration required"],
+                "issues": ["No complete saved execution; fresh execution required"],
             }
-        elif (query_record.get("metadata") or {}).get("validation_migration", {}).get(
-            "status"
-        ) == "migration_unresolved":
-            outcome = {
-                "status": "invalid_expected_solution",
-                "match": None,
-                "issues": ["Resolve migration diagnostics before rescoring"],
-            }
-        else:
-            evidence = saved_result(original)
-            outcome = (
-                validate_record_result(query_record, evidence[1], evidence[0], evidence[2])
-                if evidence
-                else {
-                    "status": "not_checked",
-                    "match": None,
-                    "issues": ["No complete saved execution; fresh execution required"],
-                }
-            )
-        text = (
-            original.get("final_answer_from_trace") or original.get("final_answer_generation") or {}
-        ).get("generated_text") or (original.get("generated") or {}).get("final_answer")
+        )
+        text = (original.get("final_answer_from_trace") or {}).get("generated_text") or (
+            original.get("generated") or {}
+        ).get("final_answer")
         if text is None and original.get("messages"):
             text = next(
                 (
@@ -232,14 +112,14 @@ def rescore_records(records, sources=None):
         expected = next(
             (
                 query_record[k]
-                for k in ("expected_solution", "real_solution", "solution")
+                for k in ("expected_solution", "solution")
                 if query_record.get(k) is not None
             ),
             None,
         )
         contract = contract_for_record(query_record)
         final = (
-            compare_answers(answer, str(expected), contract, query_record.get("answer_validation"))
+            compare_answers(answer, str(expected), contract)
             if answer is not None and expected is not None and contract
             else {
                 "status": "not_checked"
@@ -290,13 +170,8 @@ def write_new(path, payload, *, jsonl=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("audit", "migrate"):
-        command = commands.add_parser(name)
-        command.add_argument("--templates", nargs="+", default=DEFAULT_CATALOGS)
-        if name == "migrate":
-            command.add_argument("--records", required=True)
-            command.add_argument("--output", required=True)
-            command.add_argument("--refresh-contracts", action="store_true")
+    command = commands.add_parser("audit")
+    command.add_argument("--templates", nargs="+", default=DEFAULT_CATALOGS)
     command = commands.add_parser("rescore")
     command.add_argument("--records", required=True)
     command.add_argument("--source-records")
@@ -317,13 +192,6 @@ def main():
                 }
             )
         )
-    elif args.command == "migrate":
-        records, issues = migrate_records(
-            load_records(args.records), load_templates(args.templates),
-            refresh_contracts=args.refresh_contracts,
-        )
-        write_new(args.output, records, jsonl=True)
-        print(json.dumps({"records": len(records), "issues": len(issues), "diagnostics": issues}))
     elif args.command == "rescore":
         report = rescore_records(
             load_records(args.records),

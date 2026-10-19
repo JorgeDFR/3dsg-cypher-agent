@@ -86,6 +86,22 @@ def test_generation_checkpoints_cost_coverage_and_resumes_without_duplicates(
         }
         for i in range(3)
     ]
+    from cypher_3dsg_agent_distillation.cypher.validation_config import (
+        load_question_catalog,
+        resolve_contract,
+    )
+    from tests.helpers import source_metadata
+
+    template = next(
+        t
+        for t in load_question_catalog("configs/question_templates/cypher_qa_3dsg.yaml")[
+            "templates"
+        ]
+        if t["query_type"] == "object_total"
+    )
+    for seed in seeds:
+        seed["metadata"].update(source_metadata(template))
+        seed["validation_contract"] = resolve_contract(template["validation_contract"], {})
     write_jsonl(seeds, seed_path)
     teacher_config = tmp_path / "teacher.yaml"
     atomic_write_yaml(
@@ -178,8 +194,8 @@ def test_generation_checkpoints_cost_coverage_and_resumes_without_duplicates(
                             "arguments": json.dumps(
                                 {
                                     "cypher_string": (
-                                    "MATCH (o:Object) RETURN DISTINCT o.class AS class"
-                                ),
+                                        "MATCH (o:Object) RETURN DISTINCT o.class AS class"
+                                    ),
                                 }
                             ),
                         },
@@ -329,7 +345,9 @@ def test_generation_checkpoints_cost_coverage_and_resumes_without_duplicates(
             from cypher_3dsg_agent_distillation.cypher.validation_audit import saved_result
 
             assert saved_result(item["debug_record"]) == (
-                record.gold_cypher, [{"count": 3}], None,
+                record.gold_cypher,
+                [{"count": 3}],
+                None,
             )
     if provider == "synthetic":
         for record in map(json.loads, records.decode().splitlines()):

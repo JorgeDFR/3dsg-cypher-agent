@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DEFAULT_AGENT_TOOL = "run_cypher_query"
 DEFAULT_TEACHER_MODEL = "openai/gpt-oss-120b"
@@ -101,19 +101,17 @@ class AgentTraceRecord(BaseModel):
     uid: str
     scene_id: str | None = None
     question: str
-    task_type: str = Field(validation_alias=AliasChoices("task_type", "query_type"))
-    task_family: str = "cypher_qa"
-    output_type: str = "SLDP"
+    task_type: str
+    task_family: str
+    output_type: str
     experiment_profile: str | None = None
     tools: list[str] = Field(default_factory=lambda: [DEFAULT_AGENT_TOOL])
     messages: list[AgentMessage]
     gold_cypher: str
-    expected_solution: Any | None = None
-    real_solution: Any | None = None
+    expected_solution: Any
     solution_formats: list[str] = Field(default_factory=list)
-    answer_validation: dict[str, Any] | None = None
     grounding: dict[str, Any] | None = None
-    validation_contract: dict[str, Any] | None = None
+    validation_contract: dict[str, Any]
     cypher_solution: Any | None = None
     final_answer: str | None = None
     split_group: str | None = None
@@ -125,25 +123,22 @@ class AgentTraceRecord(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def promote_task_metadata(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        payload = dict(value)
-        metadata = payload.get("metadata") or {}
-        payload.setdefault("task_family", metadata.get("task_family", "cypher_qa"))
-        payload.setdefault("output_type", metadata.get("output_type", "SLDP"))
-        if metadata.get("experiment_profile") is not None:
-            payload.setdefault("experiment_profile", metadata["experiment_profile"])
-        return payload
+    def require_current_schema(cls, value):
+        from cypher_3dsg_agent_distillation.cypher.validation_config import contract_for_record
+
+        if isinstance(value, dict):
+            retired = {"query_type", "real_solution", "solution_format"} & value.keys()
+            if retired:
+                raise ValueError(
+                    f"Unsupported trace fields {sorted(retired)}; regenerate the dataset."
+                )
+            contract_for_record(value)
+        return value
 
     @model_validator(mode="after")
     def validate_trace(self) -> AgentTraceRecord:
         if not self.messages:
             raise ValueError("Agent trace must include at least one message.")
-        if self.real_solution is None and self.expected_solution is not None:
-            self.real_solution = self.expected_solution
-        elif self.expected_solution is None and self.real_solution is not None:
-            self.expected_solution = self.real_solution
         if self.split_group is None:
             self.split_group = split_group_for_record(
                 self.scene_id,

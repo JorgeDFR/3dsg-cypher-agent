@@ -99,7 +99,7 @@ class RowCount(StrictModel):
 
 
 class ResultSpec(StrictModel):
-    kind: Literal["scalar", "set", "multiset", "list", "tuples", "role_sets", "flexible"]
+    kind: Literal["scalar", "set", "multiset", "list", "tuples", "role_sets"]
     type: Literal["integer", "number", "string", "node_symbol", "point"] = "string"
     layers: list[str | dict[str, str]] = Field(default_factory=list)
     property: str | None = None
@@ -358,22 +358,6 @@ def load_question_catalog(
 
         check(raw)
         template.update(validation_contract=raw, validation_provenance=provenance)
-        # Private compatibility view for existing seed/reasoning builders.
-        template["solution_formats"] = raw["answer"]["formats"]
-        template["goal"] = raw["goal"]
-        template["read_only"] = True
-        if raw["result"]["roles"]:
-            template["grounding"] = {
-                "fields": {
-                    name: {
-                        "source": role["oracle_source"],
-                        "aliases": [name],
-                        "symbol_type": symbol_type(role["layers"]),
-                        "cardinality": role["cardinality"],
-                    }
-                    for name, role in raw["result"]["roles"].items()
-                }
-            }
     return catalog
 
 
@@ -395,9 +379,14 @@ def resolve_contract(contract, variables):
 
 
 def contract_for_record(record):
-    return record.get("validation_contract") or (record.get("grounding") or {}).get(
-        "validation_contract"
-    )
+    contract = record.get("validation_contract")
+    if not isinstance(contract, dict):
+        raise ValueError(
+            "A top-level validation_contract is required; regenerate the dataset "
+            "using the current question catalogs."
+        )
+    ValidationContract.model_validate(contract)
+    return contract
 
 
 def implementation_fingerprint():
@@ -406,6 +395,7 @@ def implementation_fingerprint():
         "result_validation.py",
         "query_provenance.py",
         "validation_audit.py",
+        "validation_refresh.py",
         "task_semantics.py",
         "pddl_goals.py",
     ]
@@ -424,7 +414,8 @@ def implementation_fingerprint():
         "agents/trace_evidence.py",
         "agents/teacher_optimizations.py",
         "agents/agent_evaluation.py",
-        "agents/agent_evaluation.py",
+        "agents/agent_records.py",
+        "cypher/cypher_seed_records.py",
         "cypher/evaluation.py",
     ]:
         source = Path(__file__).parents[1] / relative
@@ -437,9 +428,7 @@ def validation_identity(data_config):
     from cypher_3dsg_agent_distillation.core.config import resolve_project_path
 
     files = {}
-    question_sets = data_config.get("question_sets") or (
-        [data_config] if data_config.get("question_templates_path") else []
-    )
+    question_sets = data_config["question_sets"]
     for item in question_sets:
         path, defaults = validation_inputs(
             resolve_project_path(item["question_templates_path"]),
@@ -457,3 +446,28 @@ def validation_identity(data_config):
         "implementation": implementation_fingerprint(),
         "files": files,
     }
+
+
+def template_identity(template):
+    return fingerprint({key: template.get(key) for key in ("query_type", "cypher", "variables")})
+
+
+def template_bindings(record, template):
+    """Validate explicit generation provenance; never reconstruct historical bindings."""
+    from cypher_3dsg_agent_distillation.cypher.task_semantics import (
+        parse_query,
+        resolve_semantics,
+        validate_query_semantics,
+    )
+
+    metadata = record.get("metadata") or {}
+    bindings = metadata.get("template_bindings")
+    if not isinstance(bindings, dict) or metadata.get("template_identity") != template_identity(
+        template
+    ):
+        raise ValueError("Missing or incompatible template provenance; regenerate this dataset.")
+    query = metadata.get("seed_gold_cypher") or record.get("cypher") or record.get("gold_cypher")
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("Missing trusted source query; regenerate this dataset.")
+    validate_query_semantics(resolve_semantics(parse_query(template["cypher"]), bindings), query)
+    return bindings

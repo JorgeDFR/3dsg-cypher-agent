@@ -15,6 +15,7 @@ from cypher_3dsg_agent_distillation.reporting.workflow_report import (
     validation_example_rows,
     workflow_report_output_path,
 )
+from tests.helpers import qa_contract, source_metadata
 
 
 def test_message_card_separates_reasoning_from_content_and_metadata():
@@ -31,7 +32,7 @@ def test_message_card_separates_reasoning_from_content_and_metadata():
     assert "<pre>&lt;answer&gt;O1&lt;/answer&gt;</pre>" in html
     assert "<h5>Reasoning</h5><pre>Use returned symbols.\nPreserve &lt;O1&gt;.</pre>" in html
     assert html.count("Use returned symbols.") == 1
-    assert '<h5>Metadata</h5>' in html
+    assert "<h5>Metadata</h5>" in html
     assert "call-1" in html
     assert "<h5>Reasoning</h5>" not in render_message_card(
         {"role": "assistant", "content": "answer", "reasoning": None}, 2
@@ -107,15 +108,21 @@ def test_generated_questions_tab_reports_empty_and_repair_counts():
 
 
 def minimal_data_config(tmp_path):
-    scene_dir = tmp_path / "data" / "3dsg" / "scene"
+    scene_dir = tmp_path / "data" / "datasets" / "scene" / "current"
     reports_dir = scene_dir / "reports"
     splits_dir = scene_dir / "splits"
     reports_dir.mkdir(parents=True)
     splits_dir.mkdir(parents=True)
     return {
-        "scene_id": "scene",
-        "scene_path": str(tmp_path / "scene.json"),
-        "scene_template_values_path": str(scene_dir / "scene_template_values.yaml"),
+        "dataset_id": "scene",
+        "scenes": [
+            {
+                "scene_id": "scene",
+                "scene_path": str(tmp_path / "scene.json"),
+                "scene_template_values_path": str(scene_dir / "scene_template_values.yaml"),
+            }
+        ],
+        "dataset_dir": str(Path(str(reports_dir / "test.agent.report.json")).parent.parent),
         "raw_questions_path": str(scene_dir / "generated_questions.yaml"),
         "seed_records_jsonl_path": str(scene_dir / "cypher_seed_records.jsonl"),
         "teacher_traces_jsonl_path": str(scene_dir / "traces" / "teacher_traces.jsonl"),
@@ -132,7 +139,7 @@ def minimal_data_config(tmp_path):
 
 
 def write_minimal_artifacts(config):
-    scene_values_path = config["scene_template_values_path"]
+    scene_values_path = config["scenes"][0]["scene_template_values_path"]
     generated_questions_path = config["raw_questions_path"]
     traces_dir = config["teacher_traces_jsonl_path"].rsplit("/", 1)[0]
     question = {
@@ -160,8 +167,19 @@ def write_minimal_artifacts(config):
             {"role": "assistant", "content": "<answer><O1, O2></answer>"},
         ],
     }
+    question.update(
+        task_family="cypher_qa",
+        output_type="SLDP",
+        read_only=True,
+        validation_contract=qa_contract(["set[str]"]),
+    )
+    question["metadata"] = source_metadata(
+        {"query_type": question["query_type"], "cypher": question["gold_cypher"]}
+    )
+    trace = {key: value for key, value in question.items() if key not in {"query_type", "solution"}}
+    trace.update(task_type=question["query_type"], expected_solution=question["solution"])
     optimized_split_record = {
-        **question,
+        **trace,
         "tags": [],
         "task_type": "object_class_count",
         "metadata": {
@@ -170,16 +188,12 @@ def write_minimal_artifacts(config):
             "seed_uid": "q1",
         },
     }
-    accepted_trace = {
-        key: value for key, value in question.items() if key != "gold_cypher"
-    } | {
+    accepted_trace = {key: value for key, value in question.items() if key != "gold_cypher"} | {
         "seed_uid": "q1",
         "cypher": "MATCH (o:Object) RETURN o",
     }
     rejected_trace_without_answer = {
-        key: value
-        for key, value in question.items()
-        if key not in {"gold_cypher", "final_answer"}
+        key: value for key, value in question.items() if key not in {"gold_cypher", "final_answer"}
     } | {
         "uid": "q1_rejected",
         "seed_uid": "q1",
@@ -216,28 +230,14 @@ def write_minimal_artifacts(config):
                 ]
             )
         )
-    with open(generated_questions_path, "w", encoding="utf-8") as handle:
-        handle.write(
-            "\n".join(
-                [
-                    "questions:",
-                    "- uid: q1",
-                    "  query_type: object_class_count",
-                    "  question: How many chairs?",
-                    '  gold_cypher: "MATCH (o:Object {class: \'chair\'}) RETURN count(o) AS count"',
-                    "  solution: |",
-                    "    <",
-                    "      O1,",
-                    "      O2",
-                    "    >",
-                    "  tags:",
-                    "    - count",
-                ]
-            )
-        )
+    import yaml
 
-    write_jsonl([question], config["seed_records_jsonl_path"])
-    write_jsonl([question], config["teacher_traces_jsonl_path"])
+    with open(generated_questions_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump({"questions": [question]}, handle)
+    seed = {key: value for key, value in question.items() if key != "gold_cypher"}
+    seed["cypher"] = question["gold_cypher"]
+    write_jsonl([seed], config["seed_records_jsonl_path"])
+    write_jsonl([trace], config["teacher_traces_jsonl_path"])
     for split, path in config["splits"].items():
         write_jsonl([optimized_split_record] if split == "train" else [], path)
 
@@ -335,16 +335,14 @@ def write_minimal_artifacts(config):
                         "question": "How many chairs?",
                         "expected": {
                             "cypher": (
-                                "MATCH (o:Object {class: 'chair'}) "
-                                "RETURN count(o) AS count"
+                                "MATCH (o:Object {class: 'chair'}) RETURN count(o) AS count"
                             ),
                             "cypher_solution": "<\n  O1,\n  O2\n>",
                             "final_answer": "<answer>2</answer>",
                         },
                         "generated": {
                             "cypher": (
-                                "MATCH (o:Object {class: 'chair'}) "
-                                "RETURN count(o) AS count"
+                                "MATCH (o:Object {class: 'chair'}) RETURN count(o) AS count"
                             ),
                             "cypher_solution": "<\\n  O1,\\n  O2\\n>",
                             "cypher_tool_output": [{"count": 2}],
@@ -355,8 +353,7 @@ def write_minimal_artifacts(config):
                         "generation_debug": {
                             "cypher_generation": {
                                 "rendered_prompt": (
-                                    "<|im_start|>system\n# Tools\n"
-                                    "run_cypher_query<|im_end|>"
+                                    "<|im_start|>system\n# Tools\nrun_cypher_query<|im_end|>"
                                 ),
                                 "raw_completion": "<tool_call>...</tool_call>",
                             },
@@ -368,20 +365,15 @@ def write_minimal_artifacts(config):
                                 "turns": [
                                     {
                                         "turn": 1,
-                                        "rendered_prompt": (
-                                            "<|im_start|>user\nHow many chairs?"
-                                        ),
+                                        "rendered_prompt": ("<|im_start|>user\nHow many chairs?"),
                                         "raw_completion": "<tool_call>...</tool_call>",
                                     },
                                     {
                                         "turn": 2,
                                         "rendered_prompt": (
-                                            "<|im_start|>tool\n"
-                                            '{"ok": true, "rows": [{"count": 2}]}'
+                                            '<|im_start|>tool\n{"ok": true, "rows": [{"count": 2}]}'
                                         ),
-                                        "raw_completion": (
-                                            "<answer>2</answer><|im_end|>"
-                                        ),
+                                        "raw_completion": ("<answer>2</answer><|im_end|>"),
                                     },
                                 ]
                             },
@@ -391,10 +383,10 @@ def write_minimal_artifacts(config):
                             "final_answer_match": "true",
                         },
                         "tool_call_from_prompt": {
-                        "status": "pass",
-                        "tool_call_parse_success": True,
-                        "static_valid": True,
-                        "executable": True,
+                            "status": "pass",
+                            "tool_call_parse_success": True,
+                            "static_valid": True,
+                            "executable": True,
                             "cypher_solution_match": "true",
                         },
                         "end_to_end_final_answer": {
@@ -464,10 +456,7 @@ def write_quantization_reports(config):
             attempt["generated_tokens"] = generated_tokens
         for turn in record["generation_debug"]["end_to_end_generation"]["turns"]:
             turn["provider_metadata"] = {"eval_duration": 1_000_000_000}
-        path = (
-            f"{reports_dir}/challenge.student.ollama.{model}."
-            "raw-generation.report.json"
-        )
+        path = f"{reports_dir}/challenge.student.ollama.{model}.raw-generation.report.json"
         with open(path, "w", encoding="utf-8") as target:
             json.dump(report, target)
 
@@ -500,8 +489,10 @@ def test_dataset_only_report_omits_training_and_inference_even_when_artifacts_ex
         assert f'data-tab="{tab}"' not in html
     assert data["train"]["aggregate_eval_loss"] is None
     assert all(report is None for report in data["validation"]["raw_generation_reports"].values())
-    assert all(Path(info["path"]).name in {"split.report.json", "revalidation.report.json"}
-               for info in data["artifacts"]["reports"])
+    assert all(
+        Path(info["path"]).name in {"split.report.json", "revalidation.report.json"}
+        for info in data["artifacts"]["reports"]
+    )
 
 
 def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
@@ -516,9 +507,7 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert data["splits"]["optimized_questions"][0]["uid"] == "q1"
     assert data["train"]["aggregate_eval_loss"]["summary"]["examples"] == 1
     assert data["baseline"]["raw_generation_reports"]["test"]["summary"]["examples"] == 1
-    validation_record = data["validation"]["raw_generation_reports"]["test"][
-        "records"
-    ][0]
+    validation_record = data["validation"]["raw_generation_reports"]["test"]["records"][0]
     _validation_rows, validation_details = validation_example_rows(
         data["validation"]["raw_generation_reports"]
     )
@@ -532,9 +521,7 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "rendered_prompt",
         "raw_completion",
     }
-    assert len(
-        validation_record["generation_debug"]["end_to_end_generation"]["turns"]
-    ) == 2
+    assert len(validation_record["generation_debug"]["end_to_end_generation"]["turns"]) == 2
     assert list(validation_details[0]["fields"]) == [
         "uid",
         "split",
@@ -551,7 +538,6 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "tool_call_executable",
         "cypher_solution_match",
         "grounding_match",
-        "potential_hidden_false_positive",
         "final_answer_domain_valid",
         "final_answer_match",
         "end_to_end_match",
@@ -561,12 +547,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "Final Answer Validation",
         "End-to-End Validation",
     ]
-    assert "cypher_validation_summary" not in validation_details[0]["groups"][0][
-        "blocks"
-    ]
-    assert "final_answer_validation_summary" not in validation_details[0]["groups"][1][
-        "blocks"
-    ]
+    assert "cypher_validation_summary" not in validation_details[0]["groups"][0]["blocks"]
+    assert "final_answer_validation_summary" not in validation_details[0]["groups"][1]["blocks"]
     assert "3D Scene Graph" in html
     assert "Generated Questions" in html
     assert "Trace Outcomes" in html
@@ -617,16 +599,14 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "<pre>chair, table</pre>" in scene_section
     assert (
         "{class: chair, radius: 2, point: {x: 1, y: 2, z: 3}}, "
-        "{class: table, radius: 5, point: {x: 4, y: 5, z: 6}}"
-        in scene_section
+        "{class: table, radius: 5, point: {x: 4, y: 5, z: 6}}" in scene_section
     )
     generated_summary = html[
         html.index("<h2>Generated Questions</h2>") : html.index("<h3>Questions</h3>")
     ]
     assert (
         '<div class="metric-label">Generated Questions</div>'
-        '<div class="metric-value">1</div>'
-        in generated_summary
+        '<div class="metric-value">1</div>' in generated_summary
     )
     assert "Seed Records" not in generated_summary
     assert "Task Types</div>" in generated_summary
@@ -653,12 +633,8 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "<h4>Generated Cypher</h4>" in html
     assert "<h4>Expected Cypher Solution</h4>" in html
     assert "<h4>Generated Cypher Solution</h4>" in html
-    assert (
-        "<h4>Expected Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
-    )
-    assert (
-        "<h4>Generated Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
-    )
+    assert "<h4>Expected Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
+    assert "<h4>Generated Cypher Solution</h4><pre>&lt;O1, O2&gt;</pre>" in html
     assert "<h4>Cypher Tool Output</h4>" in html
     assert "<h4>Expected Final Answer</h4>" in html
     assert "<h4>Generated Final Answer</h4>" in html
@@ -679,22 +655,16 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     assert "<h4>Question</h4><pre>How many chairs?</pre>" in html
     assert (
         "<h4>Gold Cypher</h4><pre>"
-        "MATCH (o:Object {class: &#x27;chair&#x27;}) RETURN count(o) AS count"
-        in html
+        "MATCH (o:Object {class: &#x27;chair&#x27;}) RETURN count(o) AS count" in html
     )
     assert "<h4>Model Cypher</h4><pre>MATCH (o:Object) RETURN o</pre>" in html
-    assert (
-        "<h4>Answer</h4><pre>"
-        "&lt;answer&gt;&lt;O1, O2&gt;&lt;/answer&gt;</pre>"
-        in html
-    )
+    assert "<h4>Answer</h4><pre>&lt;answer&gt;&lt;O1, O2&gt;&lt;/answer&gt;</pre>" in html
     assert "<h4>Answer</h4><pre></pre>" in html
-    questions_section = html[
-        html.index('id="questions"') : html.index('id="traces"')
-    ]
+    questions_section = html[html.index('id="questions"') : html.index('id="traces"')]
     questions_table = questions_section[
-        questions_section.index("<h3>Questions</h3>") :
-        questions_section.index("</table>", questions_section.index("<h3>Questions</h3>"))
+        questions_section.index("<h3>Questions</h3>") : questions_section.index(
+            "</table>", questions_section.index("<h3>Questions</h3>")
+        )
     ]
     question_headers = [
         "UID",
@@ -706,8 +676,9 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "Solution",
     ]
     questions_header_row = questions_table[
-        questions_table.index("<thead><tr>") :
-        questions_table.index("</tr>", questions_table.index("<thead><tr>"))
+        questions_table.index("<thead><tr>") : questions_table.index(
+            "</tr>", questions_table.index("<thead><tr>")
+        )
     ]
     assert all(header in questions_header_row for header in question_headers)
     assert [questions_header_row.index(header) for header in question_headers] == sorted(
@@ -715,8 +686,7 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
     )
     assert (
         "<pre>MATCH (o:Object {class: &#x27;chair&#x27;}) "
-        "RETURN count(o) AS count</pre>"
-        in questions_table
+        "RETURN count(o) AS count</pre>" in questions_table
     )
     assert "generated-questions-detail" in html
     assert "<h3>Generated Question Details</h3>" in html
@@ -737,25 +707,18 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         html.index('<section id="validation"') : html.index('<section id="baseline"')
     ]
     cypher_group_start = validation_section.index("<summary>Cypher Validation</summary>")
-    final_group_start = validation_section.index(
-        "<summary>Final Answer Validation</summary>"
-    )
-    end_to_end_group_start = validation_section.index(
-        "<summary>End-to-End Validation</summary>"
-    )
+    final_group_start = validation_section.index("<summary>Final Answer Validation</summary>")
+    end_to_end_group_start = validation_section.index("<summary>End-to-End Validation</summary>")
     assert cypher_group_start < validation_section.index("<h4>Expected Cypher</h4>")
     assert validation_section.index("<h4>Cypher Tool Output</h4>") < final_group_start
     assert final_group_start < validation_section.index("<h4>Expected Final Answer</h4>")
     assert (
-        validation_section.index("<h4>Final Answer Validation Issues</h4>")
-        < end_to_end_group_start
+        validation_section.index("<h4>Final Answer Validation Issues</h4>") < end_to_end_group_start
     )
     assert end_to_end_group_start < validation_section.index(
         "<summary>Turn 1 Rendered Prompt</summary>"
     )
-    assert end_to_end_group_start < validation_section.index(
-        "<h4>Turn 2 Raw Completion</h4>"
-    )
+    assert end_to_end_group_start < validation_section.index("<h4>Turn 2 Raw Completion</h4>")
     assert "<h4>Test</h4>" in validation_section
     assert ">All</td>" in validation_section
     assert "Final Answer From Trace" not in validation_section
@@ -773,14 +736,12 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "Final Answer Validation Issues",
     ]
     heading_positions = [
-        validation_section.index(f"<h4>{heading}</h4>")
-        for heading in detail_headings
+        validation_section.index(f"<h4>{heading}</h4>") for heading in detail_headings
     ]
     assert heading_positions == sorted(heading_positions)
     validation_examples_start = validation_section.index("<h3>Validation Examples</h3>")
     validation_examples_table = validation_section[
-        validation_examples_start :
-        validation_section.index("</table>", validation_examples_start)
+        validation_examples_start : validation_section.index("</table>", validation_examples_start)
     ]
     validation_headers = [
         "UID",
@@ -895,10 +856,7 @@ def test_workflow_report_renders_optional_quantization_comparison_tab(tmp_path):
     assert section.count('class="raw-family-grid"') == 3
     assert 'data-report-group-value="Q8_0" hidden' in section
     assert 'data-report-metrics-value="Q8_0" hidden' in comparison_section
-    assert (
-        'class="raw-report-json" data-report-group-value="Q8_0" hidden'
-        in section
-    )
+    assert 'class="raw-report-json" data-report-group-value="Q8_0" hidden' in section
     assert 'data-report-group-value="Q4_K_M" hidden' not in section
     assert 'data-report-metrics-value="Q4_K_M" hidden' not in comparison_section
     assert '<section class="raw-examples">' in section
@@ -908,9 +866,7 @@ def test_workflow_report_renders_optional_quantization_comparison_tab(tmp_path):
     assert "Tool Call Static Valid</th>" not in quantization_summary
     assert "<h3>Deploy / Quantization Examples</h3>" in section
     examples_start = section.index("<h3>Deploy / Quantization Examples</h3>")
-    examples_table = section[
-        examples_start : section.index("</table>", examples_start)
-    ]
+    examples_table = section[examples_start : section.index("</table>", examples_start)]
     assert ">Quantization</th>" in examples_table
     assert ">Split</th>" not in examples_table
     assert ">Tool Call Static Valid</th>" not in examples_table
@@ -1018,14 +974,10 @@ def test_workflow_report_renders_mixed_qa_and_pddl_records(tmp_path):
             "actual_grounding": grounding["expected"],
         },
     }
-    data["validation"]["raw_generation_reports"]["test"]["records"].append(
-        pddl_validation_record
-    )
+    data["validation"]["raw_generation_reports"]["test"]["records"].append(pddl_validation_record)
 
     html = render_workflow_report(data)
-    rows, details = validation_example_rows(
-        {"test": {"records": [pddl_validation_record]}}
-    )
+    rows, details = validation_example_rows({"test": {"records": [pddl_validation_record]}})
     pddl_detail = render_record_detail(details[0])
 
     assert "Task Families Per Split" in html
@@ -1106,76 +1058,6 @@ def test_workflow_report_stops_cleanly_when_lineage_is_declined(monkeypatch):
     )
 
 
-def test_validation_details_surface_hidden_false_positive_diagnostics():
-    record = {
-        "uid": "risk1",
-        "query_type": "objects_in_place_symbol",
-        "task_family": "cypher_qa",
-        "question": "Which objects are in p1?",
-        "expected": {
-            "cypher": "MATCH (:Place)-[:CONTAINS]->(:Object) RETURN 1",
-            "cypher_solution": "<>",
-        },
-        "generated": {
-            "cypher": "MATCH (:Place)-[:CONTAINS*2..2]->(:Object) RETURN 1",
-            "cypher_solution": "<>",
-            "cypher_tool_output": [],
-        },
-        "final_answer_from_trace": {"status": "pass", "final_answer_match": True},
-        "tool_call_from_prompt": {
-            "status": "pass",
-            "executable": True,
-            "cypher_solution_match": True,
-            "potential_hidden_false_positive": True,
-            "hidden_false_positive_reasons": [
-                "non_exact_cypher_matched_empty_result",
-                "relationship_pattern_mismatch",
-            ],
-        },
-    }
-
-    rows, details = validation_example_rows({"test": {"records": [record]}})
-
-    assert rows[0]["potential_hidden_false_positive"] is True
-    assert details[0]["groups"][0]["blocks"]["cypher_validation_issues"][
-        "hidden_false_positive_reasons"
-    ] == [
-        "non_exact_cypher_matched_empty_result",
-        "relationship_pattern_mismatch",
-    ]
-
-
-def test_validation_details_backfill_hidden_false_positive_for_old_reports():
-    record = {
-        "uid": "legacy-risk",
-        "query_type": "objects_in_place_symbol",
-        "task_family": "cypher_qa",
-        "expected": {
-            "cypher": "MATCH (:Place)-[:CONTAINS]->(:Object) RETURN 1",
-            "cypher_solution": "<>",
-        },
-        "generated": {
-            "cypher": "MATCH (:Place)-[:CONTAINS*2..2]->(:Object) RETURN 1",
-            "cypher_solution": "<>",
-            "cypher_tool_output": [],
-        },
-        "final_answer_from_trace": {"status": "pass", "final_answer_match": True},
-        "tool_call_from_prompt": {
-            "status": "pass",
-            "cypher_exact_match": False,
-            "executable": True,
-            "cypher_solution_match": True,
-        },
-    }
-
-    rows, details = validation_example_rows({"test": {"records": [record]}})
-
-    assert rows[0]["potential_hidden_false_positive"] is True
-    assert "relationship_pattern_mismatch" in details[0]["groups"][0]["blocks"][
-        "cypher_validation_issues"
-    ]["hidden_false_positive_reasons"]
-
-
 def test_scene_template_sample_renders_comma_separated_dictionaries():
     cases = [
         {"class": "chair", "point": {"x": 1, "y": 2, "z": 3}},
@@ -1185,22 +1067,23 @@ def test_scene_template_sample_renders_comma_separated_dictionaries():
     rendered = scene_template_sample_text("object_radius_cases", cases)
 
     assert rendered == (
-        "{class: chair, point: {x: 1, y: 2, z: 3}}, "
-        "{class: table, point: {x: 4, y: 5, z: 6}}"
+        "{class: chair, point: {x: 1, y: 2, z: 3}}, {class: table, point: {x: 4, y: 5, z: 6}}"
     )
 
 
 def test_artifacts_deduplicate_paths_and_disambiguate_report_names(tmp_path):
     scene = str(tmp_path / "scene.json")
-    data = {"artifacts": {
-        "scenes": {"office": {"scene": {"path": scene, "exists": True}}},
-        "scene": {"path": str(tmp_path / "subdir/../scene.json"), "exists": True},
-        "reports": [
-            {"path": str(tmp_path / "student/report.json"), "exists": True},
-            {"path": str(tmp_path / "baseline/report.json"), "exists": True},
-            {"path": str(tmp_path / "student/report.json"), "exists": True},
-        ],
-    }}
+    data = {
+        "artifacts": {
+            "scenes": {"office": {"scene": {"path": scene, "exists": True}}},
+            "scene": {"path": str(tmp_path / "subdir/../scene.json"), "exists": True},
+            "reports": [
+                {"path": str(tmp_path / "student/report.json"), "exists": True},
+                {"path": str(tmp_path / "baseline/report.json"), "exists": True},
+                {"path": str(tmp_path / "student/report.json"), "exists": True},
+            ],
+        }
+    }
 
     rows = workflow_report_module.artifact_rows(data)
 
@@ -1213,10 +1096,14 @@ def test_artifacts_deduplicate_paths_and_disambiguate_report_names(tmp_path):
 
 def test_artifact_paths_are_plain_escaped_text_at_any_length():
     long_path = "reports/" + "long-directory/" * 15 + "<report>.json"
-    data = {"artifacts": {"reports": [
-        {"path": long_path, "exists": True},
-        {"path": "short.json", "exists": False},
-    ]}}
+    data = {
+        "artifacts": {
+            "reports": [
+                {"path": long_path, "exists": True},
+                {"path": "short.json", "exists": False},
+            ]
+        }
+    }
 
     html = workflow_report_module.render_artifacts(data)
 

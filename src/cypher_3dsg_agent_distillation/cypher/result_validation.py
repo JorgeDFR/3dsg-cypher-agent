@@ -328,9 +328,9 @@ def decode_result(query, rows, contract, columns=None):
         if len(keys) != len(set(keys)) or len(lineage) != len({p["column"] for p in lineage}):
             raise DecodeError("Duplicate returned column names lose projection information")
         by_column = {item["column"]: item for item in lineage}
-        # Legacy evidence sometimes renames every column. It can still supply
-        # unique typed values, but cannot supply query provenance or inferred extras.
-        observed_lineage = lineage if set(keys).intersection(by_column) else []
+        if lineage and keys and set(keys) != set(by_column):
+            raise DecodeError("Saved result columns disagree with the executed query projection")
+        observed_lineage = lineage
         row_provenance = [
             _row_provenance(observed_lineage, row, spec.accepted_forms) for row in rows
         ]
@@ -348,11 +348,18 @@ def decode_result(query, rows, contract, columns=None):
             for role in roles.values()
         ):
             packed = [
-                info for info in lineage
-                if info.get("kind") == "list" and len(info["items"]) == len(roles)
-                and all(_compatible_type(role, item) for role, item in zip(
-                    roles.values(), info["items"], strict=True,
-                ))
+                info
+                for info in lineage
+                if info.get("kind") == "list"
+                and len(info["items"]) == len(roles)
+                and all(
+                    _compatible_type(role, item)
+                    for role, item in zip(
+                        roles.values(),
+                        info["items"],
+                        strict=True,
+                    )
+                )
             ]
             if len(packed) == 1:
                 roles = {
@@ -372,7 +379,8 @@ def decode_result(query, rows, contract, columns=None):
             )
             # Configured semantic keys are authoritative, not hints to be swapped.
             pooled_union = (
-                spec.kind == "role_sets" and name in by_column
+                spec.kind == "role_sets"
+                and name in by_column
                 and by_column[name].get("kind") == "union"
                 and _origin_matches(role, by_column[name]) is None
             )
@@ -532,8 +540,6 @@ def decode_result(query, rows, contract, columns=None):
                 return flat[0]
             if spec.kind == "set":
                 return _unique(flat)
-            if spec.kind == "flexible":
-                return flat[0] if len(flat) == 1 else _unique(flat)
             return flat
 
         interpretations = [(materialize(a), a) for a in assignments]
@@ -656,7 +662,7 @@ def _answer_value(parsed, c):
         atom(parsed, spec)
 
 
-def compare_answers(actual, expected, contract, answer_validation=None):
+def compare_answers(actual, expected, contract):
     from cypher_3dsg_agent_distillation.graph.heracles_validation import (
         answer_matches_with_heracles,
         lark_parse_sldp,
@@ -665,7 +671,7 @@ def compare_answers(actual, expected, contract, answer_validation=None):
     )
 
     c = ValidationContract.model_validate(contract)
-    rules = answer_validation or c.answer.comparison.model_dump()
+    rules = c.answer.comparison.model_dump()
     if c.query_policy.refusal and str(expected).strip() == c.query_policy.refusal:
         return {
             "status": "pass" if str(actual).strip() == c.query_policy.refusal else "mismatch",
@@ -735,19 +741,13 @@ def render_decoded(actual, contract):
 
     if actual is None or isinstance(actual, list) and not actual:
         return c.answer.empty
-    if (
-        c.result.kind in {"set", "tuples"}
-        or c.result.kind == "flexible"
-        and isinstance(actual, list)
-    ):
+    if c.result.kind in {"set", "tuples"}:
         return "<" + ", ".join(render(v) for v in actual) + ">"
     return render(actual)
 
 
 def validate_record_result(record, rows, query, columns=None):
     contract = contract_for_record(record)
-    if not contract:
-        return {"status": "not_checked", "match": None, "issues": ["No saved validation contract"]}
     decoded = decode_result(query, rows, contract, columns)
     result = {
         **asdict(decoded),
@@ -837,11 +837,7 @@ def validate_record_result(record, rows, query, columns=None):
         )
     else:
         expected = next(
-            (
-                record[k]
-                for k in ("expected_solution", "real_solution", "solution")
-                if record.get(k) is not None
-            ),
+            (record[k] for k in ("expected_solution", "solution") if record.get(k) is not None),
             None,
         )
         if expected is None:
@@ -849,9 +845,7 @@ def validate_record_result(record, rows, query, columns=None):
             return result
         comparison_contract = c.model_dump(mode="json")
         comparison_contract["answer"]["comparison"] = c.result.comparison.model_dump(mode="json")
-        comparison = compare_answers(
-            result["solution"], str(expected), comparison_contract, record.get("answer_validation")
-        )
+        comparison = compare_answers(result["solution"], str(expected), comparison_contract)
         result["match"] = comparison["match"]
         if comparison["status"] == "invalid_expected_solution":
             result.update(status="invalid_expected_solution")
@@ -869,25 +863,6 @@ def actual_final_solution(result, contract):
     if result.get("actual") is None:
         return None
     return render_goal_spec(c.goal, result["actual"]) or ""
-
-
-def compare_record_answer(record, actual, expected):
-    """Compatibility tuple for callers migrating to contracts."""
-    from cypher_3dsg_agent_distillation.graph.heracles_validation import (
-        answer_matches_with_heracles,
-    )
-
-    contract = contract_for_record(record)
-    if contract:
-        outcome = compare_answers(actual, expected, contract, record.get("answer_validation"))
-        return outcome["format_valid"], outcome["match"]
-    return answer_matches_with_heracles(
-        str(actual),
-        str(expected),
-        str(record.get("output_type") or "SLDP"),
-        answer_validation=record.get("answer_validation"),
-        solution_formats=record.get("solution_formats") or record.get("solution_format"),
-    )
 
 
 def final_grounding_check(record, answer, result):
