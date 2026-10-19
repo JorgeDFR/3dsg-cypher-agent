@@ -693,7 +693,6 @@ def configured_trace_decision(seed, record, candidate, execution):
             **record.validation.model_dump(),
             **execution,
             "result_validation": outcome,
-            "semantic_check": outcome.get("semantic_check"),
             "cypher_solution_match": outcome["match"],
             "tool_result_match": outcome["match"],
             "final_answer_match": answer["match"],

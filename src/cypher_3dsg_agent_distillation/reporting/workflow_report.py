@@ -1972,7 +1972,6 @@ def validation_example_rows(
                 "result_validation_status": (tool_call.get("result_validation") or {}).get(
                     "status"
                 ),
-                "semantic_check_status": (tool_call.get("semantic_check") or {}).get("status"),
                 "final_answer_grounded": end_to_end.get("final_answer_grounded"),
                 "final_answer_status": final_answer.get("status"),
                 "tool_call_parse_success": bool_or_none(tool_call.get("tool_call_parse_success")),
@@ -1997,7 +1996,6 @@ def validation_example_rows(
                 key: value
                 for key, value in {
                     "result_validation": tool_call.get("result_validation"),
-                    "semantic_check": tool_call.get("semantic_check"),
                     "static_issues": tool_call.get("static_issues"),
                     "parse_error": tool_call.get("parse_error"),
                     "execution_error": tool_call.get("execution_error"),

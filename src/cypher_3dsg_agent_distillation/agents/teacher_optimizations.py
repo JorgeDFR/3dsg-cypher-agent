@@ -162,7 +162,6 @@ def repair_rejected_invalid_answer_trace(
         return None
     contract_checks = {
         "result_validation": outcome,
-        "semantic_check": outcome.get("semantic_check"),
         "answer_check": answer,
         "grounding_check": grounded,
     }
@@ -329,7 +328,6 @@ def recover_rejected_earlier_retrieval(record: dict[str, Any]) -> AgentTraceReco
         "notifications": [],
         "row_limit": None,
         "result_validation": outcome,
-        "semantic_check": outcome.get("semantic_check"),
         "answer_check": answer,
         "grounding_check": grounded,
         "solution_match": True,

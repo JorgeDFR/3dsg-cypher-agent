@@ -7,8 +7,6 @@ import re
 from copy import deepcopy
 
 from cypher_3dsg_agent_distillation.cypher.task_semantics import (
-    _canonical,
-    _parser,
     parse_query,
     walk_expression,
 )
@@ -301,50 +299,6 @@ def predicate_covers(predicate, origin):
 def reference_roles(query):
     """Build configuration candidates from trusted gold projections, never answers."""
     return projections(query)
-
-
-def semantic_evidence(actual, reference):
-    if not actual or not reference:
-        return {"status": "semantics_unverified", "reason": "query unavailable"}
-    try:
-
-        def signature(query):
-            spec = parse_query(query)
-            # Return names are cosmetic here; positional correspondence is retained.
-            aliases = {}
-            for op in spec["operations"]:
-                if op["kind"] == "project":
-                    for index, item in enumerate(op["items"]):
-                        old = item.get("alias")
-                        if old:
-                            aliases[old] = f"output_{index}"
-                            item["alias"] = aliases[old]
-                elif op["kind"] == "order":
-                    for item in op["items"]:
-                        expr = item["expression"]
-                        if expr.get("kind") == "ref" and expr["name"] in aliases:
-                            expr["name"] = aliases[expr["name"]]
-            # Clause boundaries affect relationship uniqueness and OPTIONAL scope.
-            clauses = _parser().parse(query.rstrip().rstrip(";"))
-            boundaries = [
-                (clause["optional"], len(clause["operations"]))
-                if clause["kind"] == "match_clause"
-                else clause["kind"]
-                for clause in clauses
-            ]
-            return _canonical(spec), boundaries
-
-        if signature(actual) == signature(reference):
-            return {
-                "status": "equivalent_in_supported_fragment",
-                "method": "alpha-renaming and cosmetic projection aliases",
-            }
-    except (ValueError, KeyError, TypeError):
-        pass
-    return {
-        "status": "semantics_unverified",
-        "reason": "No supported equivalence proof; AST differences are not a counterexample.",
-    }
 
 
 def canonical_key(value):

@@ -15,7 +15,6 @@ from cypher_3dsg_agent_distillation.cypher.query_provenance import (
     canonical_key,
     predicate_covers,
     projections,
-    semantic_evidence,
 )
 from cypher_3dsg_agent_distillation.cypher.validation_config import (
     ValidationContract,
@@ -753,16 +752,6 @@ def validate_record_result(record, rows, query, columns=None):
         **asdict(decoded),
         "match": None,
         "solution": None,
-        "semantic_check": (
-            {"status": "semantics_unverified", "reason": "disabled by contract"}
-            if contract.get("semantic_checks", {}).get("mode") == "unverified"
-            else semantic_evidence(
-                query,
-                (record.get("metadata") or {}).get("seed_gold_cypher")
-                or record.get("gold_cypher")
-                or record.get("cypher"),
-            )
-        ),
     }
     if decoded.status != "pass":
         return result

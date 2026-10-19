@@ -180,17 +180,12 @@ class QueryPolicy(StrictModel):
     refusal: str | None = None
 
 
-class SemanticChecks(StrictModel):
-    mode: Literal["supported_fragment", "unverified"] = "supported_fragment"
-
-
 class ValidationContract(StrictModel):
     version: Literal[1] = 1
     query_policy: QueryPolicy = Field(default_factory=QueryPolicy)
     result: ResultSpec
     answer: AnswerSpec = Field(default_factory=AnswerSpec)
     goal: dict[str, Any] | None = None
-    semantic_checks: SemanticChecks = Field(default_factory=SemanticChecks)
 
     @field_validator("version", mode="before")
     @classmethod

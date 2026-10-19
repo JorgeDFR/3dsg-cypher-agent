@@ -9,5 +9,3 @@ defaults:
     symbol_case_sensitive: true
   answer:
     answer_tags: exactly_one
-  semantic_checks:
-    mode: supported_fragment

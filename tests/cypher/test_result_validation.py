@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cypher_3dsg_agent_distillation.cypher.query_provenance import semantic_evidence
 from cypher_3dsg_agent_distillation.cypher.result_validation import (
     compare_answers,
     decode_result,
@@ -221,19 +220,6 @@ def test_actual_final_grounding_uses_actual_goal_and_reports_invalid_gold():
     )
 
 
-def test_semantic_evidence_is_conservative():
-    q = "MATCH (a:Place)-[:NEAR*2]->(b:Place) RETURN b.nodeSymbol AS item"
-    renamed = (
-        q.replace("(a:", "(x:")
-        .replace("(b:", "(y:")
-        .replace("b.nodeSymbol AS item", "y.nodeSymbol AS other")
-        .replace("*2", "*2..2")
-    )
-    assert semantic_evidence(q, renamed)["status"] == "equivalent_in_supported_fragment"
-    assert semantic_evidence(q, q.replace("*2", "*..2"))["status"] == "semantics_unverified"
-    assert semantic_evidence(q, q.replace("->", "-"))["status"] == "semantics_unverified"
-
-
 def test_all_catalogs_have_single_validation_owner_and_resolve_bindings():
     total = 0
     for path in Path("configs/question_templates").glob("*.yaml"):
@@ -398,26 +384,3 @@ def test_explicit_catalog_and_defaults_paths_override_discovery(tmp_path):
     ]
     assert resolved["answer"]["formats"] == ["int"]
     assert resolved["answer"]["empty"] == "0"
-
-
-def test_semantic_mode_is_runtime_policy_and_fixture_settings_are_rejected(monkeypatch):
-    query = "RETURN 1 AS total"
-    contract = {
-        "result": {"kind": "scalar", "type": "integer"},
-        "answer": {"formats": ["int"], "empty": "0"},
-    }
-    record = {"validation_contract": contract, "gold_cypher": query, "solution": "1"}
-    enabled = validate_record_result(record, [{"total": 1}], query)
-    assert enabled["semantic_check"]["status"] == "equivalent_in_supported_fragment"
-    contract["semantic_checks"] = {"mode": "unverified"}
-
-    def unexpected_analysis(*args):
-        raise AssertionError("Disabled semantic analysis should not run")
-
-    monkeypatch.setattr(
-        "cypher_3dsg_agent_distillation.cypher.result_validation.semantic_evidence",
-        unexpected_analysis,
-    )
-    disabled = validate_record_result(record, [{"total": 1}], query)
-    assert disabled["semantic_check"]["status"] == "semantics_unverified"
-    assert enabled["match"] is disabled["match"] is True

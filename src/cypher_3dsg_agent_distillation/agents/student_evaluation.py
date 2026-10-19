@@ -1064,7 +1064,6 @@ def score_tool_call_generation(
         **base,
         "status": outcome["status"],
         "result_validation": outcome,
-        "semantic_check": outcome.get("semantic_check"),
         "cypher_solution": outcome.get("solution"),
         "cypher_solution_format_valid": outcome["status"]
         not in {"invalid_result_shape", "mapping_unresolved"},

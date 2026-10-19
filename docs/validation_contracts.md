@@ -37,7 +37,6 @@ question_sets:
 | `result` | Result kind, types, row limits, column mapping, and comparison |
 | `answer` | Accepted formats, empty representation, and comparison |
 | `goal` | PDDL predicates, arguments, and logical composition |
-| `semantic_checks` | Optional query-equivalence diagnostics |
 
 Result kinds include `scalar`, `set`, `multiset`, `list`, `tuples`, and
 `role_sets`. Use tuples when associations across columns matter. Use role sets
@@ -166,10 +165,6 @@ Final answers need exactly one complete `<answer>` block, valid formatting,
 correct values, and grounding in the actual tool result. Unresolved and
 unchecked examples cannot become validated training traces. Evaluation reports
 retain them in total denominators and show coverage separately.
-
-Semantic checks report conservative query-equivalence evidence. An unverified
-query is not necessarily incorrect. Set `semantic_checks.mode: unverified` to
-skip this diagnostic without disabling result or answer comparison.
 
 ## Apply contract changes
 

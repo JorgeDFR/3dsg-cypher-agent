@@ -530,7 +530,6 @@ def test_workflow_report_collects_scene_artifacts_and_renders_tabs(tmp_path):
         "task_type",
         "tool_call_status",
         "result_validation_status",
-        "semantic_check_status",
         "final_answer_grounded",
         "final_answer_status",
         "tool_call_parse_success",

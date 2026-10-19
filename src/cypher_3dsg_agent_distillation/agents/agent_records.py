@@ -78,7 +78,6 @@ class TraceValidation(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     result_validation: dict[str, Any] | None = None
-    semantic_check: dict[str, Any] | None = None
     answer_check: dict[str, Any] | None = None
     grounding_check: dict[str, Any] | None = None
     static_valid: bool = False
